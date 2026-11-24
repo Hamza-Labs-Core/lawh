@@ -42,6 +42,7 @@ Q = {
  "teams of person, count": "SELECT COUNT(*) FROM team_members WHERE member_id=?",
  "projects of team, count": "SELECT COUNT(*) FROM team_projects WHERE team_id=?",
  "expired connects": "DELETE FROM agent_connects WHERE expires_at<?",
+ "projects a key can use now": "SELECT p.slug,p.name_en FROM agent_key_projects kp JOIN projects p ON p.id=kp.project_id CROSS JOIN project_access x ON x.member_id=? AND x.project_id=kp.project_id AND x.level=4 WHERE kp.key_id=?",
  "connect by code": "SELECT id FROM agent_connects WHERE code_hmac=? AND expires_at>?",
  "connect by id": "SELECT * FROM agent_connects WHERE id=?",
  "expired approvals": "DELETE FROM device_approvals WHERE expires_at<?",
