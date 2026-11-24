@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | Draft, waiting for review and the owner decisions in section 13 |
 | **Last updated** | 2026-11-24 |
-| **Files** | [Data model](schema.sql) · [API (OpenAPI 3.1)](openapi.yaml) · [Security model](security.md) · [Mockups](mockups/index.html) · Checks: [query plans](checks/query_plans.py), [integrity](checks/integrity.py) |
+| **Files** | [Data model](schema.sql) · [API (OpenAPI 3.1)](openapi.yaml) · [Security model](security.md) · [Self-hosting](self-hosting.md) · [Mockups](mockups/index.html) · Checks: [query plans](checks/query_plans.py), [integrity](checks/integrity.py) |
 
 ## 1. Goal
 
@@ -13,9 +13,9 @@ Lawh (لوح, a writing tablet) is a private, self-hosted place where agents pub
 - **Any agent.** Claude, Codex, Gemini, Kimi, GLM or a script: anything that can send HTTPS requests.
 - **Any project.** One instance serves all of the owner's projects. Lawh has no branding, login or data from any one of them.
 - **Any device with a browser.** A normal HTTPS site, installable as a PWA.
-- **Standalone.** It runs in one Cloudflare account and needs no other product. The code is public (MIT); each instance's hosts, keys and pages are private and never in this repository.
+- **Cloned and self-hosted.** People clone this repository and run their own copy in their own Cloudflare account, with one owner each. It needs no other product, and no copy knows about another. The code is public (MIT); a copy's hosts, keys and pages are private and never in this repository. See [self-hosting.md](self-hosting.md).
 
-**Not in v1:** several owners or teams, public share links, editing pages in the browser, real-time co-viewing, server-side code in pages, importing from other artifact systems.
+**Not in v1:** several owners or teams in one copy, public share links, editing pages in the browser, real-time co-viewing, server-side code in pages, importing from other artifact systems.
 
 ## 2. What exists today
 
@@ -148,8 +148,8 @@ Gross list prices per month, before the free allowances, read 2026-11-24 ([Worke
 - **Unit costs:** about $0.00002 a page view and $0.00048 a published version, plus $0.015 per GB stored a month.
 - **Assumptions:** 26 requests a view, 20 of them files; 20 requests and 15 new blobs a version; 10 ms CPU a request; 400 rows written a version (D1 bills each index and search-index row; S9 measures it); 100 rows read a view. D1 holds 0.05, 0.5 and 5 GB.
 - **Workers Paid is required** ($5 a month for the account if it isn't on it already). The free plan caps a request at 10 ms of CPU, which search indexing and uploads exceed, and keeps D1 Time Travel for less time.
-- Custom domains include their certificates, so no certificate add-on is needed.
-- The bill grows with stored versions; decision 5 sets how long they are kept.
+- `workers.dev` hosts and custom domains include their certificates, so no certificate add-on is needed.
+- The bill grows with stored versions; each copy's retention setting decides how long they are kept.
 
 ## 12. Legal and safety
 
@@ -161,35 +161,34 @@ Gross list prices per month, before the free allowances, read 2026-11-24 ([Worke
 
 ## 13. Owner decisions
 
-Asked one at a time. Answers are recorded here.
+Asked one at a time. Answers are recorded here. These are choices for the product, so they apply to every copy. Hosts, Cloudflare account, name and version retention aren't here: each copy sets its own ([self-hosting.md](self-hosting.md)).
 
 | # | Question | Options (recommended first) | Why | Blocks |
 |---|---|---|---|---|
-| 1 | Which login? | **a. Built-in passkeys, owner only.** b. Cloudflare Access. c. An existing identity service, through OpenID Connect, super admin with passkey required | (a) is standalone, works in an installed PWA and adds no service. (b) needs little code, but its redirect breaks background requests in a PWA when the session ends, and it adds an outside dependency. (c) ties a generic tool to one product's uptime and roles | S4 |
-| 2 | Which hosts and which Cloudflare account? | **a. Two subdomains of a domain the owner keeps for tools.** b. Two subdomains of a product's domain. c. A new domain | Two exact hosts are needed, app and content. A tools domain keeps untrusted pages away from any product's cookies | S2 deploy |
-| 3 | Where do agent keys live? | **a. Hashes in D1, pepper in the Secrets Store, the agent's own copy in its machine's keychain.** b. One Secrets Store secret per agent, bound to the Worker. c. Both: (a) for local agents, (b) for agents that are Workers | Secrets Store values can't be read back, so a laptop agent needs a local copy either way. (b) needs a config change for each key, and the store holds 100 secrets an account in open beta | S2 |
-| 4 | May pages load libraries from CDNs? | **a. No, upload everything.** b. A fixed list of CDN hosts | A CDN host is a way out for data, and pages stay readable for years only if they are complete | S3 |
-| 5 | How long are old versions kept? | **a. Forever.** b. Last 20, plus any version with an answer or comment. c. One year | About $0.015 per GB a month. Decisions always keep their own wording | S10 |
-| 6 | MCP tools in v1? | **a. Yes, after the API.** b. Later | MCP lets every provider publish without custom code; it is a thin layer over `/v1` | S12 |
+| 1 | Which login ships? | **a. Built-in passkeys, one owner.** b. Cloudflare Access | (a) works right after a clone, with nothing else to set up, and in an installed PWA. (b) is less code here, but every self-hoster sets up Access first, and its redirect breaks background requests when a session ends. Signing in through one product's identity service is ruled out: other people's copies can't use it | S4 |
+| 2 | Where do agent keys live? | **a. Hashes in D1, pepper in the Secrets Store, the agent's own copy in its machine's keychain.** b. One Secrets Store secret per agent, bound to the Worker. c. Both: (a) for local agents, (b) for agents that are Workers | Secrets Store values can't be read back, so a laptop agent needs a local copy either way. (b) needs a redeploy for each key, and the store holds 100 secrets an account in open beta | S2 |
+| 3 | May pages load libraries from CDNs? | **a. No, upload everything.** b. A fixed list of CDN hosts | A CDN host is a way out for data, and pages stay readable for years only if they are complete | S3 |
+| 4 | MCP tools in v1? | **a. Yes, after the API.** b. Later | MCP lets every provider publish without custom code; it is a thin layer over `/v1` | S12 |
 
 ## 14. Stories, one PR each
 
 | # | Story | Needs |
 |---|---|---|
 | S1 | Workspace, CI, migrations from schema.sql, query-plan check, `instance` switch off, both Workers answering 404 | – |
-| S2 | Agent keys, projects, publish API (start, blob, commit), list, read, versions | D2, D3 |
-| S3 | Content Worker: tokens, sandbox, headers, bridge, hostile-page tests | S2, D4 |
+| S2 | Agent keys, projects, publish API (start, blob, commit), list, read, versions | D2 |
+| S3 | Content Worker: tokens, sandbox, headers, bridge, hostile-page tests | S2, D3 |
 | S4 | Owner login, sessions, device approval | D1 |
 | S5 | Pages list with project, status and tag filters, page view, versions, theme, en and ar | S3, S4 |
 | S6 | Full-size viewer | S5 |
 | S7 | Decisions: API, page panel, open-decisions screen | S5 |
 | S8 | Comments: API, section anchors, threads | S5 |
 | S9 | Search: FTS index, Arabic normalization, autocomplete | S5 |
-| S10 | Settings: keys, projects, delete, restore, purge, export, version retention | S4, D5 |
+| S10 | Settings: keys, projects, delete, restore, purge, export, version retention | S4 |
 | S11 | `lawh publish` command and a publishing guide for agents | S2 |
-| S12 | MCP tools, behind `mcp` | S7, S8, D6 |
+| S12 | MCP tools, behind `mcp` | S7, S8, D4 |
 | S13 | Events feed, webhooks and queue, behind `webhooks` | S7 |
 | S14 | PWA: manifest, icons, service worker | S5 |
-| S15 | First real use: five design documents with charts and decisions, published to the private instance (not in this repository) | S7, S11 |
+| S15 | `lawh init`, `upgrade`, `rollback`, `destroy`, fork-safe CI, the check that no instance details are committed | S4 |
+| S16 | First real use: five design documents with charts and decisions, published to the author's private copy (not in this repository) | S7, S11, S15 |
 
-S1 needs no decision. D1 to D6 are the decisions in section 13.
+S1 needs no decision. D1 to D4 are the decisions in section 13.
