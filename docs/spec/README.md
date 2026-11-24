@@ -71,7 +71,8 @@ An answer sends the revision and the last answer number the person saw; if eithe
 - **R2 holds files, D1 holds everything else.** Key `blobs/<sha256>/<ulid>`.
 - **Answers are append only**, enforced by triggers, which also refuse an answer for an old revision or number, or from someone who may not answer.
 - **A key with several projects** (20 at most) or a member (50 at most) runs one indexed query per project and merges the results.
-- **Access comes only through teams.** `project_access` is a view over `team_members` and `team_projects`, always read for one member.
+- **Access comes only through teams.** `project_access` is a view over `team_members` and `team_projects`, always read for one member, at most 50 rows.
+- **A comment or decision can't leave its page's project:** a composite foreign key, because access is checked by project.
 - **Every query is indexed.** [query_plans.py](checks/query_plans.py) builds the schema and fails on a table scan or a sort without an index. [integrity.py](checks/integrity.py) tests the races: answer against republish, purge, pruning, cleanup, first publish and search filters, plus sign-in, levels and removal. Both become CI checks in S1.
 - **Lists use keyset pages** (30 by default, 100 at most), never `OFFSET` or `COUNT(*)`.
 - **Search** is FTS5 over title, summary, tags and the page's visible text (first 200 KB). Arabic is normalized the same way on write and on search: no diacritics, one form of alef, ya and ta marbuta, and Western digits inside the index. Project, status and tag filters apply inside the index, before the limit of 100 matches, newest first. A soft-deleted page leaves the index. Each change gives the page a new, higher search rowid.
@@ -103,6 +104,7 @@ English and Arabic with full RTL, Arabic digits ٠–٩ through one formatter. A
 | Team | [desktop](mockups/png/team-en-dark-1280.png) · [phone, Arabic, light](mockups/png/team-ar-light-390.png) |
 | Invite | [phone](mockups/png/invite-en-dark-390.png) · [desktop, Arabic](mockups/png/invite-ar-dark-1280.png) |
 | Join from an invite | [phone](mockups/png/join-en-light-390.png) · [phone, Arabic](mockups/png/join-ar-dark-390.png) |
+| All people | [phone](mockups/png/people-en-dark-390.png) · [desktop, Arabic, light](mockups/png/people-ar-light-1280.png) |
 
 Examples in the mockups are made up. On a phone the page fills the screen and decisions open as a sheet from the fixed button.
 
@@ -155,7 +157,7 @@ Gross list prices per month, before the free allowances, read 2026-11-24 ([Worke
 - **Unit costs:** about $0.00002 a page view and $0.00048 a published version, plus $0.015 per GB stored a month.
 - **Assumptions:** 26 requests a view, 20 of them files; 20 requests and 15 new blobs a version; 10 ms CPU a request; 400 rows written a version (D1 bills each index and search-index row; S9 measures it); 120 rows read a view. D1 holds 0.05, 0.5 and 5 GB.
 - **Workers Paid is required** ($5 a month for the account if it isn't on it already). The free plan caps a request at 10 ms of CPU, which search indexing and uploads exceed, and keeps D1 Time Travel for less time.
-- People cost nothing by themselves. With teams, a request reads a few more rows to find the person's level, inside the assumption above.
+- People cost nothing by themselves. With teams, a request reads at most 5 more rows to find the person's level. A list for a person with 50 projects reads up to 1,500 rows ($0.0000015), a few cents a month at the Large size.
 - `workers.dev` hosts and custom domains include their certificates, so no certificate add-on is needed.
 - The bill grows with stored versions; each copy's retention setting decides how long they are kept.
 
@@ -185,22 +187,22 @@ Asked one at a time. Answers are recorded here. These are choices for the produc
 | # | Story | Needs |
 |---|---|---|
 | S1 | Workspace, CI, migrations from schema.sql, query-plan check, `instance` switch off, both Workers answering 404 | – |
-| S2 | Agent keys, projects, publish API (start, blob, commit), list, read, versions | D2 |
+| S2 | Agent keys (checked with their person, level and the `teams` switch), projects, publish API (start, blob, commit), list, read, versions | D2 |
 | S3 | Content Worker: tokens, sandbox, headers, bridge, hostile-page tests | S2, D3 |
-| S4 | Passkey sign-in, sessions, device approval, owner setup, recovery and transfer | S1 |
-| S5 | Pages list with project, status and tag filters, page view, versions, theme, en and ar; `levelOn` on every route | S3, S4 |
+| S4 | Passkey sign-in, sessions, device approval, owner setup and recovery | S1 |
+| S5 | Pages list with project, status and tag filters, page view, versions, theme, en and ar; `levelOn` on every route; lists take a set of projects | S3, S4 |
 | S6 | Full-size viewer | S5 |
-| S7 | Decisions: API, page panel, open-decisions screen | S5, D5 |
+| S7 | Decisions: API, page panel, open-decisions screen (takes a set of projects) | S5, D5 |
 | S8 | Comments: API, section anchors, threads | S5 |
-| S9 | Search: FTS index, Arabic normalization, autocomplete | S5 |
-| S10 | Settings: keys, projects, delete, restore, purge, export, version retention | S4 |
+| S9 | Search: FTS index, Arabic normalization, autocomplete (takes a set of projects) | S5 |
+| S10 | Settings: keys, projects, delete, restore, purge, export, version retention | S5 |
 | S11 | `lawh publish` command and a publishing guide for agents | S2 |
 | S12 | MCP tools, behind `mcp` | S7, S8, D4 |
 | S13 | Events feed, webhooks and queue, behind `webhooks` | S7 |
 | S14 | PWA: manifest, icons, service worker | S5 |
 | S15 | `lawh init`, `upgrade`, `rollback`, `destroy`, fork-safe CI, the check that no instance details are committed | S4, S10 |
 | S16 | First real use: five design documents with charts and decisions, published to the author's private copy (not in this repository) | S7, S11, S15 |
-| S17 | People: invite, join, reset, remove, behind `teams` | S10 |
-| S18 | Teams: levels, projects, managers' agents and keys, every route × level test, behind `teams` | S7, S8, S9, S17 |
+| S17 | Teams: levels, projects, managers' agents and keys, every route × level test with seeded members, behind `teams` | S7, S8, S9, S10, S13 |
+| S18 | People: invite, join, reset, remove, transfer; the `teams` switch can be turned on | S17 |
 
-S1 needs no decision. D2 to D5 are the decisions in section 13; D1 is answered. The tables for people and teams are in S1, so S17 and S18 change no existing table, and S16 doesn't wait for them.
+S1 needs no decision. D2 to D5 are the decisions in section 13; D1 is answered. The tables for people and teams are in S1, and every route and list is built on `levelOn` and a set of projects (all of them for the owner), so S17 and S18 change no existing table or query. S16 doesn't wait for them.
