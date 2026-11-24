@@ -358,14 +358,14 @@ CREATE TABLE access_links (
 );
 CREATE INDEX access_links_member ON access_links(member_id);
 CREATE INDEX access_links_team ON access_links(team_id);
-CREATE INDEX access_links_expiry ON access_links(expires_at);
+CREATE INDEX access_links_expiry ON access_links(expires_at) WHERE used_at IS NOT NULL OR kind <> 'invite';
 CREATE INDEX access_links_creator ON access_links(created_by);
 -- One live link per member: making a new one first deletes the unused one.
 CREATE UNIQUE INDEX access_links_live ON access_links(member_id) WHERE used_at IS NULL;
 -- Only the owner makes reset links: one signs its user in as that member, in every team. A manager invites
 -- to their own team, up to decider, and only people they invited themselves.
 CREATE TRIGGER access_links_allowed BEFORE INSERT ON access_links
-WHEN NOT EXISTS (SELECT 1 FROM members m WHERE m.id = NEW.member_id AND m.removed_at IS NULL AND CASE NEW.kind
+WHEN NEW.used_at IS NOT NULL OR NOT EXISTS (SELECT 1 FROM members m WHERE m.id = NEW.member_id AND m.removed_at IS NULL AND CASE NEW.kind
     WHEN 'owner' THEN m.role = 'owner'
     WHEN 'invite' THEN m.role = 'member' AND m.joined_at IS NULL AND (
       EXISTS (SELECT 1 FROM members c WHERE c.id = NEW.created_by AND c.role = 'owner')
@@ -445,8 +445,9 @@ WHEN NEW.role = 'owner' AND (OLD.joined_at IS NULL OR OLD.removed_at IS NOT NULL
 BEGIN SELECT RAISE(ABORT, 'member not joined'); END;
 CREATE TRIGGER members_role AFTER UPDATE OF role ON members WHEN NEW.role <> OLD.role
 BEGIN
+  UPDATE members SET removed_at = unixepoch() * 1000 WHERE created_by = NEW.id AND joined_at IS NULL AND removed_at IS NULL;
   UPDATE members SET removed_at = unixepoch() * 1000 WHERE joined_at IS NULL AND removed_at IS NULL
-    AND (created_by = NEW.id OR id IN (SELECT member_id FROM access_links WHERE created_by = NEW.id AND used_at IS NULL));
+    AND id IN (SELECT member_id FROM access_links WHERE created_by = NEW.id AND used_at IS NULL);
   DELETE FROM team_members WHERE member_id = NEW.id;
   DELETE FROM access_links WHERE member_id = NEW.id AND used_at IS NULL;
   DELETE FROM access_links WHERE created_by = NEW.id AND used_at IS NULL;
