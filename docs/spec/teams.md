@@ -4,7 +4,7 @@ A copy of Lawh can be used by one person or by several. One person needs nothing
 
 ## People
 
-- **One owner** for each copy, the person who set it up. `lawh owner transfer <member>` moves the role in one transaction, to a member who has joined. Both people leave every team, and every unused link made for or by either of them is deleted. The old owner's agents move too and lose their keys, so the new owner makes new ones; an agent whose name the new owner already uses gets the end of its id added. People invited by a deleted link are cancelled. The command says all this before it asks for a yes. It is a command, not a screen, because the owner is whoever controls the Cloudflare account.
+- **One owner** for each copy, the person who set it up. `lawh owner transfer <member>` moves the role in one transaction, to a member who has joined. Both people leave every team, and every unused link made for or by either of them is deleted. The old owner's agents move too and lose their keys, so the new owner makes new ones; an agent whose name the new owner already uses gets its id added. People invited by a deleted link are cancelled. The command says all this before it asks for a yes. It is a command, not a screen, because the owner is whoever controls the Cloudflare account.
 - **Members** are invited. There is no sign-up page, no password and no email: Lawh stores a display name and passkeys, and sends no mail.
 - Everyone signs in with a passkey. A session belongs to one member.
 

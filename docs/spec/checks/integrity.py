@@ -228,9 +228,9 @@ check("answers of a removed member stay", batch(db, "UPDATE members SET removed_
 check("a name is cleared only after removal", not batch(db, "UPDATE members SET name=NULL WHERE id='o'"))
 check("deleting a team removes its access", batch(db, "DELETE FROM teams WHERE id='t1'") and not db.execute("SELECT 1 FROM team_members WHERE team_id='t1'").fetchone())
 
-# Ownership transfer. Agents whose name the new owner already uses get the end of their id added.
+# Ownership transfer. Agents whose name the new owner already uses get their id added.
 MOVE = """UPDATE agents SET member_id='m', name=CASE WHEN EXISTS (SELECT 1 FROM agents b WHERE b.member_id='m' AND b.name=agents.name)
-  THEN name || ' ' || substr(id, -6) ELSE name END WHERE member_id='o'"""
+  THEN name || ' ' || id ELSE name END WHERE member_id='o'"""
 db = fresh(); people(db); db.execute("INSERT INTO agents VALUES('am','m','bot','x',1,NULL)")
 put_in('t1', 'm', 4, 'o'); link('trap', 'reset', 'm', 'o'); link('trap2', 'reset', 'r', 'o'); link('inv', 'invite', 'x', 'o'); link('own', 'owner', 'o', None)
 check("ownership moves", batch(db, "UPDATE members SET role='member' WHERE id='o'", "UPDATE members SET role='owner' WHERE id='m'", MOVE))
@@ -303,6 +303,7 @@ refused("a sign-in challenge names no member", "INSERT INTO auth_challenges VALU
 refused("a register challenge names a member", "INSERT INTO auth_challenges VALUES('b','register',NULL,'c',1)")
 refused("challenges have two purposes", "INSERT INTO auth_challenges VALUES('b','other',NULL,'c',1)")
 L0 = "INSERT INTO access_links(token_sha256,kind,member_id,created_by,created_at,expires_at,team_id,level) VALUES"
+refused("a link can't be created already used", "DELETE FROM access_links", "INSERT INTO access_links(token_sha256,kind,member_id,created_by,created_at,expires_at,used_at) VALUES('b','reset','m','o',1,9,1)")
 refused("an owner link has no maker", "DELETE FROM access_links", L0 + "('b','owner','o','o',1,9,NULL,NULL)")
 refused("a reset link has a maker", "DELETE FROM access_links", L0 + "('b','reset','m',NULL,1,9,NULL,NULL)")
 refused("an invite needs a team", "DELETE FROM access_links", L0 + "('b','invite','x','o',1,9,NULL,NULL)")
