@@ -54,7 +54,7 @@ In the two rows about page status and agents, "manager" means a manager of a tea
 
 ## Agents in a team
 
-- An agent belongs to one person. A manager's agent gets keys only for projects that person manages.
+- An agent belongs to the person who connected it. A manager's agent gets keys only for projects that person manages.
 - **This is checked on every request**, not only when the key is made: a key works in a project while its agent's person is the owner or still manages that project. Losing the level stops the key there at once.
 - `all projects` keys are for the owner's agents only.
 - **An agent that moves to another person loses its keys**, because the old person still has the secrets. The owner can take over an agent to keep its history, with a new name if the owner already uses that one, then makes it a new key.
@@ -69,7 +69,7 @@ In the two rows about page status and agents, "manager" means a manager of a tea
 |---|---|
 | Who may answer; level on a comment, and that it stays in its page's project; who sets which level; limits; links; passkeys, approvals and sessions per member; removal; transfer; keys when an agent moves; one owner | Triggers and constraints in [schema.sql](schema.sql), tested in [integrity.py](checks/integrity.py) |
 | Project access on every read and write | One server function, `levelOn(member, project)`, used by every `/app-api` route from S5 on. A test calls every route at every level, and fails if a route has no row in the table above |
-| The `teams` switch | Server: while off, only the owner's session and agents work. Everything else for other people answers 404 `feature_off`: sessions, sign-in, device approval, invite and reset links, and their agents' keys. A content link already opened lasts at most 4 hours, as after a removal. The switch can't be turned on before S18 |
+| The `teams` switch | Server: while off, only the owner's session and agents work. Everything else for other people answers 404 `feature_off`: sessions, sign-in, device approval, connecting agents, invite and reset links, and their agents' keys. A content link already opened lasts at most 4 hours, as after a removal. The switch can't be turned on before S18 |
 
 Access to a page's files ends when its content link does. Removing a person ends their session at once, but a link they already opened keeps working for up to 4 hours; it opens one version of a page they had already read.
 

@@ -11,6 +11,27 @@ info:
 servers: [{ url: 'https://{appHost}/v1', variables: { appHost: { default: lawh.example.com } } }]
 security: [{ agentKey: [] }]
 paths:
+  /connect:
+    post:
+      operationId: startConnect
+      x-scope: none
+      summary: Ask to connect an agent
+      description: >
+        The client makes a 32-byte secret and sends its SHA-256. It shows `code` and opens `url`, where a person
+        signs in, types the code and picks the agent's name and projects. The key will be `lawh_<id>_<secret>`.
+      security: []
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [secretSha256, client, machine], properties: { secretSha256: { type: string, pattern: '^[0-9a-f]{64}$' }, client: { type: string, minLength: 1, maxLength: 40, description: 'The program, such as claude or codex' }, machine: { type: string, minLength: 1, maxLength: 60 } } } } } }
+      responses: { '201': { description: Waiting for a person, content: { application/json: { schema: { type: object, required: [id, code, url, expiresAt, interval], properties: { id: { type: string }, code: { type: string }, url: { type: string, format: uri }, expiresAt: { type: integer }, interval: { type: integer, description: Seconds between checks } } } } } }, default: { $ref: '#/components/responses/Error' } }
+  /connect/{id}:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+    get:
+      operationId: getConnect
+      x-scope: none
+      summary: The result, asked with the new key
+      description: Safe to ask again. Never returns the key. 404 when the request is unknown or expired, or the key doesn't match.
+      responses: { '200': { description: Connected, content: { application/json: { schema: { $ref: '#/components/schemas/Me' } } } }, '202': { description: Still waiting }, '403': { $ref: '#/components/responses/Error' }, default: { $ref: '#/components/responses/Error' } }
+  /me:
+    get: { operationId: getMe, x-scope: any, summary: 'This key''s agent, scopes, projects and expiry', responses: { '200': { description: Agent, content: { application/json: { schema: { $ref: '#/components/schemas/Me' } } } }, default: { $ref: '#/components/responses/Error' } } }
   /projects:
     get: { operationId: listProjects, summary: Projects this key can use, x-scope: 'pages:read', responses: { '200': { description: Projects, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Project' } } } } } } }, default: { $ref: '#/components/responses/Error' } } }
   /pages:
@@ -94,6 +115,7 @@ components:
   responses: { Error: { description: Error, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } } }
   schemas:
     Error: { type: object, required: [code, message], properties: { code: { type: string, enum: [feature_off, unauthorized, forbidden, not_found, conflict, invalid, too_large, secret_found, rate_limited, internal] }, message: { type: string }, details: { type: object } } }
+    Me: { type: object, required: [agentId, name, scopes, allProjects, projects, expiresAt], properties: { agentId: { type: string }, name: { type: string }, scopes: { type: array, items: { type: string } }, allProjects: { type: boolean }, projects: { type: array, items: { $ref: '#/components/schemas/Project' } }, expiresAt: { type: integer } } }
     PageStatus: { type: string, enum: [draft, in_review, decided, archived] }
     DecisionStatus: { type: string, enum: [open, answered, stale, withdrawn] }
     Project: { type: object, required: [slug, name], properties: { slug: { type: string }, name: { type: object, required: [en, ar], properties: { en: { type: string }, ar: { type: string } } } } }

@@ -78,18 +78,20 @@ CREATE TABLE agents (
   UNIQUE (member_id, name)
 );
 
--- The secret itself is never stored: only HMAC-SHA256(pepper, keyId + ':' + secret).
+-- The secret itself is never stored: only HMAC-SHA256(pepper, keyId + ':' + hex(SHA-256(secret))).
 CREATE TABLE agent_keys (
   id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id),
   secret_hmac TEXT NOT NULL, scopes_json TEXT NOT NULL,
   all_projects INTEGER NOT NULL DEFAULT 0,   -- counts only for the owner's agents
   created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
-  last_used_at INTEGER, revoked_at INTEGER
+  last_used_at INTEGER, revoked_at INTEGER,
+  label TEXT                                 -- the machine it is for
 );
 CREATE INDEX agent_keys_agent ON agent_keys(agent_id, created_at);
 CREATE TRIGGER agent_keys_add BEFORE INSERT ON agent_keys
 WHEN NOT EXISTS (SELECT 1 FROM agents a JOIN members m ON m.id = a.member_id AND m.joined_at IS NOT NULL AND m.removed_at IS NULL
-                 WHERE a.id = NEW.agent_id AND (NEW.all_projects = 0 OR m.role = 'owner'))
+                 WHERE a.id = NEW.agent_id AND a.disabled_at IS NULL AND (NEW.all_projects = 0 OR m.role = 'owner'))
+  OR EXISTS (SELECT 1 FROM agent_connects c WHERE c.id = NEW.id AND (c.agent_id IS NOT NEW.agent_id OR c.expires_at <= unixepoch() * 1000))
 BEGIN SELECT RAISE(ABORT, 'key not allowed'); END;
 CREATE TRIGGER agent_keys_fixed BEFORE UPDATE ON agent_keys
 WHEN NEW.id <> OLD.id OR NEW.created_at <> OLD.created_at OR NEW.expires_at <> OLD.expires_at OR NEW.agent_id <> OLD.agent_id OR NEW.secret_hmac <> OLD.secret_hmac OR NEW.scopes_json <> OLD.scopes_json
@@ -97,6 +99,31 @@ WHEN NEW.id <> OLD.id OR NEW.created_at <> OLD.created_at OR NEW.expires_at <> O
 BEGIN SELECT RAISE(ABORT, 'key not allowed'); END;
 CREATE TRIGGER agents_moved AFTER UPDATE OF member_id ON agents WHEN NEW.member_id <> OLD.member_id
 BEGIN UPDATE agent_keys SET revoked_at = unixepoch() * 1000 WHERE agent_id = NEW.id AND revoked_at IS NULL; END;
+-- "Connect an agent". The agent's client makes the secret and sends only its SHA-256; this id becomes the key's
+-- id. Approving and adding the key are one transaction, so an approval never waits to be used.
+CREATE TABLE agent_connects (
+  id TEXT PRIMARY KEY, code_hmac TEXT NOT NULL UNIQUE, secret_sha256 TEXT NOT NULL,
+  client TEXT NOT NULL, machine TEXT NOT NULL,   -- what the client says about itself
+  created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+  answered_at INTEGER, member_id TEXT REFERENCES members(id), approver_session TEXT,
+  agent_id TEXT REFERENCES agents(id),           -- NULL in an answered row: refused
+  CHECK ((answered_at IS NULL) = (member_id IS NULL)),
+  CHECK ((member_id IS NULL) = (approver_session IS NULL)),
+  CHECK (agent_id IS NULL OR member_id IS NOT NULL)
+);
+CREATE INDEX agent_connects_expiry ON agent_connects(expires_at);
+CREATE TRIGGER agent_connects_new BEFORE INSERT ON agent_connects WHEN NEW.answered_at IS NOT NULL
+BEGIN SELECT RAISE(ABORT, 'connect not allowed'); END;
+-- Answered once, while in date, from a live session, for an agent of that session's person.
+CREATE TRIGGER agent_connects_change BEFORE UPDATE ON agent_connects
+WHEN OLD.answered_at IS NOT NULL OR OLD.expires_at <= unixepoch() * 1000
+  OR NEW.id <> OLD.id OR NEW.code_hmac <> OLD.code_hmac OR NEW.secret_sha256 <> OLD.secret_sha256
+  OR NEW.client <> OLD.client OR NEW.machine <> OLD.machine
+  OR NEW.created_at <> OLD.created_at OR NEW.expires_at <> OLD.expires_at
+  OR NOT EXISTS (SELECT 1 FROM sessions s
+      WHERE s.token_sha256 = NEW.approver_session AND s.member_id = NEW.member_id AND s.expires_at > unixepoch() * 1000)
+  OR (NEW.agent_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM agents a WHERE a.id = NEW.agent_id AND a.member_id = NEW.member_id))
+BEGIN SELECT RAISE(ABORT, 'connect not allowed'); END;
 CREATE TABLE agent_key_projects (
   key_id TEXT NOT NULL REFERENCES agent_keys(id), project_id TEXT NOT NULL REFERENCES projects(id),
   PRIMARY KEY (key_id, project_id)

@@ -9,7 +9,7 @@ for (const [screen, lang, mode, w] of [
   ['library','en','dark',1280],['library','en','dark',390],['library','ar','light',390],
   ['page','en','dark',1280],['page','ar','dark',1280],['page','en','light',390],
   ['viewer','en','dark',390],['inbox','ar','dark',390],['inbox','en','dark',1280],
-  ['comments','en','dark',390],['keys','ar','light',1280],['signin','en','dark',390],
+  ['comments','en','dark',390],['keys','ar','light',1280],['signin','en','dark',390],['code','en','dark',390],['connect','en','dark',1280],['connect','ar','light',390],
   ['team','en','dark',1280],['team','ar','light',390],['invite','en','dark',390],['invite','ar','dark',1280],
   ['join','en','light',390],['join','ar','dark',390],
   ['people','en','dark',390],['people','ar','light',1280]]) {
