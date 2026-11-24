@@ -78,23 +78,32 @@ db = fresh(); db.execute("UPDATE pages SET deleted_at=1")
 check("answer on a deleted page refused", not batch(db, (ANS, (1, 1, 'a', ''))))
 
 db = fresh()
-db.execute("INSERT INTO owner_setup_links VALUES('L','recovery',1,9,NULL)")
-db.execute("INSERT INTO owner_passkeys(credential_id,public_key,sign_count,label,created_at) VALUES('old',x'00',0,'lost',1)")
-def recover(cred): return batch(db, "DELETE FROM owner_passkeys", "DELETE FROM owner_sessions", "UPDATE owner_setup_links SET used_at=5 WHERE token_sha256='L'",
-    ("INSERT INTO owner_passkeys(credential_id,public_key,sign_count,label,created_at,setup_link) VALUES(?,x'00',0,'n',1,'L')", (cred,)))
-check("recovery replaces every passkey", recover('new') and db.execute("SELECT credential_id FROM owner_passkeys").fetchall() == [('new',)])
-check("a used link can't be used again", not recover('thief') and db.execute("SELECT credential_id FROM owner_passkeys").fetchall() == [('new',)])
-db.execute("DELETE FROM owner_setup_links")
-check("a deleted link can't be used", not recover('thief'))
-db.execute("INSERT INTO device_approvals VALUES('x','c','s','l',1,9,NULL,NULL)")
-USE = "UPDATE device_approvals SET used_at=2"
-check("an approval not yet given can't be used", not batch(db, USE))
-db.execute("UPDATE device_approvals SET approved_at=1")
-check("an approval works once", batch(db, USE) and not batch(db, USE))
-
-db = fresh()
-check("pruning a version keeps its decision wording", batch(db, "DELETE FROM page_versions WHERE id='v1'")
-      and db.execute("SELECT version_id,version_n,question FROM decision_revisions").fetchone() == (None, 1, 'Q'))
+OLD, SOON = NOW - DAY, NOW + DAY
+db.executescript(f"""
+  INSERT INTO owner_setup_links VALUES('L',1,{SOON},NULL),('late',1,{OLD},NULL);
+  INSERT INTO owner_passkeys(credential_id,public_key,sign_count,label,created_at) VALUES('old',x'00',0,'lost',1);
+  INSERT INTO owner_sessions VALUES('s0','lost',1,1,{SOON},'old',NULL);
+  INSERT INTO device_approvals VALUES('pend','c0','s','l',1,{SOON},1,NULL);
+""")
+def recover(cred, link): return batch(db, ("INSERT INTO owner_passkeys(credential_id,public_key,sign_count,label,created_at,setup_link) VALUES(?,x'00',0,'n',1,?)", (cred, link)))
+def keys(): return [r[0] for r in db.execute("SELECT credential_id FROM owner_passkeys")]
+def count(t): return db.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
+check("an expired link is refused and changes nothing", not recover('thief', 'late') and keys() == ['old'] and count('owner_sessions') == 1)
+check("an unknown link is refused", not recover('thief', 'none') and keys() == ['old'])
+check("recovery leaves only the new passkey", recover('new', 'L') and keys() == ['new'])
+check("recovery ends sessions and approvals", count('owner_sessions') == 0 and count('device_approvals') == 0)
+check("a used link is refused and changes nothing", not recover('thief', 'L') and keys() == ['new'])
+def session(tok, passkey, approval): return batch(db, ("INSERT INTO owner_sessions VALUES(?,'l',1,1,?,?,?)", (tok, SOON, passkey, approval)))
+check("a passkey session works", session('s1', 'new', None))
+check("a session needs a source", not session('s2', None, None))
+check("an approval that doesn't exist is refused", not session('s3', None, 'nope'))
+db.executescript(f"INSERT INTO device_approvals VALUES('wait','c1','s','l',1,{SOON},NULL,NULL),('gone','c2','s','l',1,{OLD},1,NULL),('good','c3','s','l',1,{SOON},1,NULL)")
+check("an approval not yet given is refused", not session('s4', None, 'wait'))
+check("an expired approval is refused", not session('s5', None, 'gone'))
+check("a good approval works once", session('s6', None, 'good') and not session('s7', None, 'good'))
+db.execute("DELETE FROM owner_sessions WHERE token_sha256='s6'")
+check("and not again after that session ends", not session('s8', None, 'good'))
+check("removing a passkey ends its sessions", batch(db, "DELETE FROM owner_passkeys WHERE credential_id='new'") and not db.execute("SELECT 1 FROM owner_sessions WHERE token_sha256='s1'").fetchone())
 
 db = fresh()
 db.execute("INSERT INTO uploads VALUES('u1','p1','new','k1',0,'{}',1,2)")

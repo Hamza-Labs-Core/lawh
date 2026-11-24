@@ -12,7 +12,7 @@ CREATE TABLE agents (
   created_at INTEGER NOT NULL, disabled_at INTEGER
 );
 
--- The secret itself is never stored: only HMAC-SHA256(pepper, secret).
+-- The secret itself is never stored: only HMAC-SHA256(pepper, keyId + ':' + secret).
 CREATE TABLE agent_keys (
   id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id),
   secret_hmac TEXT NOT NULL, scopes_json TEXT NOT NULL,
@@ -205,7 +205,7 @@ CREATE TABLE webhook_deliveries (
 ) WITHOUT ROWID;
 CREATE INDEX webhook_deliveries_status ON webhook_deliveries(status, updated_at);
 
--- Owner sign-in. The tables below fit the built-in passkey option; the other options need only sessions.
+-- Owner sign-in. The tables below fit the built-in passkey option; the other option needs only sessions.
 CREATE TABLE owner_passkeys (
   credential_id TEXT PRIMARY KEY, public_key BLOB NOT NULL, sign_count INTEGER NOT NULL,
   label TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER,
@@ -214,9 +214,14 @@ CREATE TABLE owner_passkeys (
 CREATE INDEX owner_passkeys_link ON owner_passkeys(setup_link);
 CREATE TABLE owner_sessions (
   token_sha256 TEXT PRIMARY KEY, label TEXT NOT NULL, created_at INTEGER NOT NULL,
-  last_seen_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
+  last_seen_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+  -- Exactly one source: a passkey, or an approval from a signed-in device.
+  passkey_id TEXT REFERENCES owner_passkeys(credential_id) ON DELETE CASCADE,
+  approval_id TEXT UNIQUE,
+  CHECK ((passkey_id IS NULL) <> (approval_id IS NULL))
 );
 CREATE INDEX owner_sessions_expiry ON owner_sessions(expires_at);
+CREATE INDEX owner_sessions_passkey ON owner_sessions(passkey_id);
 -- Single use: read and removed by one DELETE … RETURNING.
 CREATE TABLE auth_challenges (
   id TEXT PRIMARY KEY, purpose TEXT NOT NULL CHECK (purpose IN ('register','sign_in')),
@@ -225,21 +230,37 @@ CREATE TABLE auth_challenges (
 CREATE INDEX auth_challenges_expiry ON auth_challenges(expires_at);
 -- Single-use owner setup or recovery links.
 CREATE TABLE owner_setup_links (
-  token_sha256 TEXT PRIMARY KEY, purpose TEXT NOT NULL CHECK (purpose IN ('setup','recovery')),
+  token_sha256 TEXT PRIMARY KEY,
   created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, used_at INTEGER
 );
 CREATE INDEX owner_setup_links_expiry ON owner_setup_links(expires_at);
--- A second use aborts the whole batch, not just one statement.
-CREATE TRIGGER owner_setup_links_once BEFORE UPDATE OF used_at ON owner_setup_links
-WHEN OLD.used_at IS NOT NULL BEGIN SELECT RAISE(ABORT, 'link already used'); END;
+-- Adding a passkey is what uses a link. The server writes only the INSERT: these triggers check the link,
+-- mark it used and remove everything the old owner devices held, or the INSERT fails and nothing changes.
+CREATE TRIGGER owner_passkeys_link_valid BEFORE INSERT ON owner_passkeys
+WHEN NEW.setup_link IS NOT NULL AND NOT EXISTS (SELECT 1 FROM owner_setup_links l
+  WHERE l.token_sha256 = NEW.setup_link AND l.used_at IS NULL AND l.expires_at > unixepoch() * 1000)
+BEGIN SELECT RAISE(ABORT, 'setup link not usable'); END;
+CREATE TRIGGER owner_passkeys_link_use AFTER INSERT ON owner_passkeys WHEN NEW.setup_link IS NOT NULL
+BEGIN
+  UPDATE owner_setup_links SET used_at = unixepoch() * 1000 WHERE token_sha256 = NEW.setup_link;
+  DELETE FROM owner_passkeys WHERE credential_id <> NEW.credential_id;
+  DELETE FROM owner_sessions;
+  DELETE FROM auth_challenges;
+  DELETE FROM device_approvals;
+END;
 -- "Approve from a device that is already signed in".
 CREATE TABLE device_approvals (
   id TEXT PRIMARY KEY, code_hmac TEXT NOT NULL UNIQUE, secret_sha256 TEXT NOT NULL, label TEXT NOT NULL,
   created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, approved_at INTEGER, used_at INTEGER
 );
 CREATE INDEX device_approvals_expiry ON device_approvals(expires_at);
-CREATE TRIGGER device_approvals_once BEFORE UPDATE OF used_at ON device_approvals
-WHEN OLD.used_at IS NOT NULL OR OLD.approved_at IS NULL BEGIN SELECT RAISE(ABORT, 'approval not usable'); END;
+-- The same for a session that comes from an approval.
+CREATE TRIGGER owner_sessions_approval_valid BEFORE INSERT ON owner_sessions
+WHEN NEW.approval_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM device_approvals a WHERE a.id = NEW.approval_id
+  AND a.approved_at IS NOT NULL AND a.used_at IS NULL AND a.expires_at > unixepoch() * 1000)
+BEGIN SELECT RAISE(ABORT, 'approval not usable'); END;
+CREATE TRIGGER owner_sessions_approval_use AFTER INSERT ON owner_sessions WHEN NEW.approval_id IS NOT NULL
+BEGIN UPDATE device_approvals SET used_at = unixepoch() * 1000 WHERE id = NEW.approval_id; END;
 
 CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE audit (

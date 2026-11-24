@@ -40,7 +40,7 @@ paths:
     post:
       operationId: startPublish
       x-scope: 'pages:write'
-      summary: Start a publish (creates the page on first use)
+      summary: Start a publish (commit creates the page if it is new)
       description: Returns the blobs still to send. `baseVersion` must be the current version (0 for a new page), or 409.
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/PublishRequest' } } } }
