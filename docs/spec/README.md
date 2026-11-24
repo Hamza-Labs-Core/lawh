@@ -188,7 +188,7 @@ Asked one at a time. Answers are recorded here. These are choices for the produc
 | S12 | MCP tools, behind `mcp` | S7, S8, D4 |
 | S13 | Events feed, webhooks and queue, behind `webhooks` | S7 |
 | S14 | PWA: manifest, icons, service worker | S5 |
-| S15 | `lawh init`, `upgrade`, `rollback`, `destroy`, fork-safe CI, the check that no instance details are committed | S4 |
+| S15 | `lawh init`, `upgrade`, `rollback`, `destroy`, fork-safe CI, the check that no instance details are committed | S4, S10 |
 | S16 | First real use: five design documents with charts and decisions, published to the author's private copy (not in this repository) | S7, S11, S15 |
 
 S1 needs no decision. D1 to D4 are the decisions in section 13.
