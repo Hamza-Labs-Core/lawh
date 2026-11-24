@@ -9,7 +9,7 @@ Published pages are untrusted code that an agent wrote, and they may contain tex
 | App host | `lawh-app` | UI, API, owner session, agent-key checks | Any published HTML |
 | Content host | `lawh-content` | Published files, read only | Session code, cookies, key checks |
 
-The two hosts are exact custom domains. Workers custom domains don't support wildcards, and Universal SSL covers one subdomain level, so there is no host per page. Pages are isolated from each other by an opaque origin instead (section 2).
+The two hosts are two exact names, on `workers.dev` or the owner's domain. Workers custom domains don't support wildcards, and Universal SSL covers one subdomain level, so there is no host per page. Pages are isolated from each other by an opaque origin instead (section 2).
 
 ## 2. Sandboxing
 
@@ -92,7 +92,7 @@ The page shares a realm with the bridge and can forge any of these, so **no mess
 - A key sees 404, not 403, for projects it doesn't have.
 - `last_used_at` is written at most once an hour per key.
 
-**Where the agent keeps it.** A Secrets Store value can't be read back by API or dashboard; only a bound Worker can use it ([docs](https://developers.cloudflare.com/secrets-store/manage-secrets/)). An agent on a laptop can't load its key from there. See owner decision 3.
+**Where the agent keeps it.** A Secrets Store value can't be read back by API or dashboard; only a bound Worker can use it ([docs](https://developers.cloudflare.com/secrets-store/manage-secrets/)). An agent on a laptop can't load its key from there. See owner decision 2.
 
 ## 6. Uploads
 
