@@ -50,6 +50,8 @@ CREATE TABLE page_tags (
 ) WITHOUT ROWID;
 CREATE INDEX page_tags_recent ON page_tags(tag, sort_at DESC, page_id DESC);
 CREATE INDEX page_tags_project ON page_tags(project_id, tag, sort_at DESC, page_id DESC);
+CREATE TRIGGER page_tags_sort AFTER UPDATE OF updated_at ON pages
+BEGIN UPDATE page_tags SET sort_at = NEW.updated_at WHERE page_id = NEW.id; END;
 
 CREATE TABLE page_versions (
   id TEXT PRIMARY KEY, page_id TEXT NOT NULL REFERENCES pages(id),
@@ -72,16 +74,26 @@ CREATE TABLE version_files (
   PRIMARY KEY (version_id, path)
 ) WITHOUT ROWID;
 CREATE INDEX version_files_blob ON version_files(sha256);
+-- Projects that have proved they hold a blob.
+CREATE TABLE project_blobs (
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  sha256 TEXT NOT NULL REFERENCES blobs(sha256) ON DELETE CASCADE,
+  PRIMARY KEY (project_id, sha256)
+) WITHOUT ROWID;
+CREATE INDEX project_blobs_blob ON project_blobs(sha256);
 
--- A publish in progress. A cron removes expired rows.
+-- A publish in progress. It names the page by project and slug: commit creates the pages row, so an
+-- unfinished publish is never visible and never takes a slug. A cron removes expired rows.
 CREATE TABLE uploads (
-  id TEXT PRIMARY KEY, page_id TEXT NOT NULL REFERENCES pages(id), key_id TEXT NOT NULL,
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), slug TEXT NOT NULL,
+  key_id TEXT NOT NULL REFERENCES agent_keys(id),
   base_version INTEGER NOT NULL, manifest_json TEXT NOT NULL,
   created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
 );
+CREATE INDEX uploads_page ON uploads(project_id, slug);
 CREATE INDEX uploads_expiry ON uploads(expires_at);
 
--- Which blobs a key has itself uploaded and proved; see security.md, "Blob ownership".
+-- Blobs this upload sent (hashed from its own body) or reuses from its project. Rows pin a blob against cleanup.
 CREATE TABLE upload_blobs (
   upload_id TEXT NOT NULL REFERENCES uploads(id), sha256 TEXT NOT NULL REFERENCES blobs(sha256),
   PRIMARY KEY (upload_id, sha256)
@@ -107,38 +119,54 @@ CREATE TABLE decisions (
   UNIQUE (page_id, key)
 );
 CREATE INDEX decisions_status ON decisions(status, updated_at, id);
+CREATE INDEX decisions_recent ON decisions(updated_at, id);
+CREATE INDEX decisions_project ON decisions(project_id, updated_at, id);
+CREATE INDEX decisions_page ON decisions(page_id, position);
 CREATE INDEX decisions_project_status ON decisions(project_id, status, updated_at, id);
 
 CREATE TABLE decision_revisions (
   decision_id TEXT NOT NULL REFERENCES decisions(id), revision INTEGER NOT NULL,
   question TEXT NOT NULL, context TEXT NOT NULL DEFAULT '',
   options_json TEXT NOT NULL,              -- ordered; the first is the recommended one
-  version_id TEXT NOT NULL REFERENCES page_versions(id), created_at INTEGER NOT NULL,
+  version_id TEXT REFERENCES page_versions(id) ON DELETE SET NULL,   -- NULL once that version is pruned
+  version_n INTEGER NOT NULL, created_at INTEGER NOT NULL,
   PRIMARY KEY (decision_id, revision)
 ) WITHOUT ROWID;
+CREATE INDEX decision_revisions_version ON decision_revisions(version_id);
 
--- Append only. Triggers refuse updates and deletes, except during a purge.
+-- Append only. An answer must be for the current revision and be the next number, so a republish or
+-- an answer from another device makes the whole batch fail (409). Deletes only in the 30-day purge.
 CREATE TABLE decision_answers (
   decision_id TEXT NOT NULL REFERENCES decisions(id), seq INTEGER NOT NULL,
   revision INTEGER NOT NULL, option_id TEXT,     -- NULL: answered with notes only
   notes TEXT NOT NULL DEFAULT '', answered_at INTEGER NOT NULL,
-  PRIMARY KEY (decision_id, seq)
+  PRIMARY KEY (decision_id, seq),
+  FOREIGN KEY (decision_id, revision) REFERENCES decision_revisions(decision_id, revision),
+  CHECK (option_id IS NOT NULL OR length(trim(notes)) > 0)
 ) WITHOUT ROWID;
+CREATE TRIGGER decision_answers_current BEFORE INSERT ON decision_answers
+WHEN NOT EXISTS (SELECT 1 FROM decisions d WHERE d.id = NEW.decision_id AND d.revision = NEW.revision
+                 AND d.answer_seq = NEW.seq - 1 AND d.status <> 'withdrawn')
+BEGIN SELECT RAISE(ABORT, 'answer conflict'); END;
+CREATE TRIGGER decision_answers_point AFTER INSERT ON decision_answers
+BEGIN UPDATE decisions SET answer_seq = NEW.seq, status = 'answered', updated_at = NEW.answered_at
+      WHERE id = NEW.decision_id; END;
 CREATE TRIGGER decision_answers_no_update BEFORE UPDATE ON decision_answers
 BEGIN SELECT RAISE(ABORT, 'answers are append only'); END;
 CREATE TRIGGER decision_answers_no_delete BEFORE DELETE ON decision_answers
 WHEN NOT EXISTS (SELECT 1 FROM pages p JOIN decisions d ON d.page_id = p.id
-                 WHERE d.id = OLD.decision_id AND p.deleted_at IS NOT NULL)
+                 WHERE d.id = OLD.decision_id AND p.deleted_at <= (unixepoch() - 2592000) * 1000)
 BEGIN SELECT RAISE(ABORT, 'answers are append only'); END;
 
 CREATE TABLE comments (
   id TEXT PRIMARY KEY, page_id TEXT NOT NULL REFERENCES pages(id),
   project_id TEXT NOT NULL REFERENCES projects(id),
-  thread_id TEXT NOT NULL,                 -- the first comment's id
+  thread_id TEXT NOT NULL REFERENCES comments(id),   -- the first comment's id
   version_n INTEGER NOT NULL, section_id TEXT, section_title TEXT, quote TEXT,
   author_type TEXT NOT NULL CHECK (author_type IN ('owner','agent')),
   agent_id TEXT REFERENCES agents(id), body TEXT NOT NULL,
-  created_at INTEGER NOT NULL, resolved_at INTEGER, deleted_at INTEGER
+  created_at INTEGER NOT NULL, resolved_at INTEGER, deleted_at INTEGER,
+  CHECK ((author_type = 'agent') = (agent_id IS NOT NULL))
 );
 CREATE INDEX comments_page ON comments(page_id, created_at, id);
 CREATE INDEX comments_thread ON comments(thread_id, created_at, id);
@@ -161,10 +189,11 @@ CREATE TABLE webhooks (
 );
 CREATE INDEX webhooks_project ON webhooks(project_id, enabled);
 CREATE TABLE webhook_deliveries (
-  webhook_id TEXT NOT NULL, event_seq INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+  webhook_id TEXT NOT NULL REFERENCES webhooks(id), event_seq INTEGER NOT NULL REFERENCES events(seq), attempts INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL, last_code INTEGER, updated_at INTEGER NOT NULL,
   PRIMARY KEY (webhook_id, event_seq)
 ) WITHOUT ROWID;
+CREATE INDEX webhook_deliveries_status ON webhook_deliveries(status, updated_at);
 
 -- Owner sign-in. The tables below fit the built-in passkey option; the other options need only sessions.
 CREATE TABLE owner_passkeys (
@@ -176,6 +205,22 @@ CREATE TABLE owner_sessions (
   last_seen_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
 );
 CREATE INDEX owner_sessions_expiry ON owner_sessions(expires_at);
+-- Single use: read and removed by one DELETE … RETURNING.
+CREATE TABLE auth_challenges (
+  id TEXT PRIMARY KEY, purpose TEXT NOT NULL CHECK (purpose IN ('register','sign_in')),
+  challenge TEXT NOT NULL, expires_at INTEGER NOT NULL
+);
+CREATE INDEX auth_challenges_expiry ON auth_challenges(expires_at);
+-- Single-use owner setup or recovery links.
+CREATE TABLE owner_setup_links (
+  token_sha256 TEXT PRIMARY KEY, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, used_at INTEGER
+);
+-- "Approve from a device that is already signed in".
+CREATE TABLE device_approvals (
+  id TEXT PRIMARY KEY, code_hmac TEXT NOT NULL UNIQUE, secret_sha256 TEXT NOT NULL, label TEXT NOT NULL,
+  created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, approved_at INTEGER, used_at INTEGER
+);
+CREATE INDEX device_approvals_expiry ON device_approvals(expires_at);
 
 CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE audit (
@@ -183,8 +228,10 @@ CREATE TABLE audit (
   actor_type TEXT NOT NULL, actor_id TEXT, action TEXT NOT NULL, subject_id TEXT
 );
 
--- rowid is mapped to the page through pages_fts_map.
+-- rowid is mapped to the page through pages_fts_map. `scope` holds one token each for the project, status
+-- and tags, so filters apply inside the index, before LIMIT. Deleting a page removes its row; restoring
+-- adds it back.
 CREATE TABLE pages_fts_map (rowid INTEGER PRIMARY KEY, page_id TEXT NOT NULL UNIQUE REFERENCES pages(id));
 CREATE VIRTUAL TABLE pages_fts USING fts5(
-  title, summary, tags, body, prefix='2 3 4', tokenize="unicode61 remove_diacritics 2"
+  scope, title, summary, tags, body, prefix='2 3 4', tokenize="unicode61 remove_diacritics 2"
 );

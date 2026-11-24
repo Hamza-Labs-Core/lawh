@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | Draft, waiting for review and the owner decisions in section 13 |
 | **Last updated** | 2026-11-24 |
-| **Files** | [Data model](schema.sql) · [API (OpenAPI 3.1)](openapi.yaml) · [Security model](security.md) · [Mockups](mockups/index.html) · [Query-plan check](checks/query_plans.py) |
+| **Files** | [Data model](schema.sql) · [API (OpenAPI 3.1)](openapi.yaml) · [Security model](security.md) · [Mockups](mockups/index.html) · Checks: [query plans](checks/query_plans.py), [integrity](checks/integrity.py) |
 
 ## 1. Goal
 
@@ -56,7 +56,7 @@ A page's URL is `https://APP/p/<project>/<slug>` and never changes. `?v=3` opens
 | Key missing from a new list | `withdrawn`; history kept |
 | A withdrawn key comes back | `open`, or `answered` if the wording matches the answered revision |
 
-An answer sends the revision and the last answer number the owner saw; if either changed on another device, it gets 409 and the form reloads. Answering a page's last open decision moves the page from `in_review` to `decided`.
+An answer sends the revision and the last answer number the owner saw; if either changed on another device, it gets 409 and the form reloads. Answering a page's last `open` or `stale` decision moves the page from `in_review` to `decided`.
 
 **Comments** belong to the page or to a section (heading id, title and a short quote, so a comment survives a republish; if the section is gone, the comment shows under "Earlier sections"). Only the owner starts and resolves threads. Agents reply.
 
@@ -67,10 +67,11 @@ An answer sends the revision and the last answer number the owner saw; if either
 [schema.sql](schema.sql) is the full model. Main points:
 
 - **R2 holds files, D1 holds everything else.** Key `blobs/<sha256>/<ulid>`.
-- **Answers are append only**, enforced by triggers.
-- **Every query is indexed.** [query_plans.py](checks/query_plans.py) builds the schema and fails on a table scan or a sort without an index. It becomes a CI check in S1.
+- **Answers are append only**, enforced by triggers, which also refuse an answer for an old revision or number.
+- **A key with several projects** (20 at most) runs one indexed query per project and merges the results.
+- **Every query is indexed.** [query_plans.py](checks/query_plans.py) builds the schema and fails on a table scan or a sort without an index. [integrity.py](checks/integrity.py) tests the races: answer against republish, purge, pruning, cleanup, first publish and search filters. Both become CI checks in S1.
 - **Lists use keyset pages** (30 by default, 100 at most), never `OFFSET` or `COUNT(*)`.
-- **Search** is FTS5 over title, summary, tags and the page's visible text (first 200 KB). Arabic is normalized the same way on write and on search: no diacritics, one form of alef, ya and ta marbuta, and Western digits inside the index. One query reads at most 100 matches.
+- **Search** is FTS5 over title, summary, tags and the page's visible text (first 200 KB). Arabic is normalized the same way on write and on search: no diacritics, one form of alef, ya and ta marbuta, and Western digits inside the index. Project, status and tag filters apply inside the index, before the limit of 100 matches, newest first. A soft-deleted page leaves the index.
 - **Publishing doesn't hit D1's 100-parameter limit:** file rows go in as one JSON parameter through `json_each`.
 
 ## 5. API
@@ -137,23 +138,23 @@ Gross list prices per month, before the free allowances, read 2026-11-24 ([Worke
 | Pages / stored files | 200 / 4 GB | 2,000 / 40 GB | 20,000 / 400 GB |
 | Page views a month | 1,000 | 10,000 | 100,000 |
 | Versions published a month | 200 | 2,000 | 20,000 |
-| Workers requests and CPU | $0.02 | $0.15 | $1.50 |
+| Workers requests and CPU | $0.01 | $0.15 | $1.50 |
 | R2 storage | $0.06 | $0.60 | $6.00 |
 | R2 operations | $0.02 | $0.21 | $2.07 |
-| D1 reads, writes, storage | $0.05 | $0.50 | $4.96 |
-| Queue | $0.00 | $0.00 | $0.01 |
-| **Total** | **$0.15** | **$1.45** | **$14.54** |
+| D1 reads, writes, storage | $0.12 | $1.18 | $11.76 |
+| Queue | $0.00 | $0.00 | $0.04 |
+| **Total** | **$0.21** | **$2.14** | **$21.37** |
 
-- **Unit costs:** about $0.00002 a page view and $0.00014 a published version, plus $0.015 per GB stored a month.
-- **Assumptions:** 26 requests a view, 20 of them files; 20 requests and 15 new blobs a version; 10 ms CPU a request; 60 rows written a version; 100 rows read a view. D1 holds 0.05, 0.5 and 5 GB.
-- **The account's Workers Paid plan** ($5 a month) is extra if the account doesn't have it. Small fits inside the free allowances, when nothing else in the account uses them.
+- **Unit costs:** about $0.00002 a page view and $0.00048 a published version, plus $0.015 per GB stored a month.
+- **Assumptions:** 26 requests a view, 20 of them files; 20 requests and 15 new blobs a version; 10 ms CPU a request; 400 rows written a version (D1 bills each index and search-index row; S9 measures it); 100 rows read a view. D1 holds 0.05, 0.5 and 5 GB.
+- **Workers Paid is required** ($5 a month for the account if it isn't on it already). The free plan caps a request at 10 ms of CPU, which search indexing and uploads exceed, and keeps D1 Time Travel for less time.
 - Custom domains include their certificates, so no certificate add-on is needed.
 - The bill grows with stored versions; decision 5 sets how long they are kept.
 
 ## 12. Legal and safety
 
 - Pages can hold personal or confidential data. The instance is private, every response is `noindex`, and logs hold no page text, answers, comments, tokens or keys.
-- Deletes are soft, with a 30-day purge that removes files, text, answers and comments. R2 and D1 backups age out on Cloudflare's schedule (D1 Time Travel: up to 30 days).
+- Deletes are soft, with a 30-day purge that removes files, text, answers and comments. D1 Time Travel keeps deleted rows for up to 30 more days on the paid plan.
 - Uploads are refused when they contain key-shaped strings.
 - Export: the owner can download everything as a ZIP (S10).
 - A page must not copy third-party material its author has no right to keep.
