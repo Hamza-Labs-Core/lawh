@@ -11,7 +11,7 @@ db.executescript(schema)
 Q = {
  "sessions of passkey": "SELECT 1 FROM sessions WHERE passkey_id=?",
  "inbox": "SELECT d.id FROM decisions d INDEXED BY decisions_inbox CROSS JOIN pages p ON p.id=d.page_id AND p.deleted_at IS NULL WHERE d.status IN ('open','stale') AND (d.updated_at,d.id)>(?,?) ORDER BY d.updated_at,d.id LIMIT 50",
- "expired links": "DELETE FROM access_links WHERE expires_at<?",
+ "expired links": "DELETE FROM access_links WHERE expires_at<? AND (used_at IS NOT NULL OR kind<>'invite')",
  "level on project": "SELECT MAX(level) FROM project_access WHERE member_id=? AND project_id=?",
  "member's projects": "SELECT project_id,level FROM project_access WHERE member_id=?",
  "manager's key on project": "SELECT 1 FROM agent_key_projects kp CROSS JOIN project_access x ON x.member_id=? AND x.project_id=kp.project_id AND x.level=4 WHERE kp.key_id=? AND kp.project_id=?",
@@ -21,6 +21,8 @@ Q = {
  "people someone invited": "SELECT id FROM members WHERE created_by=? AND joined_at IS NULL AND removed_at IS NULL",
  "pending invites of team": "SELECT l.member_id,l.level,m.name FROM access_links l JOIN members m ON m.id=l.member_id WHERE l.team_id=? AND l.used_at IS NULL",
  "drop member's links": "DELETE FROM access_links WHERE member_id=?",
+ "webhooks of project": "SELECT w.id,m.name FROM webhooks w JOIN members m ON m.id=w.created_by WHERE w.project_id=?",
+ "links someone made": "SELECT member_id FROM access_links WHERE created_by=? AND used_at IS NULL",
  "keys of project": "SELECT key_id FROM agent_key_projects WHERE project_id=?",
  "inbox in project": "SELECT d.id FROM decisions d INDEXED BY decisions_project_inbox CROSS JOIN pages p ON p.id=d.page_id AND p.deleted_at IS NULL WHERE d.project_id=? AND d.status IN ('open','stale') AND (d.updated_at,d.id)>(?,?) ORDER BY d.updated_at,d.id LIMIT 50",
  "members of team": "SELECT m.id,m.name,t.level FROM team_members t JOIN members m ON m.id=t.member_id WHERE t.team_id=?",

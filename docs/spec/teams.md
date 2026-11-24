@@ -4,14 +4,14 @@ A copy of Lawh can be used by one person or by several. One person needs nothing
 
 ## People
 
-- **One owner** for each copy, the person who set it up. `lawh owner transfer <member>` moves the role in one transaction, to a member who has joined. Both people leave every team, and every unused link made for or by either of them is deleted. The old owner's agents move too and lose their keys, so the new owner makes new ones; the command says so before it asks for a yes. It is a command, not a screen, because the owner is whoever controls the Cloudflare account.
+- **One owner** for each copy, the person who set it up. `lawh owner transfer <member>` moves the role in one transaction, to a member who has joined. Both people leave every team, and every unused link made for or by either of them is deleted. The old owner's agents move too and lose their keys, so the new owner makes new ones; an agent whose name the new owner already uses gets the end of its id added. People invited by a deleted link are cancelled. The command says all this before it asks for a yes. It is a command, not a screen, because the owner is whoever controls the Cloudflare account.
 - **Members** are invited. There is no sign-up page, no password and no email: Lawh stores a display name and passkeys, and sends no mail.
 - Everyone signs in with a passkey. A session belongs to one member.
 
 | What happens | How |
 |---|---|
 | **Invite** | The owner, or a manager for their own team, enters a name, a team and a level, and gets a link to send however they like. It works once, for 3 days. The team and level are in the link: **an invited person is in no team and has no access until they join**, and the database checks then that whoever made the link can still give that level. Opening it shows the copy's name, who invited, the team and the level, and registers a passkey |
-| **Cancel an invite** | Deletes the link and marks the person removed. The inviter, a manager of that team or the owner can. An invite nobody used is cancelled after 30 days. Making a new link for the same person replaces the old one |
+| **Cancel an invite** | Deletes the link and marks the person removed. The inviter, a manager of that team or the owner can. An invite nobody used stays in the team's list, also after its link expires, and is cancelled after 30 days, or when its team is deleted. Making a new link for the same person replaces the old one |
 | **Lost devices** | The owner makes a reset link: once, for 1 day. Using it removes that member's other passkeys, sessions, approvals and challenges. Managers can't make one, because it signs its user in as that member in every team |
 | **Owner's lost devices** | `lawh owner setup` (security.md section 4) |
 | **Remove** | One change ends sessions, passkeys, approvals, links and memberships, cancels invites the member made that nobody has used, with their links whoever made them, and revokes their agents' keys. It can't be undone; coming back is a new invite |
@@ -57,10 +57,10 @@ In the two rows about page status and agents, "manager" means a manager of a tea
 - An agent belongs to one person. A manager's agent gets keys only for projects that person manages.
 - **This is checked on every request**, not only when the key is made: a key works in a project while its agent's person is the owner or still manages that project. Losing the level stops the key there at once.
 - `all projects` keys are for the owner's agents only.
-- **An agent that moves to another person loses its keys**, because the old person still has the secrets. The owner can take over an agent to keep its name and history, then makes it a new key.
+- **An agent that moves to another person loses its keys**, because the old person still has the secrets. The owner can take over an agent to keep its history, with a new name if the owner already uses that one, then makes it a new key.
 - Agent names are unique for each person, not for the copy. The UI shows "claude-agent (Mona)".
 - Routes without a project in the path (send a blob, commit, read a decision, comments, reply) find the project from the row and check it the same way. A publish whose person lost the level fails at the next blob or at commit.
-- A webhook belongs to its project, not to who made it, and stays when that person leaves. It can send only ids and event types, to hosts the owner allowed. The list shows who made it, from the audit log.
+- A webhook belongs to its project, not to who made it, and stays when that person leaves. It can send only ids and event types, to hosts the owner allowed. The list shows who made it.
 - The API marks a person's comment with `fromDecider`: whether they could decide there when they wrote it. Agents act on answers and on comments from deciders, managers and the owner; other comments are information (security.md section 8).
 
 ## Where it is enforced
