@@ -66,22 +66,24 @@ An opaque origin sends no session cookie, so each file URL carries a token: `htt
 | Message | Used for | The app's check |
 |---|---|---|
 | `outline` | Section comments | At most 200 headings, 200 characters each, shown as text |
-| `open-media` | Full-size viewer | Image: a path in this version's file list, loaded from the content host. SVG: at most 5 MB of text, shown as `<img src="data:image/svg+xml,…">`. Canvas: an `ImageBitmap`, drawn to the app's own canvas |
+| `open-media` | Full-size viewer | Image: a path in this version's file list. SVG: at most 5 MB of text. Canvas: an `ImageBitmap`. Each is passed to the viewer frame |
 | `open-link` | Outside links | `https:` only; a dialog shows the whole address before it opens |
 | `scroll-state` | Scroll position | Numbers only |
 
-The page shares a realm with the bridge and can forge any of these, so **no message can answer a decision, write a comment or call the API**. The app accepts messages only where `event.source` is the frame's window. **The app never makes a `blob:` URL from page data**, because that URL would have the app's origin if it were opened in a new tab. Scripts don't run in an SVG shown through `<img>`, and a `data:` document has an opaque origin. Decision forms and comments are drawn by the app outside the frame, from the API's data, as plain text.
+The page shares a realm with the bridge and can forge any of these, so **no message can answer a decision, write a comment or call the API**. The app accepts messages only where `event.source` is the frame's window. Decision forms and comments are drawn by the app outside the frame, from the API's data, as plain text.
+
+**Viewer.** The app never turns page data into an image URL of its own: such a URL would run outside the sandbox if someone opened it in a new tab. The full-size viewer is a second frame, `https://CONTENT/<token>/_lawh/viewer`, with the same sandbox attribute, the same headers, and `script-src CONTENT` without `'unsafe-inline'`. The app posts it the item. It draws an SVG or image to a canvas at the current zoom, so there is no image element to open elsewhere, and loads an SVG from a `blob:` URL of its own opaque origin, which has no data-URL size limit. It sends back only key names (Escape, arrows, `+`, `−`), which the app acts on as a key press would: close, move or zoom. The app draws the bar around it.
 
 ## 4. App host
 
-- CSP: `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: CONTENT; connect-src 'self'; frame-src CONTENT; manifest-src 'self'; worker-src 'self'; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`.
+- CSP: `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; frame-src CONTENT; manifest-src 'self'; worker-src 'self'; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`.
 - Every response also sends `X-Robots-Tag: noindex, nofollow`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cross-Origin-Opener-Policy: same-origin` and a `Permissions-Policy` that turns off everything but passkeys.
 - Session cookie `__Host-lawh`: `Secure; HttpOnly; SameSite=Lax; Path=/`. The `__Host-` prefix stops a sibling subdomain from planting one. D1 stores only its SHA-256. It lasts 30 days from last use, at most 90. A list of sessions lets the owner end any of them.
 - Writes need `Origin` equal to the app host and `Sec-Fetch-Site: same-origin`. `Origin: null` is refused.
 - Agent text (titles, questions, comments) is always escaped. Markdown isn't rendered in v1.
-- **First setup (if decision 1 is passkeys).** There is no sign-up and there are no accounts: an instance has one owner, and there is no public page that makes one. `lawh owner setup`, run by whoever has the instance's Cloudflare access, prints a link that works once, for 15 minutes. Only its SHA-256 is stored. Opening it registers one passkey. Adding a passkey later needs a signed-in session.
-- **Recovery.** If every passkey is lost, the same command makes a new link. It ends all sessions and is written to the audit log.
-- Passkey challenges and device approvals are D1 rows, used once, gone after 5 minutes. A device approval shows the code on both devices and needs the owner to type it.
+- **First setup (if decision 1 is passkeys).** There is no sign-up and there are no accounts: an instance has one owner, and there is no public page that makes one. `lawh owner setup`, run by whoever has the instance's Cloudflare access, prints a link that works once, for 15 minutes. Only its SHA-256 is stored. The token is in the URL fragment and sent in a POST body, so it isn't in logs. Opening it registers one passkey: one batch marks the link used (a trigger aborts the batch if it was already used) and adds the passkey, which references the link. A new link deletes unused earlier ones. Adding a passkey later needs a signed-in session.
+- **Recovery.** If every passkey is lost, the same command makes a new link. Using it removes every passkey, session, pending device approval and challenge in the same batch, so a lost device can't sign in again. It is written to the audit log.
+- Passkey challenges and device approvals are D1 rows, used once, gone after 5 minutes. A device approval shows the code on both devices and needs the owner to type it. `code_hmac` uses the pepper. An approval can be used once, enforced by a trigger, and guesses are rate limited.
 - A Worker rate limit applies to sign-in, the API per key, and uploads.
 
 ## 5. Agent keys
@@ -100,7 +102,7 @@ The page shares a realm with the bridge and can forge any of these, so **no mess
 - **Integrity.** Every `PUT` hashes the body it received and checks the size, even when the blob already exists. R2 checks the SHA-256 again on write. The media type comes from an allowlist by extension, never from the uploader.
 - **Blob ownership.** Knowing a hash doesn't give access to the file. A manifest may reuse a blob only if this upload sent it or `project_blobs` says its project already proved it. `startPublish` pins reused blobs in `upload_blobs`.
 - **Cleanup order.** Reusing or sending a blob clears `unreferenced_at`. Cleanup deletes the D1 row first; foreign keys stop it while a version or an upload uses the blob. Only then is the R2 object deleted. Two uploads of the same new blob write two R2 keys; the one that loses the insert deletes its own. A weekly job removes R2 objects over a day old that have no D1 row.
-- **Publishing is atomic.** One D1 batch creates the page if it is new, then inserts version `base + 1`, its files, decisions and events. `UNIQUE(project_id, slug)` and `UNIQUE(page_id, n)` make a concurrent publish fail with 409, and a failed batch changes nothing.
+- **Publishing is atomic.** One D1 batch creates the page if it is new, then inserts version `base + 1`, its files, decisions and events. `UNIQUE(project_id, slug)` and `UNIQUE(page_id, n)` and a trigger (next number, page not deleted) make a concurrent or late publish fail with 409, and a failed batch changes nothing.
 - **Secret scan.** Each `PUT` scans the byte stream, whatever its type, in chunks that overlap, so a file is never held whole in memory. A Lawh key or a common cloud credential pattern gets 422 with the byte position, never the value, and nothing is stored.
 
 ## 7. Webhooks

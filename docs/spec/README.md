@@ -71,7 +71,7 @@ An answer sends the revision and the last answer number the owner saw; if either
 - **A key with several projects** (20 at most) runs one indexed query per project and merges the results.
 - **Every query is indexed.** [query_plans.py](checks/query_plans.py) builds the schema and fails on a table scan or a sort without an index. [integrity.py](checks/integrity.py) tests the races: answer against republish, purge, pruning, cleanup, first publish and search filters. Both become CI checks in S1.
 - **Lists use keyset pages** (30 by default, 100 at most), never `OFFSET` or `COUNT(*)`.
-- **Search** is FTS5 over title, summary, tags and the page's visible text (first 200 KB). Arabic is normalized the same way on write and on search: no diacritics, one form of alef, ya and ta marbuta, and Western digits inside the index. Project, status and tag filters apply inside the index, before the limit of 100 matches, newest first. A soft-deleted page leaves the index.
+- **Search** is FTS5 over title, summary, tags and the page's visible text (first 200 KB). Arabic is normalized the same way on write and on search: no diacritics, one form of alef, ya and ta marbuta, and Western digits inside the index. Project, status and tag filters apply inside the index, before the limit of 100 matches, newest first. A soft-deleted page leaves the index. Each change gives the page a new, higher search rowid.
 - **Publishing doesn't hit D1's 100-parameter limit:** file rows go in as one JSON parameter through `json_each`.
 
 ## 5. API
@@ -154,7 +154,7 @@ Gross list prices per month, before the free allowances, read 2026-11-24 ([Worke
 ## 12. Legal and safety
 
 - Pages can hold personal or confidential data. The instance is private, every response is `noindex`, and logs hold no page text, answers, comments, tokens or keys.
-- Deletes are soft, with a 30-day purge that removes files, text, answers and comments. D1 Time Travel keeps deleted rows for up to 30 more days on the paid plan.
+- Deletes are soft, with a 30-day purge that removes files, text, answers and comments. Deleting a thread's first comment deletes its replies. Purge order for a page: search rows, tags, comments, answers, revisions, decisions, version files, versions, page. D1 Time Travel keeps deleted rows for up to 30 more days on the paid plan.
 - Uploads are refused when they contain key-shaped strings.
 - Export: the owner can download everything as a ZIP (S10).
 - A page must not copy third-party material its author has no right to keep.
