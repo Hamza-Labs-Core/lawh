@@ -1,5 +1,5 @@
 """Check the rules schema.sql must enforce by itself. Run: python3 docs/spec/checks/integrity.py"""
-import pathlib, sqlite3, sys, time
+import pathlib, re, sqlite3, sys, time
 
 schema = (pathlib.Path(__file__).parent.parent / "schema.sql").read_text()
 NOW = int(time.time() * 1000)
@@ -204,7 +204,12 @@ for i in range(4): db.execute("INSERT INTO teams VALUES(?,?,1)", (f"c{i}", f"c{i
 check("at most 5 teams a person", all(put_in(f"c{i}", 'r', 1, 'o') for i in range(3)) and count('team_members', 'r') == 5 and not put_in('c3', 'r', 1, 'o'))
 for i in range(10): db.execute("INSERT INTO projects VALUES(?,?,'N','N',1,NULL)", (f"n{i}", f"n{i}"))
 check("at most 10 projects a team", all(batch(db, ("INSERT INTO team_projects VALUES('c3',?)", (f"n{i}",))) for i in range(10)) and not batch(db, "INSERT INTO team_projects VALUES('c3','p1')"))
-db.executescript("INSERT INTO agents VALUES('am','m','mbot','x',1,NULL); INSERT INTO agent_keys(id,agent_id,secret_hmac,scopes_json,created_at,expires_at) VALUES('km','am','h','[]',1,9); INSERT INTO agent_key_projects VALUES('km','p1'),('km','p2')")
+db.executescript("INSERT INTO agents VALUES('am','m','mbot','x',1,NULL); INSERT INTO agent_keys(id,agent_id,secret_hmac,scopes_json,created_at,expires_at) VALUES('km','am','h','[]',1,9); INSERT INTO agent_key_projects VALUES('km','p1')")
+check("a key can't get a project its person doesn't manage", not batch(db, "INSERT INTO agent_key_projects VALUES('km','p2')"))
+check("nor change project", not batch(db, "UPDATE agent_key_projects SET project_id='p2' WHERE key_id='km'"))
+check("nor have a list when it is for all projects", batch(db, "INSERT INTO agent_keys(id,agent_id,secret_hmac,scopes_json,all_projects,created_at,expires_at) VALUES('kall','a1','h','[]',1,1,9),('klist','a1','h','[]',0,1,9)") and not batch(db, "INSERT INTO agent_key_projects VALUES('kall','p1')") and batch(db, "INSERT INTO agent_key_projects VALUES('klist','p2')"))
+put_in('t2', 'm', 3, 'o'); check("nor one where they only decide", not batch(db, "INSERT INTO agent_key_projects VALUES('km','p2')"))
+set_level('t2', 'm', 4, 'o'); check("a project can be added once they manage it", batch(db, "INSERT INTO agent_key_projects VALUES('km','p2')")); set_level('t2', 'm', 1, 'o')
 def key_ok(p): return db.execute(KEY, ('m', 'km', p)).fetchone() is not None
 check("a manager's key works only where they manage", key_ok('p1') and not key_ok('p2'))
 check("and stops when they no longer manage", set_level('t1', 'm', 3, 'o') and not key_ok('p1') and set_level('t1', 'm', 4, 'o') and key_ok('p1'))
@@ -408,17 +413,26 @@ check("a comment needs an author", not batch(db, "INSERT INTO comments(id,page_i
 # Connecting an agent: the answer adds the key
 crowd()
 def ask(i, exp=SOON): return sql(("INSERT INTO agent_connects(id,code_hmac,secret_hmac,client,machine,created_at,expires_at) VALUES(?,?,?,'claude','laptop',1,?)", (i, 'c' + i, 'h' + i, exp)))
-def reply(i, member, sess, agent, everything=0, projects='["p1"]'): return ("UPDATE agent_connects SET answered_at=7,member_id=?,approver_session=?,agent_id=?,scopes_json='[]',all_projects=?,projects_json=?,key_expires_at=99 WHERE id=?", (member, sess, agent, everything, projects, i))
+def reply(i, member, sess, agent, everything=0, projects='["p1"]', scopes='[]', exp=99):
+    if agent is None: everything = projects = scopes = exp = None
+    return ("UPDATE agent_connects SET answered_at=7,member_id=?,approver_session=?,agent_id=?,all_projects=?,projects_json=?,scopes_json=?,key_expires_at=? WHERE id=?", (member, sess, agent, everything, projects, scopes, exp, i))
 def key(i): return rows('agent_keys', f"id='{i}'")
 def no(name, i, stmt): check(name, not sql(stmt) and not key(i) and rows('agent_connects', f"id='{i}' AND answered_at IS NULL"))
 NEW = "INSERT INTO agent_connects(id,code_hmac,secret_hmac,client,machine,created_at,expires_at,answered_at,member_id,approver_session,agent_id) VALUES('q','%s','s','c','m',1,%d,%s)"
 for i in 'uvwxyz': check("a request starts", ask(i))
-refused("a request can't start already answered", NEW % ('q', SOON, "1,'m','sm','am'"))
+refused("a request can't start already answered", NEW % ('q', SOON, "1,'m','sm',NULL"))
 refused("two requests can't have one code", NEW % ('cu', SOON, "NULL,NULL,NULL,NULL"))
 check("the same row with another code is fine", sql(NEW % ('q', SOON, "NULL,NULL,NULL,NULL"), "DELETE FROM agent_connects WHERE id='q'"))
 for v in ("NULL,'m','sm',NULL", "NULL,NULL,'sm',NULL", "NULL,NULL,NULL,'am'", "NULL,'m',NULL,NULL"): refused(f"an answer is whole or absent ({v})", NEW % ('q', SOON, v))
-check("a new agent is connected in one step", sql("INSERT INTO agents VALUES('new','m','laptop','claude',1,NULL)", reply('u', 'm', 'sm', 'new', projects='["p1","p2"]')))
-check("the key is the request's, whole, with its projects", db.execute("SELECT agent_id,secret_hmac,scopes_json,all_projects,created_at,expires_at,label,revoked_at FROM agent_keys WHERE id='u'").fetchone() == ('new', 'hu', '[]', 0, 7, 99, 'laptop', None) and rows('agent_key_projects', "key_id='u'") == [('u', 'p1'), ('u', 'p2')])
+sql("INSERT INTO projects VALUES('p3','three','Three','ثلاثة',1,NULL)", "INSERT INTO team_projects VALUES('t1','p3')")
+no("a project they don't manage is refused", 'w', reply('w', 'm', 'sm', 'am', projects='["p1","p2"]'))
+for k in (dict(projects=None), dict(scopes=None), dict(exp=None), dict(everything=None), dict(everything=2), dict(projects='{"a":"p1"}'), dict(projects='"p1"'), dict(projects='x')): no(f"a whole grant is needed {k}", 'w', reply('w', 'm', 'sm', 'am', **k))
+no("the owner's grant has a list or all projects, not both", 'w', reply('w', 'o', 'so', 'a1', 1, '["p1"]'))
+no("a key is for all projects or not", 'w', reply('w', 'o', 'so', 'a1', 2, '[]'))
+for c in ("scopes_json='[]'", "all_projects=0", "projects_json='[]'", "key_expires_at=9"):
+    s_, a_ = reply('w', 'm', 'sm', None); no(f"a refusal grants nothing ({c})", 'w', (re.sub(r"all_projects=\?,.*key_expires_at=\?", c, s_), (*a_[:3], a_[-1])))
+check("a new agent is connected in one step", sql("INSERT INTO agents VALUES('new','m','laptop','claude',1,NULL)", reply('u', 'm', 'sm', 'new', projects='["p1","p3"]')))
+check("the key is the request's, whole, with its projects", db.execute("SELECT agent_id,secret_hmac,scopes_json,all_projects,created_at,expires_at,label,revoked_at FROM agent_keys WHERE id='u'").fetchone() == ('new', 'hu', '[]', 0, 7, 99, 'laptop', None) and rows('agent_key_projects', "key_id='u'") == [('u', 'p1'), ('u', 'p3')])
 check("an agent can get a second key and keeps the first", sql(reply('v', 'm', 'sm', 'am')) and key('v') and rows('agent_keys', "id='km' AND revoked_at IS NULL"))
 check("an answer can't be changed", not sql(reply('u', 'm', 'sm', 'am')) and not sql("UPDATE agent_connects SET client='z' WHERE id='u'"))
 no("an answer can't name someone else's agent", 'w', reply('w', 'm', 'sm', 'ar'))
@@ -434,7 +448,8 @@ sql("UPDATE agents SET member_id='o',name='moved' WHERE id='am'"); no("an agent 
 sql("UPDATE agents SET member_id='m',name='bot' WHERE id='am'")
 check("and the same answer works when nothing is wrong", sql(reply('w', 'm', 'sm', 'am')) and key('w'))
 check("a refused request gives no key and can't be answered again", sql(reply('x', 'm', 'sm', None)) and not key('x') and not sql(reply('x', 'm', 'sm', 'am')))
-sql("UPDATE sessions SET expires_at=1 WHERE token_sha256='sr'"); no("an answer needs a live session", 'y', reply('y', 'r', 'sr', 'ar'))
+set_level('t2', 'r', 3, 'o'); no("someone who manages nothing can't connect an agent", 'y', reply('y', 'r', 'sr', 'ar', projects='[]')); refused("nor make a key", (K, ('kv', 'ar', 0))); set_level('t2', 'r', 4, 'o')
+sql("UPDATE sessions SET expires_at=1 WHERE token_sha256='sr'"); no("an answer needs a live session", 'y', reply('y', 'r', 'sr', 'ar', projects='["p2"]'))
 check("the owner's agent can get all projects", sql(reply('y', 'o', 'so', 'a1', 1, '[]')) and key('y')[0][4] == 1 and not rows('agent_key_projects', "key_id='y'"))
 ask('late', 1); no("an expired request can't be answered", 'late', reply('late', 'm', 'sm', 'am'))
 CLEAN = f"DELETE FROM agent_connects WHERE expires_at<{NOW}"
@@ -443,5 +458,6 @@ check("nor a new agent", sql("INSERT INTO agents SELECT 'ghost','m','ghost','x',
 check("keys stay after their requests are cleaned up", sql("DELETE FROM agent_connects") and key('u') and key('w'))
 ask('gone'); check("a person removed meanwhile can't answer", sql("UPDATE members SET removed_at=9 WHERE id='m'") and not sql(reply('gone', 'm', 'sm', 'am')) and not key('gone'))
 check("and their connected keys are revoked", rows('agent_keys', "id='u' AND revoked_at=9") and rows('agent_keys', "id='w' AND revoked_at=9"))
+crowd(); ask('tr'); sql("UPDATE members SET role='member' WHERE id='o'", "UPDATE members SET role='owner' WHERE id='m'"); no("a former owner can't connect an agent", 'tr', reply('tr', 'o', 'so', 'a1'))
 crowd(); ask('rs'); sql("DELETE FROM sessions WHERE token_sha256='sm'"); no("a session ended meanwhile can't answer", 'rs', reply('rs', 'm', 'sm', 'am'))
 sys.exit(1 if fails else 0)
