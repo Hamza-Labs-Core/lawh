@@ -82,7 +82,7 @@ CREATE TABLE agents (
 CREATE TABLE agent_keys (
   id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id),
   secret_hmac TEXT NOT NULL, scopes_json TEXT NOT NULL,
-  all_projects INTEGER NOT NULL DEFAULT 0,   -- counts only for the owner's agents
+  all_projects INTEGER NOT NULL DEFAULT 0 CHECK (all_projects IN (0,1)),   -- counts only for the owner's agents
   created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
   last_used_at INTEGER, revoked_at INTEGER,
   label TEXT                                 -- the machine it is for
@@ -90,7 +90,8 @@ CREATE TABLE agent_keys (
 CREATE INDEX agent_keys_agent ON agent_keys(agent_id, created_at);
 CREATE TRIGGER agent_keys_add BEFORE INSERT ON agent_keys
 WHEN NOT EXISTS (SELECT 1 FROM agents a JOIN members m ON m.id = a.member_id AND m.joined_at IS NOT NULL AND m.removed_at IS NULL
-                 WHERE a.id = NEW.agent_id AND a.disabled_at IS NULL AND (NEW.all_projects = 0 OR m.role = 'owner'))
+                 WHERE a.id = NEW.agent_id AND a.disabled_at IS NULL AND (m.role = 'owner'
+                   OR NEW.all_projects = 0 AND EXISTS (SELECT 1 FROM team_members t WHERE t.member_id = m.id AND t.level = 4)))
 BEGIN SELECT RAISE(ABORT, 'key not allowed'); END;
 CREATE TRIGGER agent_keys_fixed BEFORE UPDATE ON agent_keys
 WHEN NEW.id <> OLD.id OR NEW.created_at <> OLD.created_at OR NEW.expires_at <> OLD.expires_at OR NEW.agent_id <> OLD.agent_id OR NEW.secret_hmac <> OLD.secret_hmac OR NEW.scopes_json <> OLD.scopes_json
@@ -109,7 +110,10 @@ CREATE TABLE agent_connects (
   scopes_json TEXT, all_projects INTEGER, projects_json TEXT, key_expires_at INTEGER,
   CHECK ((answered_at IS NULL) = (member_id IS NULL)),
   CHECK ((member_id IS NULL) = (approver_session IS NULL)),
-  CHECK (agent_id IS NULL OR member_id IS NOT NULL)
+  CHECK (agent_id IS NULL OR member_id IS NOT NULL),
+  CHECK ((agent_id IS NULL) = (scopes_json IS NULL)), CHECK ((agent_id IS NULL) = (all_projects IS NULL)),
+  CHECK ((agent_id IS NULL) = (projects_json IS NULL)), CHECK ((agent_id IS NULL) = (key_expires_at IS NULL)),
+  CHECK (projects_json IS NULL OR json_type(projects_json) = 'array')
 );
 CREATE INDEX agent_connects_expiry ON agent_connects(expires_at);
 CREATE TRIGGER agent_connects_new BEFORE INSERT ON agent_connects WHEN NEW.answered_at IS NOT NULL
@@ -135,6 +139,14 @@ CREATE TABLE agent_key_projects (
   PRIMARY KEY (key_id, project_id)
 ) WITHOUT ROWID;
 CREATE INDEX agent_key_projects_project ON agent_key_projects(project_id, key_id);
+-- A key is for all projects or for a list, and the list holds only projects its person manages at that moment.
+CREATE TRIGGER agent_key_projects_add BEFORE INSERT ON agent_key_projects
+WHEN NOT EXISTS (SELECT 1 FROM agent_keys k JOIN agents a ON a.id = k.agent_id JOIN members m ON m.id = a.member_id
+    WHERE k.id = NEW.key_id AND k.all_projects = 0 AND (m.role = 'owner'
+      OR EXISTS (SELECT 1 FROM project_access x WHERE x.member_id = m.id AND x.project_id = NEW.project_id AND x.level = 4)))
+BEGIN SELECT RAISE(ABORT, 'key not allowed'); END;
+CREATE TRIGGER agent_key_projects_fixed BEFORE UPDATE ON agent_key_projects
+BEGIN SELECT RAISE(ABORT, 'key not allowed'); END;
 
 CREATE TABLE pages (
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
