@@ -44,7 +44,7 @@ flowchart LR
 3. The person signs in with their passkey, types the code, and picks the agent's name and projects.
 4. The client receives the agent's id and saves it with the key. From then on the skill uses that entry.
 
-Each agent gets its own id and key, and belongs to the person who connected it. Connecting the same name on another machine adds a key to that agent. One client holds all of a person's agents on a machine: `--as <name>` or `LAWH_AGENT` picks one, otherwise the only one saved for that program; with several, it lists them and stops. Where nobody can sign in (CI, containers), `LAWH_URL` and `LAWH_KEY` do the same. Details are in [security.md](security.md) section 5.
+Each agent gets its own id and key, and belongs to the person who connected it. Connecting the same name on another machine adds a key to that agent. One client holds all of a person's agents on a machine: `--as <name>` or `LAWH_AGENT` picks one, otherwise the only one saved for that program, which the skill passes as `--client claude` (or `codex` and so on); with several, it lists them and stops. Where nobody can sign in (CI, containers), `LAWH_URL` and `LAWH_KEY` do the same. Details are in [security.md](security.md) section 5.
 
 Both the skill and the client (one file, Node, no dependencies) are served by the copy itself, so they match its version, and are in the repository as `skills/lawh`. An agent without Node can make the same two calls with any HTTPS tool.
 
@@ -91,7 +91,7 @@ An answer sends the revision and the last answer number the person saw; if eithe
 
 ## 5. API
 
-[openapi.yaml](openapi.yaml) covers the agent API: publish, update, list, search, read a page or file, decisions by page, id or status, comments, replies and events. Every write takes an `Idempotency-Key`.
+[openapi.yaml](openapi.yaml) covers the agent API: publish, update, list, search, read a page or file, decisions by page, id or status, comments, replies and events. Every write takes an `Idempotency-Key`, except sending a blob (repeating it changes nothing) and starting to connect.
 
 The UI uses a separate `/app-api`, which accepts only a person's session: answer, comment, resolve, page status, delete and restore, projects, people, teams, keys, webhooks, sessions and switches, each at the level in [teams.md](teams.md). An agent key on `/app-api` gets 401, and a session on `/v1` gets 401.
 
@@ -209,13 +209,13 @@ Asked one at a time. Answers are recorded here. These are choices for the produc
 | S8 | Comments: API, section anchors, threads | S5 |
 | S9 | Search: FTS index, Arabic normalization, autocomplete (takes a set of projects) | S5 |
 | S10 | Settings: agents and keys, projects, delete, restore, purge, export, version retention | S5 |
-| S11 | Connect an agent: API, code and name pages. The skill and the client, with a publishing guide | S5 |
+| S11 | Connect an agent: API, code and name pages. The skill and the client, with a publishing guide | S7, S8 |
 | S12 | MCP tools, behind `mcp` | S7, S8, D4 |
 | S13 | Events feed, webhooks and queue, behind `webhooks` | S7 |
 | S14 | PWA: manifest, icons, service worker | S5 |
 | S15 | `lawh init`, `upgrade`, `rollback`, `destroy`, fork-safe CI, the check that no instance details are committed | S4, S10 |
 | S16 | First real use: five design documents with charts and decisions, published to the author's private copy (not in this repository) | S7, S11, S15 |
-| S17 | Teams: levels, projects, managers' agents and keys, every route × level test with seeded members, behind `teams` | S7, S8, S9, S10, S13 |
+| S17 | Teams: levels, projects, managers' agents and keys, every route × level test with seeded members, behind `teams` | S7, S8, S9, S10, S11, S13 |
 | S18 | People: invite, join, reset, remove, transfer; the `teams` switch can be turned on | S17 |
 
 S1 needs no decision. D2 to D5 are the decisions in section 13; D1 and D2 are answered. The tables for people and teams are in S1, and every route and list is built on `levelOn` and a set of projects (all of them for the owner), so S17 and S18 change no existing table or query. S16 doesn't wait for them.

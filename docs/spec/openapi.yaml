@@ -17,7 +17,8 @@ paths:
       x-scope: none
       summary: Ask to connect an agent
       description: >
-        The client makes a 32-byte secret and sends its SHA-256. It shows `code` and opens `url`, where a person
+        The client makes the secret (32 random bytes as unpadded base64url, 43 characters) and sends the lowercase
+        hex SHA-256 of those 43 characters. It shows `code` and opens `url`, where a person
         signs in, types the code and picks the agent's name and projects. The key will be `lawh_<id>_<secret>`.
       security: []
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [secretSha256, client, machine], properties: { secretSha256: { type: string, pattern: '^[0-9a-f]{64}$' }, client: { type: string, minLength: 1, maxLength: 40, description: 'The program, such as claude or codex' }, machine: { type: string, minLength: 1, maxLength: 60 } } } } } }
@@ -28,10 +29,10 @@ paths:
       operationId: getConnect
       x-scope: none
       summary: The result, asked with the new key
-      description: Safe to ask again. Never returns the key. 404 when the request is unknown or expired, or the key doesn't match.
+      description: Looks for the key first, with the normal checks, so it answers 200 for a live key also after the request expired or was deleted. Otherwise 202 while the request is open, 403 when a person refused it, and 404 when it is unknown or expired, or the secret doesn't match. Never returns the key.
       responses: { '200': { description: Connected, content: { application/json: { schema: { $ref: '#/components/schemas/Me' } } } }, '202': { description: Still waiting }, '403': { $ref: '#/components/responses/Error' }, default: { $ref: '#/components/responses/Error' } }
   /me:
-    get: { operationId: getMe, x-scope: any, summary: 'This key''s agent, scopes, projects and expiry', responses: { '200': { description: Agent, content: { application/json: { schema: { $ref: '#/components/schemas/Me' } } } }, default: { $ref: '#/components/responses/Error' } } }
+    get: { operationId: getMe, x-scope: any, summary: 'This key''s agent, scopes, expiry, and the projects it can use now (as in /projects)', responses: { '200': { description: Agent, content: { application/json: { schema: { $ref: '#/components/schemas/Me' } } } }, default: { $ref: '#/components/responses/Error' } } }
   /projects:
     get: { operationId: listProjects, summary: Projects this key can use, x-scope: 'pages:read', responses: { '200': { description: Projects, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Project' } } } } } } }, default: { $ref: '#/components/responses/Error' } } }
   /pages:
