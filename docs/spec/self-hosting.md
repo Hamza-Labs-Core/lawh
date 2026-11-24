@@ -37,11 +37,13 @@ pnpm lawh init
 
 ## Upgrades
 
-`git pull && pnpm install && pnpm lawh upgrade`. It lists the pending migrations, takes a D1 export, applies them, deploys and checks both hosts. Migrations only add or backfill, so the previous release still works on the new schema; `lawh rollback` redeploys it. Breaking API changes get a new version (`/v2`), and releases follow semantic versioning with a changelog.
+`git pull && pnpm install && pnpm lawh upgrade`. It lists the pending migrations, records a D1 Time Travel bookmark and both Workers' current version ids, applies the migrations, deploys and checks both hosts. If a migration fails, it prints the one command that restores the bookmark. It doesn't use `wrangler d1 export`, which doesn't give a dump D1 can import again when the database has a virtual table such as the search index. Migrations only add or backfill, so the previous release still works on the new schema; `lawh rollback` puts each Worker back to its recorded version id, even if the upgrade stopped between the two. Breaking API changes get a new version (`/v2`), and releases follow semantic versioning with a changelog.
 
 ## Removal
 
-`lawh destroy` offers an export, asks for the instance name, then deletes only the resources this copy created.
+`lawh destroy` offers Lawh's own export (a ZIP of JSON rows and page files, without the search index, which is rebuilt on import), asks for the instance name, then deletes only the resources this copy created.
+
+Exports go to a folder outside the repository (`~/lawh-exports` by default). The command refuses a path inside the working tree.
 
 ## Forks
 
@@ -49,4 +51,4 @@ CI runs without any secret, so a fork's checks pass as they are. Deploying is al
 
 ## Tests
 
-`init`, `upgrade`, `rollback` and `destroy` run against a mock Cloudflare API: a clean run, a run stopped at each step and started again, and a run beside resources that aren't Lawh's (never touched). Every release migrates a copy of the previous release's data.
+`init`, `upgrade`, `rollback` and `destroy` run against a mock Cloudflare API that rejects what the real one rejects (including an export with a virtual table): a clean run, a run stopped at each step and started again, and a run beside resources that aren't Lawh's (never touched). Before a release, the author runs the whole cycle once against a throwaway Cloudflare account. Every release migrates a copy of the previous release's data.

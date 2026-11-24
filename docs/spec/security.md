@@ -56,7 +56,7 @@ An opaque origin sends no session cookie, so each file URL carries a token: `htt
 - Token: `versionId.expiry.HMAC-SHA256(contentKey, versionId.expiry)`. It opens one version of one page. `contentKey` is in the Secrets Store.
 - Life: 4 hours, rounded so that reloads reuse the browser cache. The app asks for a new one when it loads a page.
 - Every request also checks D1 that the `instance` switch is on, the version exists and its page isn't deleted, so deletion takes effect at once on the server. A file already in a browser's cache can live up to 1 hour.
-- A page can read its own URL, but has nowhere to send it (CSP above).
+- A page can read its own URL. Only the leftover channels in section 2 could carry it out.
 - Tokens are removed from logs.
 
 ## 3. The bridge
@@ -72,7 +72,7 @@ An opaque origin sends no session cookie, so each file URL carries a token: `htt
 
 The page shares a realm with the bridge and can forge any of these, so **no message can answer a decision, write a comment or call the API**. The app accepts messages only where `event.source` is the frame's window. Decision forms and comments are drawn by the app outside the frame, from the API's data, as plain text.
 
-**Viewer.** The app never turns page data into an image URL of its own: such a URL would run outside the sandbox if someone opened it in a new tab. The full-size viewer is a second frame, `https://CONTENT/<token>/_lawh/viewer`, with the same sandbox attribute, the same headers, and `script-src CONTENT` without `'unsafe-inline'`. The app posts it the item. It draws an SVG or image to a canvas at the current zoom, so there is no image element to open elsewhere, and loads an SVG from a `blob:` URL of its own opaque origin, which has no data-URL size limit. It sends back only key names (Escape, arrows, `+`, `−`), which the app acts on as a key press would: close, move or zoom. The app draws the bar around it.
+**Viewer.** The app never turns page data into an image URL of its own: such a URL would run outside the sandbox if someone opened it in a new tab. The full-size viewer is a second frame, `https://CONTENT/<token>/_lawh/viewer`, with the same sandbox attribute, the same headers, and `script-src CONTENT` without `'unsafe-inline'`. The app posts it the item, and it accepts items only where `event.source` is its parent and `event.origin` is the app host, because the page frame can post to it too. S6 tests this on all three engines, including an SVG from a `blob:` URL of an opaque origin in WebKit. It draws an SVG or image to a canvas at the current zoom, so there is no image element to open elsewhere, and loads an SVG from a `blob:` URL of its own opaque origin, which has no data-URL size limit. It sends back only key names (Escape, arrows, `+`, `−`), which the app acts on as a key press would: close, move or zoom. The app draws the bar around it.
 
 ## 4. App host
 
@@ -81,9 +81,9 @@ The page shares a realm with the bridge and can forge any of these, so **no mess
 - Session cookie `__Host-lawh`: `Secure; HttpOnly; SameSite=Lax; Path=/`. The `__Host-` prefix stops a sibling subdomain from planting one. D1 stores only its SHA-256. It lasts 30 days from last use, at most 90. A list of sessions lets the owner end any of them.
 - Writes need `Origin` equal to the app host and `Sec-Fetch-Site: same-origin`. `Origin: null` is refused.
 - Agent text (titles, questions, comments) is always escaped. Markdown isn't rendered in v1.
-- **First setup (if decision 1 is passkeys).** There is no sign-up and there are no accounts: an instance has one owner, and there is no public page that makes one. `lawh owner setup`, run by whoever has the instance's Cloudflare access, prints a link that works once, for 15 minutes. Only its SHA-256 is stored. The token is in the URL fragment and sent in a POST body, so it isn't in logs. Opening it registers one passkey: one batch marks the link used (a trigger aborts the batch if it was already used) and adds the passkey, which references the link. A new link deletes unused earlier ones. Adding a passkey later needs a signed-in session.
-- **Recovery.** If every passkey is lost, the same command makes a new link. Using it removes every passkey, session, pending device approval and challenge in the same batch, so a lost device can't sign in again. It is written to the audit log.
-- Passkey challenges and device approvals are D1 rows, used once, gone after 5 minutes. A device approval shows the code on both devices and needs the owner to type it. `code_hmac` uses the pepper. An approval can be used once, enforced by a trigger, and guesses are rate limited.
+- **First setup (if decision 1 is passkeys).** There is no sign-up and there are no accounts: an instance has one owner, and there is no public page that makes one. `lawh owner setup`, run by whoever has the instance's Cloudflare access, prints a link that works once, for 15 minutes. Only its SHA-256 is stored. The token is in the URL fragment and sent in a POST body, so it isn't in logs. Opening it registers one passkey: one INSERT adds the passkey with its link, and database triggers check that the link is unused and in date, mark it used, or refuse the INSERT. A new link deletes unused earlier ones. Adding a passkey later needs a signed-in session.
+- **Recovery.** If every passkey is lost, the same command makes a new link. Using it removes every other passkey, every session, pending device approval and challenge in the same statement, so a lost device can't sign in again. It is written to the audit log.
+- Passkey challenges and device approvals are D1 rows, used once, gone after 5 minutes. A device approval shows the code on both devices and needs the owner to type it. `code_hmac` uses the pepper. A session made from an approval needs one that was given, unused and in date, enforced by triggers, and guesses are rate limited.
 - A Worker rate limit applies to sign-in, the API per key, and uploads.
 
 ## 5. Agent keys

@@ -9,6 +9,7 @@ db = sqlite3.connect(":memory:")
 db.executescript(schema)
 
 Q = {
+ "sessions of passkey": "SELECT 1 FROM owner_sessions WHERE passkey_id=?",
  "inbox": "SELECT d.id FROM decisions d INDEXED BY decisions_inbox CROSS JOIN pages p ON p.id=d.page_id AND p.deleted_at IS NULL WHERE d.status IN ('open','stale') AND (d.updated_at,d.id)>(?,?) ORDER BY d.updated_at,d.id LIMIT 50",
  "expired setup links": "DELETE FROM owner_setup_links WHERE expires_at<?",
  "expired approvals": "DELETE FROM device_approvals WHERE expires_at<?",
@@ -54,7 +55,7 @@ for name, sql in Q.items():
     # An FTS MATCH is reported as a virtual-table scan; an ordered partial index whose WHERE is the
     # whole filter is a bounded index walk under LIMIT, not a table scan.
     ok = all(("SCAN" not in p) or "VIRTUAL TABLE INDEX" in p
-             or (name in ("library", "outbox") and "USING" in p and "INDEX" in p) for p in plan)
+             or (name == "outbox" and "USING" in p and "INDEX" in p) for p in plan)
     ok = ok and not any("TEMP B-TREE" in p for p in plan)
     bad += not ok
     print(("ok  " if ok else "FAIL"), name, "|", " ; ".join(plan))
