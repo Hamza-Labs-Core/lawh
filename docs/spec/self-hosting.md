@@ -43,7 +43,7 @@ To use it, the owner tells an agent to connect ([README](README.md) section 3). 
 
 ## Removal
 
-`lawh destroy` offers Lawh's own export (a ZIP of JSON rows and page files, without the search index, which is rebuilt on import), asks for the instance name, then deletes only the resources this copy created.
+`lawh destroy` offers Lawh's own export (a ZIP of JSON rows and page files, without the search index, which is rebuilt on import; import loads the rows before it adds the triggers, because old rows need not pass today's rules), asks for the instance name, then deletes only the resources this copy created.
 
 Exports go to a folder outside the repository (`~/lawh-exports` by default). The command refuses a path inside the working tree.
 

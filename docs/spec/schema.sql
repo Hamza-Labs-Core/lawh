@@ -142,7 +142,7 @@ CREATE INDEX agent_key_projects_project ON agent_key_projects(project_id, key_id
 -- A key is for all projects or for a list, and the list holds only projects its person manages at that moment.
 CREATE TRIGGER agent_key_projects_add BEFORE INSERT ON agent_key_projects
 WHEN NOT EXISTS (SELECT 1 FROM agent_keys k JOIN agents a ON a.id = k.agent_id JOIN members m ON m.id = a.member_id
-    WHERE k.id = NEW.key_id AND k.all_projects = 0 AND (m.role = 'owner'
+    WHERE k.id = NEW.key_id AND k.all_projects = 0 AND k.revoked_at IS NULL AND a.disabled_at IS NULL AND (m.role = 'owner'
       OR EXISTS (SELECT 1 FROM project_access x WHERE x.member_id = m.id AND x.project_id = NEW.project_id AND x.level = 4)))
 BEGIN SELECT RAISE(ABORT, 'key not allowed'); END;
 CREATE TRIGGER agent_key_projects_fixed BEFORE UPDATE ON agent_key_projects
