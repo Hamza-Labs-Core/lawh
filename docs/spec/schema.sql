@@ -7,16 +7,69 @@ CREATE TABLE projects (
   created_at INTEGER NOT NULL, archived_at INTEGER
 );
 
+-- People. One owner; everyone else is a member. Rows are never deleted: 30 days after removal the name is
+-- cleared, and history shows "Former member".
+CREATE TABLE members (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner','member')),
+  created_by TEXT REFERENCES members(id), created_at INTEGER NOT NULL,
+  joined_at INTEGER, removed_at INTEGER,
+  CHECK (role <> 'owner' OR removed_at IS NULL)
+);
+CREATE UNIQUE INDEX members_owner ON members(role) WHERE role = 'owner';
+CREATE INDEX members_list ON members(name, id) WHERE removed_at IS NULL;
+CREATE INDEX members_purge ON members(removed_at) WHERE removed_at IS NOT NULL;
+
+CREATE TABLE teams (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL);
+-- level: 1 viewer, 2 commenter, 3 decider, 4 manager. The owner needs no rows and counts as 5 everywhere.
+-- set_by is who wrote the row's current level.
+CREATE TABLE team_members (
+  team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  member_id TEXT NOT NULL REFERENCES members(id),
+  level INTEGER NOT NULL CHECK (level BETWEEN 1 AND 4),
+  set_by TEXT NOT NULL REFERENCES members(id), set_at INTEGER NOT NULL,
+  PRIMARY KEY (team_id, member_id)
+) WITHOUT ROWID;
+CREATE INDEX team_members_member ON team_members(member_id, team_id, level);
+CREATE TABLE team_projects (
+  team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  PRIMARY KEY (team_id, project_id)
+) WITHOUT ROWID;
+CREATE INDEX team_projects_project ON team_projects(project_id, team_id);
+-- One row per team that gives a member a project; the member's level is the highest. Always read with
+-- member_id = ? (and project_id = ?).
+CREATE VIEW project_access AS
+  SELECT tm.member_id, tp.project_id, tm.level FROM team_members tm
+  JOIN members m ON m.id = tm.member_id AND m.role = 'member' AND m.joined_at IS NOT NULL AND m.removed_at IS NULL
+  JOIN team_projects tp ON tp.team_id = tm.team_id;
+-- The owner sets any level. A manager of the team sets up to decider, and can't change a manager.
+CREATE TRIGGER team_members_add BEFORE INSERT ON team_members
+WHEN NOT EXISTS (SELECT 1 FROM members m WHERE m.id = NEW.member_id AND m.role = 'member' AND m.removed_at IS NULL)
+  OR NOT (EXISTS (SELECT 1 FROM members o WHERE o.id = NEW.set_by AND o.role = 'owner')
+       OR (NEW.level < 4 AND EXISTS (SELECT 1 FROM team_members b
+           WHERE b.team_id = NEW.team_id AND b.member_id = NEW.set_by AND b.level = 4)))
+BEGIN SELECT RAISE(ABORT, 'level not allowed'); END;
+CREATE TRIGGER team_members_change BEFORE UPDATE ON team_members
+WHEN NEW.team_id <> OLD.team_id OR NEW.member_id <> OLD.member_id
+  OR NOT (EXISTS (SELECT 1 FROM members o WHERE o.id = NEW.set_by AND o.role = 'owner')
+       OR (NEW.level < 4 AND OLD.level < 4 AND EXISTS (SELECT 1 FROM team_members b
+           WHERE b.team_id = NEW.team_id AND b.member_id = NEW.set_by AND b.level = 4)))
+BEGIN SELECT RAISE(ABORT, 'level not allowed'); END;
+
+-- An agent belongs to a person. Its keys work only where that person is the owner or a manager.
 CREATE TABLE agents (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, provider TEXT,
+  id TEXT PRIMARY KEY, member_id TEXT NOT NULL REFERENCES members(id),
+  name TEXT NOT NULL UNIQUE, provider TEXT,
   created_at INTEGER NOT NULL, disabled_at INTEGER
 );
+CREATE INDEX agents_member ON agents(member_id, name);
 
 -- The secret itself is never stored: only HMAC-SHA256(pepper, keyId + ':' + secret).
 CREATE TABLE agent_keys (
   id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id),
   secret_hmac TEXT NOT NULL, scopes_json TEXT NOT NULL,
-  all_projects INTEGER NOT NULL DEFAULT 0,
+  all_projects INTEGER NOT NULL DEFAULT 0,   -- counts only for the owner's agents
   created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
   last_used_at INTEGER, revoked_at INTEGER
 );
@@ -149,6 +202,7 @@ CREATE TABLE decision_answers (
   decision_id TEXT NOT NULL REFERENCES decisions(id), seq INTEGER NOT NULL,
   revision INTEGER NOT NULL, option_id TEXT,     -- NULL: answered with notes only
   notes TEXT NOT NULL DEFAULT '', answered_at INTEGER NOT NULL,
+  member_id TEXT NOT NULL REFERENCES members(id),
   PRIMARY KEY (decision_id, seq),
   FOREIGN KEY (decision_id, revision) REFERENCES decision_revisions(decision_id, revision),
   CHECK (option_id IS NOT NULL OR length(trim(notes)) > 0)
@@ -158,6 +212,13 @@ WHEN NOT EXISTS (SELECT 1 FROM decisions d JOIN pages p ON p.id = d.page_id AND 
                  WHERE d.id = NEW.decision_id AND d.revision = NEW.revision
                  AND d.answer_seq = NEW.seq - 1 AND d.status <> 'withdrawn')
 BEGIN SELECT RAISE(ABORT, 'answer conflict'); END;
+-- Whoever answers must be the owner or at least a decider on the page's project at that moment.
+CREATE TRIGGER decision_answers_allowed BEFORE INSERT ON decision_answers
+WHEN NOT EXISTS (SELECT 1 FROM members o WHERE o.id = NEW.member_id AND o.role = 'owner')
+ AND NOT EXISTS (SELECT 1 FROM decisions d CROSS JOIN project_access x
+                 ON x.member_id = NEW.member_id AND x.project_id = d.project_id AND x.level >= 3
+                 WHERE d.id = NEW.decision_id)
+BEGIN SELECT RAISE(ABORT, 'answer not allowed'); END;
 CREATE TRIGGER decision_answers_point AFTER INSERT ON decision_answers
 BEGIN UPDATE decisions SET answer_seq = NEW.seq, status = 'answered', updated_at = NEW.answered_at
       WHERE id = NEW.decision_id; END;
@@ -173,11 +234,18 @@ CREATE TABLE comments (
   project_id TEXT NOT NULL REFERENCES projects(id),
   thread_id TEXT NOT NULL REFERENCES comments(id) ON DELETE CASCADE,   -- the first comment's id
   version_n INTEGER NOT NULL, section_id TEXT, section_title TEXT, quote TEXT,
-  author_type TEXT NOT NULL CHECK (author_type IN ('owner','agent')),
+  -- Exactly one author. author_level is the person's level when they wrote it (5 for the owner).
+  member_id TEXT REFERENCES members(id), author_level INTEGER CHECK (author_level BETWEEN 2 AND 5),
   agent_id TEXT REFERENCES agents(id), body TEXT NOT NULL,
   created_at INTEGER NOT NULL, resolved_at INTEGER, deleted_at INTEGER,
-  CHECK ((author_type = 'agent') = (agent_id IS NOT NULL))
+  CHECK ((member_id IS NULL) <> (agent_id IS NULL)),
+  CHECK ((member_id IS NULL) = (author_level IS NULL))
 );
+CREATE TRIGGER comments_allowed BEFORE INSERT ON comments
+WHEN NEW.member_id IS NOT NULL AND NEW.author_level IS NOT (
+  CASE WHEN EXISTS (SELECT 1 FROM members o WHERE o.id = NEW.member_id AND o.role = 'owner') THEN 5
+  ELSE (SELECT MAX(x.level) FROM project_access x WHERE x.member_id = NEW.member_id AND x.project_id = NEW.project_id) END)
+BEGIN SELECT RAISE(ABORT, 'comment not allowed'); END;
 CREATE INDEX comments_page ON comments(page_id, created_at, id);
 CREATE INDEX comments_thread ON comments(thread_id, created_at, id);
 CREATE INDEX comments_open ON comments(project_id, created_at, id)
@@ -205,67 +273,126 @@ CREATE TABLE webhook_deliveries (
 ) WITHOUT ROWID;
 CREATE INDEX webhook_deliveries_status ON webhook_deliveries(status, updated_at);
 
--- Owner sign-in. The tables below fit the built-in passkey option; the other option needs only sessions.
-CREATE TABLE owner_passkeys (
-  credential_id TEXT PRIMARY KEY, public_key BLOB NOT NULL, sign_count INTEGER NOT NULL,
+-- Sign-in, by passkey. Everything belongs to one member.
+CREATE TABLE passkeys (
+  credential_id TEXT PRIMARY KEY, member_id TEXT NOT NULL REFERENCES members(id),
+  public_key BLOB NOT NULL, sign_count INTEGER NOT NULL,
   label TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER,
-  setup_link TEXT REFERENCES owner_setup_links(token_sha256) ON DELETE SET NULL
+  -- Where it came from: a link, or a session of the same member. Exactly one when added.
+  link_id TEXT REFERENCES access_links(token_sha256) ON DELETE SET NULL,
+  session_id TEXT REFERENCES sessions(token_sha256) ON DELETE SET NULL
 );
-CREATE INDEX owner_passkeys_link ON owner_passkeys(setup_link);
-CREATE TABLE owner_sessions (
-  token_sha256 TEXT PRIMARY KEY, label TEXT NOT NULL, created_at INTEGER NOT NULL,
+CREATE INDEX passkeys_member ON passkeys(member_id);
+CREATE INDEX passkeys_link ON passkeys(link_id);
+CREATE INDEX passkeys_session ON passkeys(session_id);
+CREATE TABLE sessions (
+  token_sha256 TEXT PRIMARY KEY, member_id TEXT NOT NULL REFERENCES members(id),
+  label TEXT NOT NULL, created_at INTEGER NOT NULL,
   last_seen_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
   -- Exactly one source: a passkey, or an approval from a signed-in device.
-  passkey_id TEXT REFERENCES owner_passkeys(credential_id) ON DELETE CASCADE,
+  passkey_id TEXT REFERENCES passkeys(credential_id) ON DELETE CASCADE,
   approval_id TEXT UNIQUE,
   CHECK ((passkey_id IS NULL) <> (approval_id IS NULL))
 );
-CREATE INDEX owner_sessions_expiry ON owner_sessions(expires_at);
-CREATE INDEX owner_sessions_passkey ON owner_sessions(passkey_id);
--- Single use: read and removed by one DELETE … RETURNING.
+CREATE INDEX sessions_expiry ON sessions(expires_at);
+CREATE INDEX sessions_member ON sessions(member_id);
+CREATE INDEX sessions_passkey ON sessions(passkey_id);
+-- Single use: read and removed by one DELETE … RETURNING. member_id is NULL for a sign-in.
 CREATE TABLE auth_challenges (
   id TEXT PRIMARY KEY, purpose TEXT NOT NULL CHECK (purpose IN ('register','sign_in')),
-  challenge TEXT NOT NULL, expires_at INTEGER NOT NULL
+  member_id TEXT REFERENCES members(id),
+  challenge TEXT NOT NULL, expires_at INTEGER NOT NULL,
+  CHECK ((purpose = 'register') = (member_id IS NOT NULL))
 );
 CREATE INDEX auth_challenges_expiry ON auth_challenges(expires_at);
--- Single-use owner setup or recovery links.
-CREATE TABLE owner_setup_links (
-  token_sha256 TEXT PRIMARY KEY,
-  created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, used_at INTEGER
+CREATE INDEX auth_challenges_member ON auth_challenges(member_id);
+-- Single-use links that let one member register a passkey. 'owner': first setup or recovery, made only by
+-- the command line. 'invite': a member who hasn't joined. 'reset': a member who lost their devices.
+CREATE TABLE access_links (
+  token_sha256 TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('owner','invite','reset')),
+  member_id TEXT NOT NULL REFERENCES members(id), created_by TEXT REFERENCES members(id),
+  created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, used_at INTEGER,
+  CHECK ((kind = 'owner') = (created_by IS NULL))
 );
-CREATE INDEX owner_setup_links_expiry ON owner_setup_links(expires_at);
--- Adding a passkey is what uses a link. The server writes only the INSERT: these triggers check the link,
--- mark it used and remove everything the old owner devices held, or the INSERT fails and nothing changes.
-CREATE TRIGGER owner_passkeys_link_valid BEFORE INSERT ON owner_passkeys
-WHEN NEW.setup_link IS NOT NULL AND NOT EXISTS (SELECT 1 FROM owner_setup_links l
-  WHERE l.token_sha256 = NEW.setup_link AND l.used_at IS NULL AND l.expires_at > unixepoch() * 1000)
-BEGIN SELECT RAISE(ABORT, 'setup link not usable'); END;
-CREATE TRIGGER owner_passkeys_link_use AFTER INSERT ON owner_passkeys WHEN NEW.setup_link IS NOT NULL
+CREATE INDEX access_links_expiry ON access_links(expires_at);
+CREATE INDEX access_links_creator ON access_links(created_by);
+-- One live link per member: making a new one first deletes the unused one.
+CREATE UNIQUE INDEX access_links_live ON access_links(member_id) WHERE used_at IS NULL;
+-- Only the owner makes reset links: one signs its user in as that member, in every team.
+CREATE TRIGGER access_links_allowed BEFORE INSERT ON access_links
+WHEN NOT EXISTS (SELECT 1 FROM members m WHERE m.id = NEW.member_id AND m.removed_at IS NULL AND CASE NEW.kind
+    WHEN 'owner' THEN m.role = 'owner'
+    WHEN 'invite' THEN m.role = 'member' AND m.joined_at IS NULL AND EXISTS (SELECT 1 FROM members c
+      WHERE c.id = NEW.created_by AND (c.role = 'owner' OR c.id = m.created_by))
+    ELSE m.role = 'member' AND m.joined_at IS NOT NULL AND EXISTS (SELECT 1 FROM members c
+      WHERE c.id = NEW.created_by AND c.role = 'owner') END)
+BEGIN SELECT RAISE(ABORT, 'link not allowed'); END;
+-- The server writes only the INSERT into passkeys: these triggers check the link, mark it used and remove
+-- everything the member's old devices held, or the INSERT fails and nothing changes.
+CREATE TRIGGER passkeys_valid BEFORE INSERT ON passkeys
+WHEN (NEW.link_id IS NULL) = (NEW.session_id IS NULL)
+  OR (NEW.link_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM access_links l JOIN members m ON m.id = l.member_id
+      WHERE l.token_sha256 = NEW.link_id AND l.member_id = NEW.member_id AND m.removed_at IS NULL
+      AND l.used_at IS NULL AND l.expires_at > unixepoch() * 1000))
+  OR (NEW.session_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sessions s
+      WHERE s.token_sha256 = NEW.session_id AND s.member_id = NEW.member_id AND s.expires_at > unixepoch() * 1000))
+BEGIN SELECT RAISE(ABORT, 'passkey not allowed'); END;
+CREATE TRIGGER passkeys_link_use AFTER INSERT ON passkeys WHEN NEW.link_id IS NOT NULL
 BEGIN
-  UPDATE owner_setup_links SET used_at = unixepoch() * 1000 WHERE token_sha256 = NEW.setup_link;
-  DELETE FROM owner_passkeys WHERE credential_id <> NEW.credential_id;
-  DELETE FROM owner_sessions;
-  DELETE FROM auth_challenges;
-  DELETE FROM device_approvals;
+  UPDATE access_links SET used_at = unixepoch() * 1000 WHERE token_sha256 = NEW.link_id;
+  UPDATE members SET joined_at = unixepoch() * 1000 WHERE id = NEW.member_id AND joined_at IS NULL;
+  DELETE FROM sessions WHERE member_id = NEW.member_id;
+  DELETE FROM passkeys WHERE member_id = NEW.member_id AND credential_id <> NEW.credential_id;
+  DELETE FROM auth_challenges WHERE member_id = NEW.member_id;
+  DELETE FROM device_approvals WHERE member_id = NEW.member_id;
 END;
--- "Approve from a device that is already signed in".
+-- "Approve from a device that is already signed in". Approving sets member_id from the approver's session.
 CREATE TABLE device_approvals (
   id TEXT PRIMARY KEY, code_hmac TEXT NOT NULL UNIQUE, secret_sha256 TEXT NOT NULL, label TEXT NOT NULL,
-  created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, approved_at INTEGER, used_at INTEGER
+  created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, approved_at INTEGER, used_at INTEGER,
+  member_id TEXT REFERENCES members(id), approver_session TEXT,
+  CHECK ((approved_at IS NULL) = (member_id IS NULL)),
+  CHECK ((member_id IS NULL) = (approver_session IS NULL))
 );
 CREATE INDEX device_approvals_expiry ON device_approvals(expires_at);
--- The same for a session that comes from an approval.
-CREATE TRIGGER owner_sessions_approval_valid BEFORE INSERT ON owner_sessions
-WHEN NEW.approval_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM device_approvals a WHERE a.id = NEW.approval_id
-  AND a.approved_at IS NOT NULL AND a.used_at IS NULL AND a.expires_at > unixepoch() * 1000)
-BEGIN SELECT RAISE(ABORT, 'approval not usable'); END;
-CREATE TRIGGER owner_sessions_approval_use AFTER INSERT ON owner_sessions WHEN NEW.approval_id IS NOT NULL
+CREATE INDEX device_approvals_member ON device_approvals(member_id);
+CREATE TRIGGER device_approvals_new BEFORE INSERT ON device_approvals WHEN NEW.approved_at IS NOT NULL
+BEGIN SELECT RAISE(ABORT, 'approval not allowed'); END;
+CREATE TRIGGER device_approvals_approve BEFORE UPDATE OF approved_at, member_id, approver_session ON device_approvals
+WHEN OLD.approved_at IS NOT NULL OR NOT EXISTS (SELECT 1 FROM sessions s WHERE s.token_sha256 = NEW.approver_session
+  AND s.member_id = NEW.member_id AND s.expires_at > unixepoch() * 1000)
+BEGIN SELECT RAISE(ABORT, 'approval not allowed'); END;
+CREATE TRIGGER sessions_valid BEFORE INSERT ON sessions
+WHEN NOT EXISTS (SELECT 1 FROM members m WHERE m.id = NEW.member_id AND m.joined_at IS NOT NULL AND m.removed_at IS NULL)
+  OR (NEW.passkey_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM passkeys k
+      WHERE k.credential_id = NEW.passkey_id AND k.member_id = NEW.member_id))
+  OR (NEW.approval_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM device_approvals a WHERE a.id = NEW.approval_id
+      AND a.member_id = NEW.member_id AND a.approved_at IS NOT NULL AND a.used_at IS NULL
+      AND a.expires_at > unixepoch() * 1000))
+BEGIN SELECT RAISE(ABORT, 'session not allowed'); END;
+CREATE TRIGGER sessions_approval_use AFTER INSERT ON sessions WHEN NEW.approval_id IS NOT NULL
 BEGIN UPDATE device_approvals SET used_at = unixepoch() * 1000 WHERE id = NEW.approval_id; END;
+-- Removing a member is one UPDATE. It can't be undone: coming back is a new invite.
+CREATE TRIGGER members_no_return BEFORE UPDATE OF removed_at ON members
+WHEN OLD.removed_at IS NOT NULL AND NEW.removed_at IS NOT OLD.removed_at
+BEGIN SELECT RAISE(ABORT, 'member was removed'); END;
+CREATE TRIGGER members_remove AFTER UPDATE OF removed_at ON members WHEN NEW.removed_at IS NOT NULL AND OLD.removed_at IS NULL
+BEGIN
+  DELETE FROM sessions WHERE member_id = NEW.id;
+  DELETE FROM passkeys WHERE member_id = NEW.id;
+  DELETE FROM auth_challenges WHERE member_id = NEW.id;
+  DELETE FROM device_approvals WHERE member_id = NEW.id;
+  DELETE FROM access_links WHERE member_id = NEW.id;
+  DELETE FROM access_links WHERE created_by = NEW.id AND used_at IS NULL;
+  DELETE FROM team_members WHERE member_id = NEW.id;
+  UPDATE agent_keys SET revoked_at = NEW.removed_at WHERE revoked_at IS NULL
+    AND agent_id IN (SELECT id FROM agents WHERE member_id = NEW.id);
+END;
 
 CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE audit (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,
-  actor_type TEXT NOT NULL, actor_id TEXT, action TEXT NOT NULL, subject_id TEXT
+  actor_type TEXT NOT NULL CHECK (actor_type IN ('member','agent','command','system')), actor_id TEXT, action TEXT NOT NULL, subject_id TEXT
 );
 
 -- rowid is mapped to the page through pages_fts_map. `scope` holds one token each for the project, status

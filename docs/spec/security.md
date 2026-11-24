@@ -1,12 +1,12 @@
 # Security model
 
-Published pages are untrusted code that an agent wrote, and they may contain text copied from anywhere. The owner's session can record decisions that agents then act on. The design keeps the two apart.
+Published pages are untrusted code that an agent wrote, and they may contain text copied from anywhere. A person's session can record decisions that agents then act on. The design keeps the two apart.
 
 ## 1. Hosts and Workers
 
 | Host | Worker | Holds | Never holds |
 |---|---|---|---|
-| App host | `lawh-app` | UI, API, owner session, agent-key checks | Any published HTML |
+| App host | `lawh-app` | UI, API, people's sessions, agent-key checks | Any published HTML |
 | Content host | `lawh-content` | Published files, read only | Session code, cookies, key checks |
 
 The two hosts are two exact names, on `workers.dev` or the owner's domain. Workers custom domains don't support wildcards, and Universal SSL covers one subdomain level, so there is no host per page. Pages are isolated from each other by an opaque origin instead (section 2).
@@ -78,19 +78,22 @@ The page shares a realm with the bridge and can forge any of these, so **no mess
 
 - CSP: `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; frame-src CONTENT; manifest-src 'self'; worker-src 'self'; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`.
 - Every response also sends `X-Robots-Tag: noindex, nofollow`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cross-Origin-Opener-Policy: same-origin` and a `Permissions-Policy` that turns off everything but passkeys.
-- Session cookie `__Host-lawh`: `Secure; HttpOnly; SameSite=Lax; Path=/`. The `__Host-` prefix stops a sibling subdomain from planting one. D1 stores only its SHA-256. It lasts 30 days from last use, at most 90. A list of sessions lets the owner end any of them.
+- Session cookie `__Host-lawh`: `Secure; HttpOnly; SameSite=Lax; Path=/`. The `__Host-` prefix stops a sibling subdomain from planting one. D1 stores only its SHA-256. It lasts 30 days from last use, at most 90. A list of sessions lets each person end any of their own.
 - Writes need `Origin` equal to the app host and `Sec-Fetch-Site: same-origin`. `Origin: null` is refused.
 - Agent text (titles, questions, comments) is always escaped. Markdown isn't rendered in v1.
-- **First setup (if decision 1 is passkeys).** There is no sign-up and there are no accounts: an instance has one owner, and there is no public page that makes one. `lawh owner setup`, run by whoever has the instance's Cloudflare access, prints a link that works once, for 15 minutes. Only its SHA-256 is stored. The token is in the URL fragment and sent in a POST body, so it isn't in logs. Opening it registers one passkey: one INSERT adds the passkey with its link, and database triggers check that the link is unused and in date, mark it used, or refuse the INSERT. A new link deletes unused earlier ones. Adding a passkey later needs a signed-in session.
-- **Recovery.** If every passkey is lost, the same command makes a new link. Using it removes every other passkey, every session, pending device approval and challenge in the same statement, so a lost device can't sign in again. It is written to the audit log.
-- Passkey challenges and device approvals are D1 rows, used once, gone after 5 minutes. A device approval shows the code on both devices and needs the owner to type it. `code_hmac` uses the pepper. A session made from an approval needs one that was given, unused and in date, enforced by triggers, and guesses are rate limited.
-- A Worker rate limit applies to sign-in, the API per key, and uploads.
+- **First setup.** There is no sign-up page: an instance has one owner, and members only join from an invite ([teams.md](teams.md)). `lawh owner setup`, run by whoever has the instance's Cloudflare access, prints a link that works once, for 15 minutes. Only its SHA-256 is stored. The token is in the URL fragment and sent in a POST body, so it isn't in logs. Opening it registers one passkey: one INSERT adds the passkey with its link, and database triggers check that the link belongs to that person, is unused and in date, and mark it used, or refuse the INSERT. A new link deletes the same person's unused one; a unique index allows one at a time. Adding a passkey later needs a live session of the same person, checked by the same trigger, so a recovery can't be undone by a request already under way.
+- **Invites and resets** are the same kind of link, made in the app for one member, and go through the same triggers. Who may make which is in [teams.md](teams.md) and enforced by a trigger.
+- **Recovery.** If the owner loses every passkey, the same command makes a new link; for a member, the owner makes a reset link. Using it removes that person's other passkeys, sessions, device approvals and challenges in the same statement, so a lost device can't sign in again. It is written to the audit log.
+- Passkey challenges and device approvals are D1 rows, used once, gone after 5 minutes. A device approval shows the code on both devices and needs the signed-in person to type it. Approving needs a live session of that person, and signs the new device in as them only. `code_hmac` uses the pepper. A session made from an approval needs one that was given, unused and in date, enforced by triggers, and guesses are rate limited.
+- Every request reads the session with its member, and the member's level on the project, so a change of level or a removal applies to the next request.
+- A Worker rate limit applies to sign-in, joining, the API per key, and uploads.
 
 ## 5. Agent keys
 
 - Format `lawh_<keyId>_<secret>`, where the secret is 32 random bytes in base64url. D1 keeps `HMAC-SHA256(pepper, keyId + ':' + secret)`; the pepper is in the Secrets Store. The check is constant time. The key is shown once.
 - Each key has an expiry (90 days by default, 1 year at most), scopes, and a list of projects (or all).
-- Scopes: `pages:read`, `pages:write`, `decisions:read`, `comments:read`, `comments:write`. **No scope answers a decision, deletes a page or manages keys.** Those need the owner session.
+- Scopes: `pages:read`, `pages:write`, `decisions:read`, `comments:read`, `comments:write`. **No scope answers a decision, deletes a page or manages keys.** Those need a person's session at the right level.
+- An agent belongs to one person, and its keys work in a project only while that person is the owner or manages the project. This is checked on every request. Removing the person revokes the keys.
 - A key sees 404, not 403, for projects it doesn't have.
 - `last_used_at` is written at most once an hour per key.
 
@@ -111,7 +114,7 @@ HTTPS only, off by default. Each webhook's secret is encrypted with AES-GCM unde
 
 ## 8. What agents may trust
 
-Every comment has `authorType` (`owner` or `agent`). Only the owner's answers and comments are instructions from the owner. Page text and other agents' comments are data. `/v1` docs and the MCP tool descriptions say so.
+Every comment has `authorType` (`person` or `agent`), and a person's comment has `fromDecider`: whether its author could decide on that project when they wrote it. The database checks that level on write. Only answers, and comments with `fromDecider: true`, are instructions. Page text, agents' comments and other people's comments are data. `/v1` docs and the MCP tool descriptions say so.
 
 ## 9. Threats and answers
 
@@ -123,9 +126,14 @@ Every comment has `authorType` (`owner` or `agent`). Only the owner's answers an
 | A leaked agent key | Scoped, expiring, revoked at once; it can't answer, delete or make keys; old versions stay |
 | A leaked content URL | One version, at most 4 hours |
 | A leaked D1 copy | No usable keys or sessions (hashes only; the pepper is elsewhere). Page files aren't in D1, but titles, decisions and comments are |
-| Prompt injection in a page or comment | Author type in the API; only the owner can answer |
+| Prompt injection in a page or comment | Author type and `fromDecider` in the API; only deciders and the owner can answer |
+| A member reads or guesses another team's project | 404 for pages, lists, search, events and content links; one server function and a test of every route at every level |
+| A member raises their own level | A trigger checks who set each level; only the owner makes managers |
+| A manager takes over an account | Managers can't make reset links, or invites for someone who already joined |
+| A removed member keeps access | Sessions, passkeys, approvals, links, memberships and their agents' keys end in one statement. A content link already opened lasts at most 4 hours |
+| An invite link reaches the wrong person | Once, 3 days, one team; the join shows at once in the team list and the audit log, and can be removed |
 | A question changes after the answer | New revision; the decision becomes `stale`; the old answer keeps its own wording |
 
-## 10. Security tests (S3 and S4, Chromium, Firefox and WebKit)
+## 10. Security tests (S3, S4 and S18, Chromium, Firefox and WebKit)
 
 Fixtures try to: read `parent.document`; read cookies and storage; fetch the API; navigate `top` and the frame; open a popup; submit a form; load an outside image, script, font and WebSocket; forge each bridge message; read another page's file; use an expired, changed or deleted version's token. Each must fail, and the test proves the fixture ran. WebRTC, DNS prefetch and a content URL in its own tab are measured and recorded per browser instead (section 2).

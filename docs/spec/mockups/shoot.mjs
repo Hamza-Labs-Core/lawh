@@ -9,7 +9,9 @@ for (const [screen, lang, mode, w] of [
   ['library','en','dark',1280],['library','en','dark',390],['library','ar','light',390],
   ['page','en','dark',1280],['page','ar','dark',1280],['page','en','light',390],
   ['viewer','en','dark',390],['inbox','ar','dark',390],['inbox','en','dark',1280],
-  ['comments','en','dark',390],['keys','ar','light',1280],['signin','en','dark',390]]) {
+  ['comments','en','dark',390],['keys','ar','light',1280],['signin','en','dark',390],
+  ['team','en','dark',1280],['team','ar','light',390],['invite','en','dark',390],['invite','ar','dark',1280],
+  ['join','en','light',390],['join','ar','dark',390]]) {
   const p = await b.newPage({ viewport: { width: w, height: w < 500 ? 844 : 800 } });
   p.on('pageerror', e => { console.error(screen, lang, e.message); process.exitCode = 1; });
   await p.goto(new URL(`index.html?screen=${screen}&lang=${lang}&mode=${mode}`, here).href);
