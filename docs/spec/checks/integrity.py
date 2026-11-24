@@ -106,6 +106,10 @@ check("and not again after that session ends", not session('s8', None, 'good'))
 check("removing a passkey ends its sessions", batch(db, "DELETE FROM owner_passkeys WHERE credential_id='new'") and not db.execute("SELECT 1 FROM owner_sessions WHERE token_sha256='s1'").fetchone())
 
 db = fresh()
+check("pruning a version keeps its decision wording", batch(db, "DELETE FROM page_versions WHERE id='v1'")
+      and db.execute("SELECT version_id,version_n,question FROM decision_revisions").fetchone() == (None, 1, 'Q'))
+
+db = fresh()
 db.execute("INSERT INTO uploads VALUES('u1','p1','new','k1',0,'{}',1,2)")
 check("unfinished first publish makes no page", db.execute("SELECT count(*) FROM pages WHERE slug='new'").fetchone()[0] == 0)
 PAGE = "INSERT INTO pages(id,project_id,slug,title,created_by,created_at,updated_at) VALUES(?,'p1','new','T','a1',1,1)"
