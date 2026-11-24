@@ -44,6 +44,8 @@ CREATE INDEX team_projects_project ON team_projects(project_id, team_id);
 CREATE TRIGGER team_projects_cap BEFORE INSERT ON team_projects
 WHEN (SELECT COUNT(*) FROM team_projects WHERE team_id = NEW.team_id) >= 10
 BEGIN SELECT RAISE(ABORT, 'too many projects'); END;
+CREATE TRIGGER team_projects_fixed BEFORE UPDATE ON team_projects
+BEGIN SELECT RAISE(ABORT, 'add and remove instead'); END;
 -- One row per team that gives a member a project; the member's level is the highest. Always read with
 -- member_id = ? (and project_id = ?).
 CREATE VIEW project_access AS
@@ -90,7 +92,7 @@ WHEN NOT EXISTS (SELECT 1 FROM agents a JOIN members m ON m.id = a.member_id AND
                  WHERE a.id = NEW.agent_id AND (NEW.all_projects = 0 OR m.role = 'owner'))
 BEGIN SELECT RAISE(ABORT, 'key not allowed'); END;
 CREATE TRIGGER agent_keys_fixed BEFORE UPDATE ON agent_keys
-WHEN NEW.agent_id <> OLD.agent_id OR NEW.secret_hmac <> OLD.secret_hmac OR NEW.scopes_json <> OLD.scopes_json
+WHEN NEW.id <> OLD.id OR NEW.created_at <> OLD.created_at OR NEW.expires_at <> OLD.expires_at OR NEW.agent_id <> OLD.agent_id OR NEW.secret_hmac <> OLD.secret_hmac OR NEW.scopes_json <> OLD.scopes_json
   OR NEW.all_projects <> OLD.all_projects OR (OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NOT OLD.revoked_at)
 BEGIN SELECT RAISE(ABORT, 'key not allowed'); END;
 CREATE TRIGGER agents_moved AFTER UPDATE OF member_id ON agents WHEN NEW.member_id <> OLD.member_id
@@ -300,7 +302,7 @@ CREATE INDEX events_outbox ON events(seq) WHERE enqueued_at IS NULL;
 CREATE TABLE webhooks (
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), url TEXT NOT NULL,
   event_types_json TEXT NOT NULL, secret_enc BLOB NOT NULL, enabled INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER NOT NULL
+  created_by TEXT NOT NULL REFERENCES members(id), created_at INTEGER NOT NULL
 );
 CREATE INDEX webhooks_project ON webhooks(project_id, enabled);
 CREATE TABLE webhook_deliveries (
@@ -418,6 +420,7 @@ BEGIN SELECT RAISE(ABORT, 'approval not allowed'); END;
 CREATE TRIGGER device_approvals_change BEFORE UPDATE ON device_approvals
 WHEN OLD.used_at IS NOT NULL OR OLD.expires_at <= unixepoch() * 1000
   OR NEW.id <> OLD.id OR NEW.code_hmac <> OLD.code_hmac OR NEW.secret_sha256 <> OLD.secret_sha256 OR NEW.expires_at <> OLD.expires_at
+  OR NEW.label <> OLD.label OR NEW.created_at <> OLD.created_at
   OR (OLD.approved_at IS NOT NULL AND (NEW.approved_at IS NOT OLD.approved_at OR NEW.member_id IS NOT OLD.member_id
       OR NEW.approver_session IS NOT OLD.approver_session))
   OR (OLD.approved_at IS NULL AND (NEW.used_at IS NOT NULL OR NOT EXISTS (SELECT 1 FROM sessions s
@@ -429,19 +432,21 @@ WHEN NOT EXISTS (SELECT 1 FROM members m WHERE m.id = NEW.member_id AND m.joined
   OR (NEW.passkey_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM passkeys k
       WHERE k.credential_id = NEW.passkey_id AND k.member_id = NEW.member_id))
   OR (NEW.approval_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM device_approvals a JOIN sessions s
-      ON s.token_sha256 = a.approver_session AND s.expires_at > unixepoch() * 1000 WHERE a.id = NEW.approval_id
+      ON s.token_sha256 = a.approver_session AND s.member_id = a.member_id AND s.expires_at > unixepoch() * 1000 WHERE a.id = NEW.approval_id
       AND a.member_id = NEW.member_id AND a.used_at IS NULL
       AND a.expires_at > unixepoch() * 1000))
 BEGIN SELECT RAISE(ABORT, 'session not allowed'); END;
 CREATE TRIGGER sessions_approval_use AFTER INSERT ON sessions WHEN NEW.approval_id IS NOT NULL
 BEGIN UPDATE device_approvals SET used_at = unixepoch() * 1000 WHERE id = NEW.approval_id; END;
 -- Ownership moves to a member who joined. Whoever gets or gives up the role leaves every team and loses every
--- unused link made for them or by them.
+-- unused link made for them or by them; people invited by those links are cancelled.
 CREATE TRIGGER members_promote BEFORE UPDATE OF role ON members
 WHEN NEW.role = 'owner' AND (OLD.joined_at IS NULL OR OLD.removed_at IS NOT NULL)
 BEGIN SELECT RAISE(ABORT, 'member not joined'); END;
 CREATE TRIGGER members_role AFTER UPDATE OF role ON members WHEN NEW.role <> OLD.role
 BEGIN
+  UPDATE members SET removed_at = unixepoch() * 1000 WHERE joined_at IS NULL AND removed_at IS NULL
+    AND (created_by = NEW.id OR id IN (SELECT member_id FROM access_links WHERE created_by = NEW.id AND used_at IS NULL));
   DELETE FROM team_members WHERE member_id = NEW.id;
   DELETE FROM access_links WHERE member_id = NEW.id AND used_at IS NULL;
   DELETE FROM access_links WHERE created_by = NEW.id AND used_at IS NULL;
@@ -463,13 +468,20 @@ BEGIN
   DELETE FROM auth_challenges WHERE member_id = NEW.id;
   DELETE FROM device_approvals WHERE member_id = NEW.id;
   DELETE FROM access_links WHERE member_id = NEW.id;
-  DELETE FROM access_links WHERE used_at IS NULL AND member_id IN (SELECT id FROM members
+  DELETE FROM access_links WHERE member_id IN (SELECT id FROM members
+    WHERE created_by = NEW.id AND joined_at IS NULL AND removed_at IS NULL);
+  DELETE FROM auth_challenges WHERE member_id IN (SELECT id FROM members
     WHERE created_by = NEW.id AND joined_at IS NULL AND removed_at IS NULL);
   UPDATE members SET removed_at = NEW.removed_at WHERE created_by = NEW.id AND joined_at IS NULL AND removed_at IS NULL;
   DELETE FROM team_members WHERE member_id = NEW.id;
   UPDATE agent_keys SET revoked_at = NEW.removed_at WHERE revoked_at IS NULL
     AND agent_id IN (SELECT id FROM agents WHERE member_id = NEW.id);
 END;
+
+-- Deleting a team cancels the people invited to it. Its links go with it; the audit log keeps the record.
+CREATE TRIGGER teams_delete BEFORE DELETE ON teams
+BEGIN UPDATE members SET removed_at = unixepoch() * 1000 WHERE joined_at IS NULL AND removed_at IS NULL
+  AND id IN (SELECT member_id FROM access_links WHERE team_id = OLD.id AND used_at IS NULL); END;
 
 CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE audit (
