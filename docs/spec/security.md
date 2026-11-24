@@ -90,14 +90,26 @@ The page shares a realm with the bridge and can forge any of these, so **no mess
 
 ## 5. Agent keys
 
-- Format `lawh_<keyId>_<secret>`, where the secret is 32 random bytes in base64url. D1 keeps `HMAC-SHA256(pepper, keyId + ':' + secret)`; the pepper is in the Secrets Store. The check is constant time. The key is shown once.
+- Format `lawh_<keyId>_<secret>`, where the secret is 32 random bytes in base64url. D1 keeps `HMAC-SHA256(pepper, keyId + ':' + hex(SHA-256(secret)))`; the pepper is in the Secrets Store. The check is constant time. **Each agent has its own key**, so Lawh knows which agent did what, and one can be revoked without the others.
 - Each key has an expiry (90 days by default, 1 year at most), scopes, and a list of projects (or all).
 - Scopes: `pages:read`, `pages:write`, `decisions:read`, `comments:read`, `comments:write`. **No scope answers a decision, deletes a page or manages keys.** Those need a person's session at the right level.
 - An agent belongs to one person, and its keys work in a project only while that person is the owner or manages the project. This is checked on every request. Removing the person, or moving the agent to another person, revokes the keys. Only the owner's agents can have a key for all projects. Keys don't change after they are made, except to be revoked.
 - A key sees 404, not 403, for projects it doesn't have.
 - `last_used_at` is written at most once an hour per key.
 
-**Where the agent keeps it.** A Secrets Store value can't be read back by API or dashboard; only a bound Worker can use it ([docs](https://developers.cloudflare.com/secrets-store/manage-secrets/)). An agent on a laptop can't load its key from there. See owner decision 2.
+**Connecting an agent** ([README](README.md) section 3). Nobody copies a key:
+
+1. The client on the agent's machine makes the 32-byte secret, and sends its SHA-256, the client's name and the machine's name. Lawh replies with a code (8 letters from 20, no vowels) and an id that will be the key's id. The request lasts 10 minutes.
+2. The client opens `https://APP/connect` and shows the code. The person signs in and types it. The address never carries the code, so a link alone can't connect anything.
+3. The page shows what the client says about itself, marked as its own claim, and warns: "Continue only if you started this." The person picks one of their agents or a new name, and the projects. The key lasts 90 days; connecting again makes a new one. Only the owner and managers can, and only for projects they manage.
+4. One transaction adds the agent if it is new, records the answer and adds the key. Triggers check that the session is live and is that person's, the request is unanswered and in date, and the agent is theirs. "Not mine" ends the request.
+5. The client asks for the result with its key and saves it. **The secret is never in a reply, a page, a chat or a log**, and asking again is safe.
+
+Starting a request needs no key, so it is rate limited by address and for the whole copy, and expired rows are deleted. Wrong codes are limited to 5 a session in 10 minutes. Each connection is in the audit log, and the key shows in the list with its machine.
+
+**Where the agent keeps it.** The client saves address, agent id, name, key and expiry for every agent on that machine: in the system's keychain, or a file only that user can read (mode 0600) where there is none. Programs of the same computer user can read each other's entries, as with any command-line tool, so separate keys there say who acted but don't keep one program from using another's. `LAWH_URL` and `LAWH_KEY` in the environment replace the saved entry, for containers and CI; such a key is made in Settings and shown once. Agents that are Workers hold theirs as a Worker secret. The client never prints a key, and the skill tells agents not to read the saved entry.
+
+A reset link doesn't revoke agent keys. The page after a reset lists them with "Revoke", because someone with the lost device could have connected an agent.
 
 ## 6. Uploads
 
@@ -124,6 +136,7 @@ Every comment has `authorType` (`person` or `agent`), and a person's comment has
 | A page copies itself out | No fetch, image, script, form, popup or frame navigation to another host. Leftovers in section 2 carry only its own content |
 | A page imitates the app | It draws only inside the frame; the app's bar, with project and author, stays visible; sign-in never appears inside a frame |
 | A leaked agent key | Scoped, expiring, revoked at once; it can't answer, delete or make keys; old versions stay |
+| Someone tricks a person into connecting the attacker's agent | The person must type a code at their own Lawh, after a warning. The agent can't answer, delete or make keys, shows in the list and the audit log, and is revoked at once |
 | A leaked content URL | One version, at most 4 hours |
 | A leaked D1 copy | No usable keys or sessions (hashes only; the pepper is elsewhere). Page files aren't in D1, but titles, decisions and comments are |
 | Prompt injection in a page or comment | Author type and `fromDecider` in the API; only deciders and the owner can answer |

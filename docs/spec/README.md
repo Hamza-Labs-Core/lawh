@@ -27,7 +27,7 @@ This repository has a README and a license. Nothing is built. There is no earlie
 
 ```mermaid
 flowchart LR
-  A[Agent] -- "Bearer key" --> W[lawh-app Worker<br>API and UI]
+  A[Agent] -- "its own key" --> W[lawh-app Worker<br>API and UI]
   O[A person's browser] -- session --> W
   O -- "URL token, sandboxed frame" --> C[lawh-content Worker]
   W --> D[(D1: metadata, decisions, comments)]
@@ -36,6 +36,17 @@ flowchart LR
   C --> R
   W --> Q[[Queue]] --> H[Webhook, optional]
 ```
+
+**Connecting an agent.** The person tells any agent: "Connect to Lawh at `https://APP/connect.md`". Nobody copies a key.
+
+1. The agent reads that page, which is Lawh's skill, and runs the client's `connect`.
+2. The client opens the browser at Lawh and shows a short code. On a machine without a browser, the person opens the address on any device.
+3. The person signs in with their passkey, types the code, and picks the agent's name and projects.
+4. The client receives the agent's id and saves it with the key. From then on the skill uses that entry.
+
+Each agent gets its own id and key, and belongs to the person who connected it. Connecting the same name on another machine adds a key to that agent. One client holds all of a person's agents on a machine: `--as <name>` or `LAWH_AGENT` picks one, otherwise the only one saved for that program; with several, it lists them and stops. Where nobody can sign in (CI, containers), `LAWH_URL` and `LAWH_KEY` do the same. Details are in [security.md](security.md) section 5.
+
+Both the skill and the client (one file, Node, no dependencies) are served by the copy itself, so they match its version, and are in the repository as `skills/lawh`. An agent without Node can make the same two calls with any HTTPS tool.
 
 **Publishing** takes three steps, and only the last one changes what people see:
 
@@ -100,6 +111,8 @@ English and Arabic with full RTL, Arabic digits ٠–٩ through one formatter. A
 | Open decisions | [desktop](mockups/png/inbox-en-dark-1280.png) · [phone, Arabic](mockups/png/inbox-ar-dark-390.png) |
 | Comments | [phone](mockups/png/comments-en-dark-390.png) |
 | Agent keys | [desktop, Arabic, light](mockups/png/keys-ar-light-1280.png) |
+| Connect an agent: code | [phone](mockups/png/code-en-dark-390.png) |
+| Connect an agent: name and projects | [desktop](mockups/png/connect-en-dark-1280.png) · [phone, Arabic, light](mockups/png/connect-ar-light-390.png) |
 | Sign-in | [phone](mockups/png/signin-en-dark-390.png) |
 | Team | [desktop](mockups/png/team-en-dark-1280.png) · [phone, Arabic, light](mockups/png/team-ar-light-390.png) |
 | Invite | [phone](mockups/png/invite-en-dark-390.png) · [desktop, Arabic](mockups/png/invite-ar-dark-1280.png) |
@@ -119,7 +132,7 @@ Examples in the mockups are made up. On a phone the page fills the screen and de
 | Desktop and laptop browsers | Current Chrome, Edge, Firefox, Safari |
 | iPhone, iPad, Android | The same site. PWA: manifest (en, ar), icons, standalone display. The service worker caches only the app's own files, never pages, answers or API replies |
 | T3 Code's browser panel | Works as a website. A panel may not offer passkeys; S4 includes approving a sign-in from a device that is already signed in |
-| Agents | HTTPS. A small `lawh publish <folder>` command (S11) and MCP tools (S12) |
+| Agents | HTTPS. The skill and client (S11: `connect`, `publish <folder>`, `decisions`, `reply`) and MCP tools (S12) |
 
 There are no native apps.
 
@@ -177,7 +190,7 @@ Asked one at a time. Answers are recorded here. These are choices for the produc
 | # | Question | Options (recommended first) | Why | Blocks | Answer |
 |---|---|---|---|---|---|
 | 1 | Which login ships? | **a. Built-in passkeys.** b. Cloudflare Access | (a) works right after a clone, with nothing else to set up, and in an installed PWA. (b) is less code here, but every self-hoster sets up Access first, and its redirect breaks background requests when a session ends. Signing in through one product's identity service is ruled out: other people's copies can't use it | S4 | **a, and spec teams** (2026-11-24): [teams.md](teams.md) |
-| 2 | Where do agent keys live? | **a. Hashes in D1, pepper in the Secrets Store, the agent's own copy in its machine's keychain.** b. One Secrets Store secret per agent, bound to the Worker. c. Both: (a) for local agents, (b) for agents that are Workers | Secrets Store values can't be read back, so a laptop agent needs a local copy either way. (b) needs a redeploy for each key, and the store holds 100 secrets an account in open beta | S2 | – |
+| 2 | Where do agent keys live? | **a. Hashes in D1, pepper in the Secrets Store, the agent's own copy in its machine's keychain.** b. One Secrets Store secret per agent, bound to the Worker. c. Both: (a) for local agents, (b) for agents that are Workers | Secrets Store values can't be read back, so a laptop agent needs a local copy either way. (b) needs a redeploy for each key, and the store holds 100 secrets an account in open beta | S2 | **a, with a connect flow** (2026-11-24): a skill opens the browser, the person signs in and names the agent, and the client saves its id and key (section 3) |
 | 3 | May pages load libraries from CDNs? | **a. No, upload everything.** b. A fixed list of CDN hosts | A CDN host is a way out for data, and pages stay readable for years only if they are complete | S3 | – |
 | 4 | MCP tools in v1? | **a. Yes, after the API.** b. Later | MCP lets every provider publish without custom code; it is a thin layer over `/v1` | S12 | – |
 | 5 | In a team, is one answer enough? | **a. Yes, the first decider's answer decides.** b. A project can ask for two or more deciders to agree | (a) is the same flow as alone, and an answer can be changed with its history kept. (b) adds a waiting state, disagreements and a stale rule per vote | S7 | – |
@@ -195,8 +208,8 @@ Asked one at a time. Answers are recorded here. These are choices for the produc
 | S7 | Decisions: API, page panel, open-decisions screen (takes a set of projects) | S5, D5 |
 | S8 | Comments: API, section anchors, threads | S5 |
 | S9 | Search: FTS index, Arabic normalization, autocomplete (takes a set of projects) | S5 |
-| S10 | Settings: keys, projects, delete, restore, purge, export, version retention | S5 |
-| S11 | `lawh publish` command and a publishing guide for agents | S2 |
+| S10 | Settings: agents and keys, projects, delete, restore, purge, export, version retention | S5 |
+| S11 | Connect an agent: API, code and name pages. The skill and the client, with a publishing guide | S5 |
 | S12 | MCP tools, behind `mcp` | S7, S8, D4 |
 | S13 | Events feed, webhooks and queue, behind `webhooks` | S7 |
 | S14 | PWA: manifest, icons, service worker | S5 |
@@ -205,4 +218,4 @@ Asked one at a time. Answers are recorded here. These are choices for the produc
 | S17 | Teams: levels, projects, managers' agents and keys, every route × level test with seeded members, behind `teams` | S7, S8, S9, S10, S13 |
 | S18 | People: invite, join, reset, remove, transfer; the `teams` switch can be turned on | S17 |
 
-S1 needs no decision. D2 to D5 are the decisions in section 13; D1 is answered. The tables for people and teams are in S1, and every route and list is built on `levelOn` and a set of projects (all of them for the owner), so S17 and S18 change no existing table or query. S16 doesn't wait for them.
+S1 needs no decision. D2 to D5 are the decisions in section 13; D1 and D2 are answered. The tables for people and teams are in S1, and every route and list is built on `levelOn` and a set of projects (all of them for the owner), so S17 and S18 change no existing table or query. S16 doesn't wait for them.

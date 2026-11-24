@@ -20,7 +20,7 @@ pnpm lawh init
 4. Applies migrations and deploys both Workers with the `instance` switch off.
 5. Asks for the owner's display name, creates the first project, turns the switch on after a yes, and runs `lawh owner setup`.
 
-To share the copy, the owner turns on `teams` in Settings, makes a team and sends invite links ([teams.md](teams.md)). `lawh owner transfer <member>` hands the copy to someone else.
+To use it, the owner tells an agent to connect ([README](README.md) section 3). To share the copy, the owner turns on `teams` in Settings, makes a team and sends invite links ([teams.md](teams.md)). `lawh owner transfer <member>` hands the copy to someone else.
 
 ## What each copy chooses
 
