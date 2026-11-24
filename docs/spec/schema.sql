@@ -61,6 +61,13 @@ CREATE TABLE page_versions (
   created_at INTEGER NOT NULL,
   UNIQUE (page_id, n)
 );
+-- A version must follow the page's current one, on a page that isn't deleted; else the batch fails (409).
+CREATE TRIGGER page_versions_next BEFORE INSERT ON page_versions
+WHEN NOT EXISTS (SELECT 1 FROM pages p WHERE p.id = NEW.page_id
+                 AND p.current_version = NEW.n - 1 AND p.deleted_at IS NULL)
+BEGIN SELECT RAISE(ABORT, 'version conflict'); END;
+CREATE TRIGGER page_versions_point AFTER INSERT ON page_versions
+BEGIN UPDATE pages SET current_version = NEW.n, updated_at = NEW.created_at WHERE id = NEW.page_id; END;
 
 -- Files are stored once per content. r2_key is blobs/<sha256>/<ulid>: never reused, so cleanup
 -- of an old object can't delete one uploaded again at the same moment.
@@ -119,6 +126,8 @@ CREATE TABLE decisions (
   UNIQUE (page_id, key)
 );
 CREATE INDEX decisions_status ON decisions(status, updated_at, id);
+-- The inbox query names this index (INDEXED BY): the planner would otherwise sort.
+CREATE INDEX decisions_inbox ON decisions(updated_at, id) WHERE status IN ('open','stale');
 CREATE INDEX decisions_recent ON decisions(updated_at, id);
 CREATE INDEX decisions_project ON decisions(project_id, updated_at, id);
 CREATE INDEX decisions_page ON decisions(page_id, position);
@@ -145,7 +154,8 @@ CREATE TABLE decision_answers (
   CHECK (option_id IS NOT NULL OR length(trim(notes)) > 0)
 ) WITHOUT ROWID;
 CREATE TRIGGER decision_answers_current BEFORE INSERT ON decision_answers
-WHEN NOT EXISTS (SELECT 1 FROM decisions d WHERE d.id = NEW.decision_id AND d.revision = NEW.revision
+WHEN NOT EXISTS (SELECT 1 FROM decisions d JOIN pages p ON p.id = d.page_id AND p.deleted_at IS NULL
+                 WHERE d.id = NEW.decision_id AND d.revision = NEW.revision
                  AND d.answer_seq = NEW.seq - 1 AND d.status <> 'withdrawn')
 BEGIN SELECT RAISE(ABORT, 'answer conflict'); END;
 CREATE TRIGGER decision_answers_point AFTER INSERT ON decision_answers
@@ -161,7 +171,7 @@ BEGIN SELECT RAISE(ABORT, 'answers are append only'); END;
 CREATE TABLE comments (
   id TEXT PRIMARY KEY, page_id TEXT NOT NULL REFERENCES pages(id),
   project_id TEXT NOT NULL REFERENCES projects(id),
-  thread_id TEXT NOT NULL REFERENCES comments(id),   -- the first comment's id
+  thread_id TEXT NOT NULL REFERENCES comments(id) ON DELETE CASCADE,   -- the first comment's id
   version_n INTEGER NOT NULL, section_id TEXT, section_title TEXT, quote TEXT,
   author_type TEXT NOT NULL CHECK (author_type IN ('owner','agent')),
   agent_id TEXT REFERENCES agents(id), body TEXT NOT NULL,
@@ -198,8 +208,10 @@ CREATE INDEX webhook_deliveries_status ON webhook_deliveries(status, updated_at)
 -- Owner sign-in. The tables below fit the built-in passkey option; the other options need only sessions.
 CREATE TABLE owner_passkeys (
   credential_id TEXT PRIMARY KEY, public_key BLOB NOT NULL, sign_count INTEGER NOT NULL,
-  label TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER
+  label TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER,
+  setup_link TEXT REFERENCES owner_setup_links(token_sha256) ON DELETE SET NULL
 );
+CREATE INDEX owner_passkeys_link ON owner_passkeys(setup_link);
 CREATE TABLE owner_sessions (
   token_sha256 TEXT PRIMARY KEY, label TEXT NOT NULL, created_at INTEGER NOT NULL,
   last_seen_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
@@ -213,14 +225,21 @@ CREATE TABLE auth_challenges (
 CREATE INDEX auth_challenges_expiry ON auth_challenges(expires_at);
 -- Single-use owner setup or recovery links.
 CREATE TABLE owner_setup_links (
-  token_sha256 TEXT PRIMARY KEY, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, used_at INTEGER
+  token_sha256 TEXT PRIMARY KEY, purpose TEXT NOT NULL CHECK (purpose IN ('setup','recovery')),
+  created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, used_at INTEGER
 );
+CREATE INDEX owner_setup_links_expiry ON owner_setup_links(expires_at);
+-- A second use aborts the whole batch, not just one statement.
+CREATE TRIGGER owner_setup_links_once BEFORE UPDATE OF used_at ON owner_setup_links
+WHEN OLD.used_at IS NOT NULL BEGIN SELECT RAISE(ABORT, 'link already used'); END;
 -- "Approve from a device that is already signed in".
 CREATE TABLE device_approvals (
   id TEXT PRIMARY KEY, code_hmac TEXT NOT NULL UNIQUE, secret_sha256 TEXT NOT NULL, label TEXT NOT NULL,
   created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, approved_at INTEGER, used_at INTEGER
 );
 CREATE INDEX device_approvals_expiry ON device_approvals(expires_at);
+CREATE TRIGGER device_approvals_once BEFORE UPDATE OF used_at ON device_approvals
+WHEN OLD.used_at IS NOT NULL OR OLD.approved_at IS NULL BEGIN SELECT RAISE(ABORT, 'approval not usable'); END;
 
 CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE audit (
@@ -229,9 +248,11 @@ CREATE TABLE audit (
 );
 
 -- rowid is mapped to the page through pages_fts_map. `scope` holds one token each for the project, status
--- and tags, so filters apply inside the index, before LIMIT. Deleting a page removes its row; restoring
--- adds it back.
-CREATE TABLE pages_fts_map (rowid INTEGER PRIMARY KEY, page_id TEXT NOT NULL UNIQUE REFERENCES pages(id));
+-- and tags, so filters apply inside the index, before LIMIT. A token is p, s or t and then the value's
+-- UTF-8 bytes in hex: letters and digits only, so the tokenizer never splits it. Every publish, detail or
+-- status change replaces both rows with a new, higher rowid (AUTOINCREMENT), so rowid order is newest
+-- first. Deleting a page removes the rows; restoring adds them back.
+CREATE TABLE pages_fts_map (rowid INTEGER PRIMARY KEY AUTOINCREMENT, page_id TEXT NOT NULL UNIQUE REFERENCES pages(id));
 CREATE VIRTUAL TABLE pages_fts USING fts5(
   scope, title, summary, tags, body, prefix='2 3 4', tokenize="unicode61 remove_diacritics 2"
 );

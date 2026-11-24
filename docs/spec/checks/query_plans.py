@@ -9,6 +9,10 @@ db = sqlite3.connect(":memory:")
 db.executescript(schema)
 
 Q = {
+ "inbox": "SELECT d.id FROM decisions d INDEXED BY decisions_inbox CROSS JOIN pages p ON p.id=d.page_id AND p.deleted_at IS NULL WHERE d.status IN ('open','stale') AND (d.updated_at,d.id)>(?,?) ORDER BY d.updated_at,d.id LIMIT 50",
+ "expired setup links": "DELETE FROM owner_setup_links WHERE expires_at<?",
+ "expired approvals": "DELETE FROM device_approvals WHERE expires_at<?",
+ "files of version": "SELECT path FROM version_files WHERE version_id=?",
  "key lookup": "SELECT k.* FROM agent_keys k JOIN agents a ON a.id=k.agent_id WHERE k.id=? AND k.revoked_at IS NULL AND a.disabled_at IS NULL",
  "decisions on page": "SELECT * FROM decisions WHERE page_id=? ORDER BY position",
  "open decisions": "SELECT d.id FROM decisions d CROSS JOIN pages p ON p.id=d.page_id AND p.deleted_at IS NULL WHERE d.status='open' AND (d.updated_at,d.id)>(?,?) ORDER BY d.updated_at,d.id LIMIT 50",
