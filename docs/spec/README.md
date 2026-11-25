@@ -17,7 +17,7 @@ Lawh (لوح, a writing tablet) is a private, self-hosted place where agents pub
 
 **Teams.** A person sees the projects their teams have, at a level: viewer, commenter, decider or manager. Off by default. See [teams.md](teams.md).
 
-**Not in v1:** public sign-up, single sign-on, public share links, editing pages in the browser, real-time co-viewing, server-side code in pages, importing from other artifact systems.
+**Not in v1:** MCP tools, public sign-up, single sign-on, public share links, editing pages in the browser, real-time co-viewing, server-side code in pages, importing from other artifact systems.
 
 ## 2. What exists today
 
@@ -132,7 +132,7 @@ Examples in the mockups are made up. On a phone the page fills the screen and de
 | Desktop and laptop browsers | Current Chrome, Edge, Firefox, Safari |
 | iPhone, iPad, Android | The same site. PWA: manifest (en, ar), icons, standalone display. The service worker caches only the app's own files, never pages, answers or API replies |
 | T3 Code's browser panel | Works as a website. A panel may not offer passkeys; S4 includes approving a sign-in from a device that is already signed in |
-| Agents | HTTPS. The skill and client (S11: `connect`, `publish <folder>`, `decisions`, `reply`) and MCP tools (S12) |
+| Agents | HTTPS. The skill and its command-line client (S11): `connect`, `whoami`, `publish <folder>`, `pages`, `read`, `decisions` (`--wait` polls until one is answered), `comments`, `reply`, `events`. Every command has `--json` |
 
 There are no native apps.
 
@@ -140,7 +140,7 @@ There are no native apps.
 
 - `instance`: **off by default.** While off, every route on both hosts answers 404 `feature_off`, except sign-in and the switch itself for a signed-in owner.
 - `teams`: off by default. While off, only the owner's session and agents work, every other member gets 404 `feature_off`, and the Teams screens aren't shown.
-- `webhooks`, `mcp`: off by default. While off, their routes answer 404 and their UI isn't shown.
+- `webhooks`: off by default. While off, its routes answer 404 and its UI isn't shown.
 
 Switches are in `settings` and enforced by the server. There are no tiers.
 
@@ -192,7 +192,7 @@ Asked one at a time. Answers are recorded here. These are choices for the produc
 | 1 | Which login ships? | **a. Built-in passkeys.** b. Cloudflare Access | (a) works right after a clone, with nothing else to set up, and in an installed PWA. (b) is less code here, but every self-hoster sets up Access first, and its redirect breaks background requests when a session ends. Signing in through one product's identity service is ruled out: other people's copies can't use it | S4 | **a, and spec teams** (2026-11-24): [teams.md](teams.md) |
 | 2 | Where do agent keys live? | **a. Hashes in D1, pepper in the Secrets Store, the agent's own copy in its machine's keychain.** b. One Secrets Store secret per agent, bound to the Worker. c. Both: (a) for local agents, (b) for agents that are Workers | Secrets Store values can't be read back, so a laptop agent needs a local copy either way. (b) needs a redeploy for each key, and the store holds 100 secrets an account in open beta | S2 | **a, with a connect flow** (2026-11-24): a skill opens the browser, the person signs in and names the agent, and the client saves its id and key (section 3) |
 | 3 | May pages load libraries from CDNs? | **a. No, upload everything.** b. A fixed list of CDN hosts | A CDN host is a way out for data, and pages stay readable for years only if they are complete | S3 | **a** (2026-11-24) |
-| 4 | MCP tools in v1? | **a. Yes, after the API.** b. Later | MCP lets every provider publish without custom code; it is a thin layer over `/v1` | S12 | – |
+| 4 | MCP tools in v1? | **a. Yes, after the API.** b. Later | MCP lets every provider publish without custom code; it is a thin layer over `/v1` | – | **b** (2026-11-24): the skill with the command-line client is how agents use Lawh |
 | 5 | In a team, is one answer enough? | **a. Yes, the first decider's answer decides.** b. A project can ask for two or more deciders to agree | (a) is the same flow as alone, and an answer can be changed with its history kept. (b) adds a waiting state, disagreements and a stale rule per vote | S7 | – |
 
 ## 14. Stories, one PR each
@@ -210,7 +210,6 @@ Asked one at a time. Answers are recorded here. These are choices for the produc
 | S9 | Search: FTS index, Arabic normalization, autocomplete (takes a set of projects) | S5 |
 | S10 | Settings: agents and keys, projects, delete, restore, purge, export, version retention | S5 |
 | S11 | Connect an agent: API, code and name pages. The skill and the client, with a publishing guide | S7, S8 |
-| S12 | MCP tools, behind `mcp` | S7, S8, D4 |
 | S13 | Events feed, webhooks and queue, behind `webhooks` | S7 |
 | S14 | PWA: manifest, icons, service worker | S5 |
 | S15 | `lawh init`, `upgrade`, `rollback`, `destroy`, fork-safe CI, the check that no instance details are committed | S4, S10 |
@@ -218,4 +217,4 @@ Asked one at a time. Answers are recorded here. These are choices for the produc
 | S17 | Teams: levels, projects, managers' agents and keys, every route × level test with seeded members, behind `teams` | S7, S8, S9, S10, S11, S13 |
 | S18 | People: invite, join, reset, remove, transfer; the `teams` switch can be turned on | S17 |
 
-S1 needs no decision. D2 to D5 are the decisions in section 13; D1, D2 and D3 are answered. The tables for people and teams are in S1, and every route and list is built on `levelOn` and a set of projects (all of them for the owner), so S17 and S18 change no existing table or query. S16 doesn't wait for them.
+S1 needs no decision. D2 to D5 are the decisions in section 13; D1 to D4 are answered. There is no S12: it was MCP (decision 4). The tables for people and teams are in S1, and every route and list is built on `levelOn` and a set of projects (all of them for the owner), so S17 and S18 change no existing table or query. S16 doesn't wait for them.
