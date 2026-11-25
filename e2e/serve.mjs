@@ -4,10 +4,13 @@ import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { readFileSync, readdirSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { CONTENT_KEY, PEPPER, runLocal } from '../scripts/local/run.mjs';
 
-const root = new URL('..', import.meta.url).pathname, state = join(root, '.wrangler/e2e');
+const root = fileURLToPath(new URL('..', import.meta.url)), state = join(root, '.wrangler/e2e');
 rmSync(state, { recursive: true, force: true });
+// A server that is already there would be taken for ours.
+if (await fetch('http://127.0.0.1:8797/').then(() => true, () => false)) { console.error('Port 8797 is in use'); process.exit(1); }
 const { child, app: APP } = runLocal({ port: 8797, state, testing: true });
 
 let stopping = false;
@@ -43,6 +46,9 @@ for (const address of ['127.0.0.1', '::1']) {
   trap.listen(8799, address);
 }
 
+// Anything that fails from here on also stops the Workers.
+process.on('unhandledRejection', (error) => { console.error(error); stop(1); });
+process.on('uncaughtException', (error) => { console.error(error); stop(1); });
 while (!stopping) { try { await fetch(APP); break; } catch { await new Promise((r) => setTimeout(r, 200)); } }
 if (stopping) await new Promise(() => undefined);
 

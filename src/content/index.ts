@@ -103,7 +103,7 @@ function withBridge(response: Response, url: URL, token: string, app: string): R
   let added = false;
   return new HTMLRewriter()
     .on('html', { element(element) { element.setAttribute('data-lawh-mode', mode); element.setAttribute('data-lawh-lang', lang); } })
-    .on('body', { element(element) { element.onEndTag((tag) => { if (!added) { added = true; tag.before(script, { html: true }); } }); } })
+    .on('html > body', { element(element) { element.onEndTag((tag) => { if (!added) { added = true; tag.before(script, { html: true }); } }); } })
     .onDocument({ end(end) { if (!added) end.append(script, { html: true }); } })
     .transform(response);
 }

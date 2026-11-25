@@ -61,7 +61,7 @@ export const BRIDGE = `(function () {
     try { url = new URL(raw, document.baseURI); } catch (e) { event.preventDefault(); return; }
     if (url.origin === here.origin && url.pathname.split('/')[1] === here.pathname.split('/')[1]) {
       // Another file of this page: it keeps the theme and language.
-      if (url.pathname === here.pathname || typeof link.href !== 'string') return;
+      if ((url.pathname === here.pathname && url.search === here.search) || typeof link.href !== 'string') return;
       if (root.dataset.lawhMode) url.searchParams.set('mode', root.dataset.lawhMode);
       if (root.dataset.lawhLang) url.searchParams.set('lang', root.dataset.lawhLang);
       link.href = url.href;
