@@ -1,5 +1,4 @@
 import { hmacHex, readSecret } from '../../shared/crypto';
-import type { AppEnv } from '../../shared/env';
 import { isOn } from '../../shared/switches';
 import { ApiError, invalid, notFound } from '../../shared/errors';
 import { onlyKeys, readJson } from '../api/body';
@@ -12,13 +11,14 @@ export async function whoAmI(ctx: SignedIn): Promise<Response> {
 }
 
 /** What the app calls a session. Not the stored hash, so a request log and a copy of the database can't be matched. */
-const sessionHandle = async (env: AppEnv, hash: string): Promise<string> => hmacHex(await readSecret(env.PEPPER), `session:${hash}`);
+const sessionHandle = (pepper: string, hash: string): Promise<string> => hmacHex(pepper, `session:${hash}`);
 
 export async function listSessions(ctx: SignedIn): Promise<Response> {
   const { results } = await ctx.env.DB.prepare('SELECT token_sha256, label, created_at, last_seen_at FROM sessions WHERE member_id = ? AND expires_at > ?')
     .bind(ctx.person.memberId, Date.now()).all<{ token_sha256: string; label: string; created_at: number; last_seen_at: number }>();
+  const pepper = await readSecret(ctx.env.PEPPER);
   return Response.json({ items: await Promise.all(results.map(async (s) => ({
-    id: await sessionHandle(ctx.env, s.token_sha256), label: s.label, createdAt: s.created_at, lastSeenAt: s.last_seen_at, current: s.token_sha256 === ctx.person.sessionId,
+    id: await sessionHandle(pepper, s.token_sha256), label: s.label, createdAt: s.created_at, lastSeenAt: s.last_seen_at, current: s.token_sha256 === ctx.person.sessionId,
   }))) });
 }
 
@@ -27,7 +27,8 @@ export async function endSession(ctx: SignedIn): Promise<Response> {
   let id = person.sessionId;
   if (ctx.params[0] !== 'current') {
     const { results } = await env.DB.prepare('SELECT token_sha256 FROM sessions WHERE member_id = ?').bind(person.memberId).all<{ token_sha256: string }>();
-    const handles = await Promise.all(results.map((s) => sessionHandle(env, s.token_sha256))), at = handles.indexOf(ctx.params[0]!);
+    const pepper = await readSecret(env.PEPPER);
+    const handles = await Promise.all(results.map((s) => sessionHandle(pepper, s.token_sha256))), at = handles.indexOf(ctx.params[0]!);
     if (at === -1) throw notFound();
     id = results[at]!.token_sha256;
   }

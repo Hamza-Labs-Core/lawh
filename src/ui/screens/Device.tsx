@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import { call, CallError, problemOf } from '../api';
-import { Failure, go, Heading, useBusy, useText } from '../app';
+import { Failure, Fill, go, Heading, useBusy, useText } from '../app';
 
 interface Request { id: string; secret: string; code: string; expiresAt: number }
 
@@ -40,7 +40,7 @@ export function AskDevice({ onDone }: { onDone: () => void }) {
         {request === 'over' && <p>{t('codeOver')}</p>}
         {request !== null && typeof request !== 'string' && (
           <>
-            <p>{t('codeHere', { url: `${location.origin}/approve` })}</p>
+            <p><Fill text="codeHere" dir="ltr" url={`${location.origin}/approve`} /></p>
             <p class="code" dir="ltr">{request.code}</p>
             <p class="muted">{t('codeEnds')}</p>
           </>
@@ -79,7 +79,7 @@ export function ApproveDevice({ onSignedOut }: { onSignedOut: () => void }) {
         </form>
       ) : (
         <>
-          <Heading key="ask">{t('approveAsk', { label: device.label })}</Heading>
+          <Heading key="ask"><Fill text="approveAsk" label={device.label} /></Heading>
           <p class="muted">{t('approveWarn')}</p>
           <button class="primary" disabled={busy} onClick={() => step(async () => { await call('POST', '/device/approve', { id: device.id, code }); setDone(true); })}>{t('approve')}</button>
         </>

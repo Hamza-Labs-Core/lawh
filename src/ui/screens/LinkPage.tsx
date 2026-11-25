@@ -1,7 +1,7 @@
 import { browserSupportsWebAuthn, startRegistration } from '@simplewebauthn/browser';
 import { useEffect, useState } from 'preact/hooks';
 import { call, CallError, problemOf } from '../api';
-import { Failure, Heading, useBusy, useText } from '../app';
+import { Failure, Fill, Heading, useBusy, useText } from '../app';
 import type { Key } from '../i18n';
 
 interface Offer { challengeId: string; options: Parameters<typeof startRegistration>[0]['optionsJSON']; link: { kind: 'owner' | 'invite' | 'reset'; name: string; team: string | null; level: number | null; inviter: string | null } }
@@ -35,8 +35,8 @@ export function LinkPage({ token, onDone }: { token: string; onDone: () => void 
   return (
     <section class="card narrow">
       <p class="logo">{t('app')}</p>
-      <Heading>{t('welcome', { name: link.name })}</Heading>
-      <p>{link.kind === 'invite' ? t('inviteLink', { inviter: link.inviter ?? '', team: link.team ?? '', level: t(`level${link.level}` as Key) }) : t(link.kind === 'owner' ? 'ownerLink' : 'resetLink')}</p>
+      <Heading><Fill text="welcome" name={link.name} /></Heading>
+      <p>{link.kind === 'invite' ? <Fill text="inviteLink" inviter={link.inviter ?? ''} team={link.team ?? ''} level={t(`level${link.level}` as Key)} /> : t(link.kind === 'owner' ? 'ownerLink' : 'resetLink')}</p>
       {browserSupportsWebAuthn()
         ? <><button class="primary" disabled={busy} onClick={() => run(register)}>{t(link.kind === 'invite' ? 'join' : 'create')}</button><p class="muted">{t('passkeyHelp')}</p></>
         : <p>{t('noPasskeysHere')}</p>}

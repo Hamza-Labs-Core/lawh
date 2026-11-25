@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { allTexts, digits, type Key, translate } from '../../src/ui/i18n';
+import { allTexts, digits, type Key, parts, translate } from '../../src/ui/i18n';
 
 it('has both languages for every text, with the same places to fill', () => {
   for (const [key, [en, ar]] of Object.entries(allTexts)) {
@@ -13,8 +13,9 @@ it('has both languages for every text, with the same places to fill', () => {
 });
 
 it('fills places, and writes Arabic digits', () => {
-  expect(translate('en', 'welcome', { name: 'Sara' })).toBe('Welcome, \u2068Sara\u2069');
-  expect(translate('ar', 'welcome', { name: 'سارة' })).toBe('أهلًا \u2068سارة\u2069');
+  expect(translate('en', 'welcome', { name: 'Sara' })).toBe('Welcome, Sara');
+  expect(translate('ar', 'welcome', { name: 'سارة' })).toBe('أهلًا سارة');
+  expect(parts('en', 'inviteLink', { inviter: 'Sara', team: 'a{b}', level: 'x' })).toEqual([{ value: 'Sara' }, ' invited you to ', { value: 'a{b}' }, ' as: ', { value: 'x' }, '.']);
   expect(translate('ar', 'codeEnds')).toBe('يعمل لمدة ٥ دقائق.');
   expect([digits('ar', 1234567890), digits('en', 12)]).toEqual(['١٢٣٤٥٦٧٨٩٠', '12']);
   expect(translate('en', 'welcome' satisfies Key, {})).toBe('Welcome, ');

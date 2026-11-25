@@ -52,7 +52,6 @@ describe('signing in another device', () => {
     expect((await api('POST', '/device/approve', { cookie: mona.cookie, body: { id: device.id, code: device.code } })).status).toBe(204);
     expect(await code(await api('POST', '/device/approve', { cookie, body: { id: device.id, code: device.code } }))).toEqual([404, 'not_found']);
     const old = await ask();
-    await api('POST', '/device/approve', { cookie, body: { id: device.id, code: device.code } });
     vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(Date.now() + 301_000);
     expect(await count('device_approvals')).toBe(2);
     expect(await code(await api('POST', '/device/look', { cookie, body: { code: old.code } }))).toEqual([404, 'not_found']);
