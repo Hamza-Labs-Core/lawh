@@ -2,6 +2,7 @@ import { hex } from '../../shared/crypto';
 import type { AppEnv } from '../../shared/env';
 import { ApiError, conflict, invalid, notFound } from '../../shared/errors';
 import { newId } from '../../shared/ids';
+import { type Declared, declareStatements, readDeclared } from '../decisions/declare';
 import { type Project, projectById, projectBySlug } from './auth';
 import { integer, isObject, onlyKeys, readJson, text } from './body';
 import { idempotent, type Idempotent, mustChange, replay, type Stored, writeOnce } from './idempotency';
@@ -15,7 +16,7 @@ const UPLOAD_LIFE = 6 * 3_600_000;
 const SHA = /^[0-9a-f]{64}$/;
 
 interface File { path: string; sha256: string; bytes: number; type: string }
-interface Manifest { entry: string; note: string; page: Meta; files: File[] }
+interface Manifest { entry: string; note: string; page: Meta; files: File[]; decisions?: Declared[] }
 interface UploadRow { id: string; project_id: string; slug: string; key_id: string; base_version: number; manifest_json: string; expires_at: number }
 
 function readManifest(body: Record<string, unknown>): { baseVersion: number; manifest: Manifest } {
@@ -24,7 +25,7 @@ function readManifest(body: Record<string, unknown>): { baseVersion: number; man
   if (!isObject(body.page)) throw invalid('page must be an object.');
   const page = readMeta(body.page);
   if (baseVersion === 0 && page.title === undefined) throw invalid('A new page needs page.title.');
-  if (body.decisions !== undefined) throw invalid('Decisions are not available yet.');
+  const decisions = body.decisions === undefined ? undefined : readDeclared(body.decisions);
   if (!Array.isArray(body.files) || body.files.length < 1 || body.files.length > MAX_FILES) throw invalid(`files must list 1 to ${MAX_FILES} files.`);
   const paths = new Set<string>(), sizes = new Map<string, number>();
   let total = 0;
@@ -42,7 +43,7 @@ function readManifest(body: Record<string, unknown>): { baseVersion: number; man
   if (total > MAX_TOTAL) throw new ApiError('too_large', 'A version can hold at most 100 MB.');
   const entry = body.entry === undefined ? 'index.html' : checkPath(body.entry);
   if (!paths.has(entry) || !isHtml(entry)) throw invalid('entry must be an HTML file in files.');
-  return { baseVersion, manifest: { entry, note: body.note === undefined ? '' : text(body.note, 'note', { max: 500 }), page, files } };
+  return { baseVersion, manifest: { entry, note: body.note === undefined ? '' : text(body.note, 'note', { max: 500 }), page, files, ...(decisions && { decisions }) } };
 }
 
 const isConflict = (error: unknown): boolean => /version conflict|UNIQUE constraint failed: (pages|page_versions)\./.test(String(error));
@@ -245,6 +246,7 @@ async function commitOnce(ctx: Context, upload: UploadRow, project: Project, man
     env.DB.prepare(`INSERT INTO version_files(version_id, path, sha256, media_type, bytes)
       SELECT ?, j.value ->> 'path', j.value ->> 'sha256', j.value ->> 'type', j.value ->> 'bytes' FROM json_each(?) j`).bind(versionId, JSON.stringify(manifest.files)),
     ...(meta.tags ? tagStatements(env, page.id, project.id, tags, now) : []),
+    ...(manifest.decisions ? declareStatements(env, manifest.decisions, { pageId: page.id, projectId: project.id, versionId, n, agentId: caller.agentId, now }) : []),
     eventStatement(env, project.id, page.id, 'page.published', page.id, caller.agentId, now),
     ...(current && current.status !== page.status ? [eventStatement(env, project.id, page.id, 'page.status', page.id, caller.agentId, now)] : []),
   ]);

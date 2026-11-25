@@ -46,7 +46,7 @@ test('someone in no project is told so, and a project of others is not there', a
   await expect(page.getByText('You’re in no project yet.')).toBeVisible();
   await page.goto(`${APP}/p/one/good`);
   await expect(page.getByText('This page isn’t here, or you can’t see it.')).toBeVisible();
-  await page.getByRole('link', { name: 'Pages' }).click();
+  await page.getByRole('main').getByRole('link', { name: 'Pages' }).click();
   await expect(page.getByText('You’re in no project yet.')).toBeVisible();
 });
 

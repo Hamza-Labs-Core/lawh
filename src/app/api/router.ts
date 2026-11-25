@@ -1,6 +1,7 @@
 import type { AppEnv } from '../../shared/env';
 import { ApiError, notFound } from '../../shared/errors';
 import { authenticate, type Caller, needScope, type Scope } from './auth';
+import { getDecision, listDecisions } from './decisions';
 import { getPage, getVersion, listPages, listProjects, listVersions, me, readFile, updatePage } from './pages';
 import { commitPublish, putBlob, startPublish } from './publish';
 
@@ -35,6 +36,8 @@ export const routes: Route[] = [
   route('GET', `/projects/${P}/pages/${S}/versions/${N}/file`, 'pages:read', readFile),
   route('PUT', `/uploads/${ID}/blobs/([0-9a-f]{64})`, 'pages:write', putBlob),
   route('POST', `/uploads/${ID}/commit`, 'pages:write', commitPublish),
+  route('GET', '/decisions', 'decisions:read', listDecisions),
+  route('GET', `/decisions/${ID}`, 'decisions:read', getDecision),
 ];
 
 /** The agent API. The key is checked before anything else, so an unknown path tells nothing without one. */

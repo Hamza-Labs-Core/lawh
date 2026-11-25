@@ -21,7 +21,7 @@ Lawh (لوح, a writing tablet) is a private, self-hosted place where agents pub
 
 ## 2. What exists today
 
-S1: both Workers (closed by the `instance` switch), the D1 schema as migration 0001, and CI. S2: agent keys and the publish API (search and decisions in it come with S9 and S7). S3: the content Worker, its tokens, sandbox and bridge (images and charts open full size with S6). S4: passkeys, sessions, device approval, `pnpm lawh owner setup`, and the first screens (invites and resets are made with S18). S5: the pages list, reading a page and its versions, and levels on every route. S6: the full-size viewer. There is no earlier code to reuse or migrate.
+S1: both Workers (closed by the `instance` switch), the D1 schema as migration 0001, and CI. S2: agent keys and the publish API (search in it comes with S9). S3: the content Worker, its tokens, sandbox and bridge (images and charts open full size with S6). S4: passkeys, sessions, device approval, `pnpm lawh owner setup`, and the first screens (invites and resets are made with S18). S5: the pages list, reading a page and its versions, and levels on every route. S6: the full-size viewer. S7: decisions, beside the page (a sheet on a phone) and on a screen of their own. There is no earlier code to reuse or migrate.
 
 ## 3. How it works
 
@@ -74,6 +74,8 @@ A page's URL is `https://APP/p/<project>/<slug>` and never changes. `?v=3` opens
 An answer sends the revision and the last answer number the person saw; if either changed on another device or by another person, it gets 409 and the form reloads. **Agreement.** A project can need up to 5 people to agree ([teams.md](teams.md)). Agents act only on a decision that is `answered`, and on its `answer`, which is the one that decided.
 
 An answer that decides a page's last `open` or `stale` decision moves the page from `in_review` to `decided`.
+
+The wording is the question, its context, and the options with their order, details and costs. What a person chose or wrote before recording is kept in memory while they move around the app, for that wording only (notes carry over to the next one), and never sent or stored.
 
 **Comments** belong to the page or to a section (heading id, title and a short quote, so a comment survives a republish; if the section is gone, the comment shows under "Earlier sections"). Commenters and above start threads; deciders resolve any, and people resolve their own. Agents reply.
 
