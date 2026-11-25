@@ -131,21 +131,45 @@ test('a page that asks again and again cannot change the address shown, trap the
   await page.waitForTimeout(1500);
   await expect(page.getByRole('dialog')).toHaveCount(1);
   await page.getByRole('button', { name: 'Close' }).click();
-  // Each time it waits longer.
-  await expect(dialog).toBeVisible();
+  // Each time it waits longer: by now long enough to leave.
+  for (let i = 0; i < 2; i++) { await expect(dialog).toBeVisible(); await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0); }
+  const shown = Date.now();
+  await expect(dialog).toBeVisible({ timeout: 10_000 });
+  expect(Date.now() - shown).toBeGreaterThan(1500);
   await page.keyboard.press('Escape');
-  await page.waitForTimeout(1500);
-  await expect(dialog).toHaveCount(0);
   await page.getByRole('button', { name: 'Back' }).click();
   await expect(page.getByRole('heading', { name: 'Pages' })).toBeVisible();
 });
 
+test('a person can open and cancel several links in a row', async ({ page, member }) => {
+  await open(page, member, '/p/one/good');
+  const dialog = page.getByRole('dialog', { name: 'Open another site?' });
+  await page.context().route('https://example.com/**', (route) => route.fulfill({ contentType: 'text/html', body: 'example' }));
+  for (let i = 0; i < 6; i++) {
+    await frame(page).locator('#out').click();
+    const popup = page.context().waitForEvent('page');
+    await dialog.getByRole('link', { name: 'Open' }).click();
+    await (await popup).close();
+    await expect(dialog).toHaveCount(0);
+  }
+  for (let i = 0; i < 4; i++) {
+    await frame(page).locator('#out').click();
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    await expect(dialog).toHaveCount(0);
+    // As long as a person takes to aim again.
+    await page.waitForTimeout(1600);
+  }
+  await frame(page).locator('#out').click();
+  await expect(dialog).toBeVisible();
+});
+
 test('a theme or language changed while the page loads reaches it', async ({ page, member }) => {
   await join(member); await enter(page.context(), member);
-  let release = () => {};
-  const held = new Promise<void>((resolve) => { release = resolve; });
-  await page.route('**/app-api/projects/one/pages/good?*', async (route) => { const response = await route.fetch(); await held; await route.fulfill({ response }); });
+  let release = () => {}, asked = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; }), started = new Promise<void>((resolve) => { asked = resolve; });
+  await page.route('**/app-api/projects/one/pages/good?*', async (route) => { asked(); const response = await route.fetch(); await held; await route.fulfill({ response }); });
   await page.goto(`${APP}/p/one/good`);
+  await started;
   await page.getByRole('button', { name: 'Light' }).click();
   await page.getByRole('button', { name: 'العربية' }).click();
   release();
@@ -176,8 +200,15 @@ test('filters by project, with the tags of that project', async ({ page, member 
   await expect(page.getByRole('button', { name: 'Remove the tag filter: second-only' })).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(tag).toBeFocused();
+  let release = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route('**/app-api/tags?*project=one*', async (route) => { await held; await route.continue(); });
   await page.getByLabel('Project').selectOption('One');
   await tag.click();
+  await page.waitForTimeout(400);
+  await expect(page.locator('.options [role=option]:visible'), 'nothing of the other project meanwhile').toHaveCount(0);
+  await expect(tag).toHaveAttribute('aria-expanded', 'false');
+  release();
   await expect(page.locator('.options [role=option]').filter({ hasText: 'weather' })).toBeVisible();
   await expect(page.locator('.options [role=option]').filter({ hasText: 'second-only' })).toHaveCount(0);
 });
@@ -200,11 +231,17 @@ test('"Show more" of an old list does not touch the new one, and a failure goes 
   await expect(page.getByRole('alert')).toHaveText('No connection.');
   await expect(page.locator('.grid li')).toHaveCount(30);
   await page.unroute('**/app-api/pages?*cursor*');
+  // Twice at once, before the button is drawn as disabled: one page more.
+  await page.getByRole('button', { name: 'Show more' }).evaluate((b: HTMLButtonElement) => { b.click(); b.click(); });
+  await expect(page.locator('.grid li').nth(45)).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  const titles = await page.locator('.grid h2').allInnerTexts();
+  expect(new Set(titles).size).toBe(titles.length);
+  await page.reload();
   let release = () => {};
   const held = new Promise<void>((resolve) => { release = resolve; });
   await page.route('**/app-api/pages?*cursor*', async (route) => { await held; await route.abort(); });
   await page.getByRole('button', { name: 'Show more' }).click();
-  await expect(page.getByRole('alert')).toHaveCount(0);
   await page.getByLabel('Status').selectOption('In review');
   await expect(page.locator('.grid li')).toHaveCount(1);
   release();
@@ -230,6 +267,38 @@ test('a session that ends goes to sign-in at the same address', async ({ page, m
   await page.getByRole('button', { name: 'Version 1' }).click();
   await expect(page.getByRole('button', { name: 'Approve from another device' })).toBeVisible();
   expect(page.url()).toBe(`${APP}/p/one/good`);
+});
+
+test('projects that fail to load can be tried again, and nobody is told there are no pages meanwhile', async ({ page, member }) => {
+  await enter(page.context(), member);
+  let release = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route('**/app-api/projects', async (route) => { await held; await route.abort(); });
+  await page.goto(APP);
+  await page.waitForTimeout(500);
+  await expect(page.locator('.empty')).toHaveCount(0);
+  release();
+  await expect(page.getByRole('alert')).toHaveText('No connection.');
+  await page.unroute('**/app-api/projects');
+  await page.getByRole('button', { name: 'Try again' }).click();
+  await expect(page.getByText('You’re in no project yet.')).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
+test('choosing and clearing a tag leaves no old list', async ({ page, member }) => {
+  await open(page, member);
+  const tag = page.getByRole('combobox', { name: 'Tag' });
+  await tag.fill('we');
+  await expect(page.locator('.options [role=option]')).toHaveText(['weather']);
+  await tag.press('ArrowDown');
+  await tag.press('Enter');
+  await page.route('**/app-api/tags?*', () => { /* never answered */ });
+  await page.getByRole('button', { name: 'Remove the tag filter: weather' }).click();
+  await tag.click();
+  await page.waitForTimeout(300);
+  await expect(page.locator('.options [role=option]:visible')).toHaveCount(0);
+  await tag.press('Enter');
+  await expect(tag).toBeVisible();
 });
 
 test('a list that fails can be tried again', async ({ page, member }) => {

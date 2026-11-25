@@ -5,24 +5,32 @@ import { readBridgeMessage } from '../bridgeHost';
 import { day, digits, translate } from '../i18n';
 import { StatusMark } from './Library';
 
+const CALM = { until: 0, wait: 500, pushy: false };
+
 /** One version of a page, in its sandboxed frame, with the app's own bar around it. */
 export function PageView({ project, slug, search }: { project: string; slug: string; search: string }) {
   const t = useText(), { lang, mode } = useSettings(), asked = new URLSearchParams(search).get('v'), path = `/projects/${project}/pages/${slug}`;
   const [page, setPage] = useState<Reading | 'gone' | 'offline' | 'wait' | 'failed' | null>(null), [tries, setTries] = useState(0), [slow, setSlow] = useState(false), [versions, setVersions] = useState<HTMLElement | null>(null), [link, setLink] = useState<string | null>(null);
   const frame = useRef<HTMLIFrameElement>(null), ready = useRef(false), theme = useRef({ mode, lang });
   theme.current = { mode, lang };
-  // A page can send messages whenever it likes, so a link it wants to open is shown only when nothing else is, and
-  // after each dialog that was closed it has to wait longer: it can't change an address under a finger or trap the tab.
-  const quiet = useRef({ until: 0, wait: 1000 }), dialogOpen = useRef(false);
+  // A page can send messages whenever it likes, so a link it wants to open is shown only when nothing else is: it can't
+  // change an address under a finger. One that keeps asking after a "Cancel" waits longer each time, so it can't trap
+  // the tab; a person who opens or cancels links one by one isn't held up.
+  const quiet = useRef({ ...CALM }), dialogOpen = useRef(false);
   dialogOpen.current = link !== null || versions !== null;
-  const closeLink = () => { quiet.current = { until: Date.now() + quiet.current.wait, wait: Math.min(quiet.current.wait * 2, 60_000) }; setLink(null); };
-  const closeVersions = () => { quiet.current.until = Math.max(quiet.current.until, Date.now() + 1000); setVersions(null); };
+  const pause = () => {
+    const { wait, pushy } = quiet.current, next = pushy ? Math.min(wait * 2, 60_000) : CALM.wait;
+    quiet.current = { until: Date.now() + next, wait: next, pushy: false };
+  };
+  const cancelLink = () => { pause(); setLink(null); };
+  const openedLink = () => { quiet.current = { ...CALM }; setLink(null); };
+  const closeVersions = () => { pause(); setVersions(null); };
   // The frame's origin is opaque, so there is no name to send to; nothing in the message is secret.
   const sendTheme = () => frame.current?.contentWindow?.postMessage({ type: 'lawh:theme', ...theme.current }, '*');
 
   useEffect(() => {
     const stop = new AbortController();
-    setPage(null); setSlow(false); setVersions(null); setLink(null); ready.current = false;
+    setPage(null); setSlow(false); setVersions(null); setLink(null); ready.current = false; quiet.current = { ...CALM };
     // The theme and language are in the address only for the first paint; changes are sent to the page.
     call<Reading>('GET', `${path}?${new URLSearchParams({ mode, lang, ...(asked && { v: asked }) })}`, undefined, stop.signal)
       .then(setPage, (error: unknown) => { if (!stop.signal.aborted) setPage(error instanceof CallError && error.status === 404 ? 'gone' : problemOf(error)); });
@@ -33,15 +41,29 @@ export function PageView({ project, slug, search }: { project: string; slug: str
   useEffect(() => {
     if (url === null) return;
     const timer = setTimeout(() => { if (!ready.current) setSlow(true); }, 10_000);
+    return () => clearTimeout(timer);
+  }, [url]);
+
+  // From the start: a page in the cache can speak before an effect that waits for its address has run.
+  useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       const message = readBridgeMessage(event, frame.current?.contentWindow);
-      if (message?.type === 'open-link' && !dialogOpen.current && Date.now() >= quiet.current.until) { dialogOpen.current = true; setLink(message.url); }
+      if (message?.type === 'open-link') {
+        const since = Date.now() - quiet.current.until;
+        if (dialogOpen.current || since < 0) quiet.current.pushy = true;
+        else {
+          // Right after a pause ended: a timer, more likely than a finger.
+          if (quiet.current.until > 0 && since < 1000) quiet.current.pushy = true;
+          dialogOpen.current = true;
+          setLink(message.url);
+        }
+      }
       // The bridge listens now: what changed while the page loaded is sent again.
       if (message?.type === 'outline') { ready.current = true; setSlow(false); sendTheme(); }
     };
     addEventListener('message', onMessage);
-    return () => { clearTimeout(timer); removeEventListener('message', onMessage); };
-  }, [url]);
+    return () => removeEventListener('message', onMessage);
+  }, []);
 
   useEffect(() => { sendTheme(); }, [mode, lang]);
 
@@ -62,9 +84,9 @@ export function PageView({ project, slug, search }: { project: string; slug: str
       </div>
       {old && <p class="notice" role="status"><Fill text="oldVersion" n={digits(lang, page.version.n)} current={digits(lang, page.currentVersion)} /> <Link to={`/p/${project}/${slug}`}>{t('toCurrent')}</Link></p>}
       {slow && <p class="notice" role="status">{t('slow')} <button class="text" onClick={() => setTries(tries + 1)}>{t('reload')}</button></p>}
-      <iframe key={page.frame} ref={frame} class="page-frame" title={translate(lang, 'pageFrame', { title: page.title })} sandbox="allow-scripts" referrerpolicy="no-referrer" src={page.frame} />
+      <iframe key={page.frame} ref={frame} class="page-frame" title={translate(lang, 'pageFrame', { title: page.title })} sandbox="allow-scripts" referrerpolicy="no-referrer" src={page.frame} onLoad={sendTheme} />
       {versions && <Versions path={path} project={project} slug={slug} shown={page.version.n} current={page.currentVersion} returnTo={versions} onClose={closeVersions} />}
-      {link !== null && <LeaveDialog url={link} returnTo={frame.current} onClose={closeLink} />}
+      {link !== null && <LeaveDialog url={link} returnTo={frame.current} onClose={cancelLink} onOpened={openedLink} />}
     </div>
   );
 }
@@ -83,7 +105,7 @@ function Dialog({ title, returnTo, onClose, children }: { title: string; returnT
   );
 }
 
-function LeaveDialog({ url, returnTo, onClose }: { url: string; returnTo: HTMLElement | null; onClose: () => void }) {
+function LeaveDialog({ url, returnTo, onClose, onOpened }: { url: string; returnTo: HTMLElement | null; onClose: () => void; onOpened: () => void }) {
   const t = useText();
   return (
     <Dialog title={t('leaveTitle')} returnTo={returnTo} onClose={onClose}>
@@ -91,7 +113,7 @@ function LeaveDialog({ url, returnTo, onClose }: { url: string; returnTo: HTMLEl
       <p class="address" dir="ltr">{url}</p>
       <div class="row">
         <button class="plain" onClick={onClose}>{t('cancel')}</button>
-        <a class="primary as-button" href={url} target="_blank" rel="noopener noreferrer" onClick={onClose}>{t('open')}</a>
+        <a class="primary as-button" href={url} target="_blank" rel="noopener noreferrer" onClick={onOpened}>{t('open')}</a>
       </div>
     </Dialog>
   );

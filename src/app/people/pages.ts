@@ -40,7 +40,7 @@ function byCodePoint(a: string, b: string): number {
   return x.length - y.length;
 }
 
-/** The tags in use on pages that aren't deleted, for the filter: those that start with `q`, 50 at most. Each is found by an index seek, however many pages have it. */
+/** The tags in use on pages that aren't deleted, for the filter: those that start with `q`, 50 at most. Each is found by an index seek, however many pages have it; deleted pages are stepped over until their purge. */
 export async function listMyTags(ctx: SignedIn): Promise<Response> {
   const { env, person, url } = ctx, slug = url.searchParams.get('project');
   const q = [...(url.searchParams.get('q') ?? '').trim().normalize('NFC')].slice(0, 40).join('').toWellFormed(), end = afterPrefix(q);
