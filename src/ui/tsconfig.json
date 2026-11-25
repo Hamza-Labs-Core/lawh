@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "types": [], "lib": ["es2024", "dom", "dom.iterable"], "jsx": "react-jsx", "jsxImportSource": "preact" },
+  "include": ["."]
+}

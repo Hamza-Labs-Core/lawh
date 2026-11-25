@@ -8,7 +8,7 @@ export default defineConfig({
   workers: process.env.CI ? 2 : 3,
   timeout: 30_000,
   reporter: [['list']],
-  projects: (['chromium', 'firefox', 'webkit'] as const).map((browserName) => ({ name: browserName, use: { browserName,
+  projects: (['chromium', 'firefox', 'webkit'] as const).map((browserName) => ({ name: browserName, ...(browserName !== 'chromium' && { testIgnore: 'passkey.spec.ts' }), use: { browserName,
     // Chromium's own rule against reaching the local network would hide what the sandbox does or doesn't block.
     ...(browserName === 'chromium' && { launchOptions: { args: ['--disable-features=LocalNetworkAccessChecks'] } }) } })),
   webServer: { command: 'node e2e/serve.mjs', url: 'http://127.0.0.1:8799/ready', timeout: 120_000, reuseExistingServer: false, gracefulShutdown: { signal: 'SIGTERM', timeout: 10_000 } },

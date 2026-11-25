@@ -10,7 +10,8 @@ import { CONTENT_KEY, PEPPER, runLocal } from '../scripts/local/run.mjs';
 const root = fileURLToPath(new URL('..', import.meta.url)), state = join(root, '.wrangler/e2e');
 rmSync(state, { recursive: true, force: true });
 // A server that is already there would be taken for ours.
-if (await fetch('http://127.0.0.1:8797/').then(() => true, () => false)) { console.error('Port 8797 is in use'); process.exit(1); }
+const taken = await Promise.all(['127.0.0.1', 'localhost'].map((host) => fetch(`http://${host}:8797/`).then(() => true, () => false)));
+if (taken.includes(true)) { console.error('Port 8797 is in use'); process.exit(1); }
 const { child, app: APP } = runLocal({ port: 8797, state, testing: true });
 
 let stopping = false;
@@ -60,7 +61,7 @@ const db = async (...statements) => {
 const keyId = `key_${'0'.repeat(26)}`, secret = randomBytes(32).toString('base64url');
 const mac = createHmac('sha256', PEPPER).update(`${keyId}:${createHash('sha256').update(secret).digest('hex')}`).digest('hex');
 await db(
-  "INSERT INTO settings(key,value_json,updated_at) VALUES('instance','true',1)",
+  "INSERT INTO settings(key,value_json,updated_at) VALUES('instance','true',1),('teams','true',1)",
   "INSERT INTO projects(id,slug,name_en,name_ar,created_at) VALUES('p1','one','One','واحد',1)",
   "INSERT INTO members(id,name,role,created_at) VALUES('o','Owner','owner',1)", 'UPDATE members SET joined_at=1',
   "INSERT INTO agents(id,member_id,name,created_at) VALUES('a','o','bot',1)",

@@ -23,13 +23,13 @@ function withHeaders(response: Response, headers: Record<string, string>): Respo
 }
 
 /**
- * Wraps a Worker's routes: nothing is reachable while `instance` is off, a failure never shows details, and
+ * Wraps a Worker's routes: nothing but `openWhenOff` is reachable while `instance` is off, a failure never shows details, and
  * every response gets the host's headers.
  */
-export function guarded<E extends SharedEnv>(route: Route<E>, headers: (env: E) => Record<string, string>): Route<E> {
+export function guarded<E extends SharedEnv>(route: Route<E>, headers: (env: E) => Record<string, string>, openWhenOff: (request: Request) => boolean = () => false): Route<E> {
   return async (request, env, ctx) => {
     try {
-      const response = (await isOn(env.DB, 'instance'))
+      const response = openWhenOff(request) || (await isOn(env.DB, 'instance'))
         ? await route(request, env, ctx)
         : errorResponse('feature_off', 'This feature is off.');
       return withHeaders(response, headers(env));

@@ -17,6 +17,9 @@ export function runLocal({ port, state, testing = false }) {
     const config = JSON.parse(readFileSync(join(root, `wrangler.${name}.dev.jsonc`), 'utf8').replace(/^\s*\/\/.*$/gm, ''));
     Object.assign(config.vars, { APP_ORIGIN: app, CONTENT_ORIGIN: content, CONTENT_KEY, ...(name === 'app' && { PEPPER }) });
     config.main = join(root, config.main);
+    // All tests come from one address.
+    if (testing) for (const limit of config.ratelimits ?? []) limit.simple.limit = 100_000;
+    if (config.assets) config.assets.directory = join(root, config.assets.directory);
     config.d1_databases[0].migrations_dir = join(root, 'migrations');
     const path = join(state, `${name}.json`);
     writeFileSync(path, JSON.stringify(config));
