@@ -72,7 +72,7 @@ describe('files', () => {
 
   it('answers 404 to everything else', async () => {
     const paths = ['/', '/x', `/${token}`, `/${token}/`, `/${token}/nope.html`, `/${token}/other.txt`, `/${token}/INDEX.html`, `/${token}//index.html`, `/${token}/index.html/`,
-      `/${token}/%E0%A4%A`, `/${token}/%2e%2e/index.html`, `/${token}/_lawh/nope.js`, `/${token}/_lawh/`, `/x/index.html`, `/${token}x/index.html`, '/v1/me', '/robots.txt'];
+      `/${token}/%E0%A4%A`, `/${token}/%2e%2e/index.html`, `/${token}/_lawh%2Fbridge.js`, `/${token}/${encodeURIComponent('a b/صورة #1?.png')}`, `/${token}/_lawh/nope.js`, `/${token}/_lawh/`, `/x/index.html`, `/${token}x/index.html`, '/v1/me', '/robots.txt'];
     for (const path of paths) {
       const response = await call(path);
       expect([path, response.status, response.headers.get('Cache-Control')]).toEqual([path, 404, 'no-store']);
@@ -106,10 +106,23 @@ describe('files', () => {
     const { default: worker } = await import('../../src/content/index');
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      for (const change of [{ CONTENT_KEY: '' }, { CONTENT_KEY: 'short' }, { APP_ORIGIN: 'https://a.example.com/x' }, { CONTENT_ORIGIN: 'http://a.example.com' }, { APP_ORIGIN: "https://a.example.com; script-src *" }, { CONTENT_ORIGIN: '*' }]) {
+      for (const change of [{ CONTENT_KEY: '' }, { CONTENT_KEY: 'short' }, { APP_ORIGIN: 'https://a.example.com/x' }, { CONTENT_ORIGIN: 'http://a.example.com' }, { APP_ORIGIN: "https://a.example.com; script-src *" }, { CONTENT_ORIGIN: '*' }, { CONTENT_ORIGIN: env.APP_ORIGIN }]) {
         const response = await worker.fetch(new Request(`http://localhost:8788/${token}/app.js`) as Request<unknown, IncomingRequestCfProperties>, { ...env, ...change }, {} as ExecutionContext);
         expect([response.status, response.headers.get('Content-Security-Policy')!.includes('sandbox')], JSON.stringify(change)).toEqual([500, true]);
       }
+    } finally { log.mockRestore(); }
+  });
+
+  it('answers 500, not 416, when R2 fails, and reads no body for HEAD', async () => {
+    const { default: worker } = await import('../../src/content/index');
+    const run = (init: RequestInit, get: () => Promise<never>) => worker.fetch(new Request(`http://127.0.0.1:8787/${token}/app.js`, init) as Request<unknown, IncomingRequestCfProperties>,
+      { ...env, FILES: new Proxy(env.FILES, { get: (t, n) => (n === 'get' ? get : Reflect.get(t, n).bind(t)) }) }, {} as ExecutionContext);
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const down = vi.fn(async (): Promise<never> => { throw new Error('R2 is down'); });
+      expect((await run({ headers: { Range: 'bytes=0-1' } }, down)).status).toBe(500);
+      expect((await run({ method: 'HEAD' }, down)).status).toBe(200);
+      expect(down).toHaveBeenCalledOnce();
     } finally { log.mockRestore(); }
   });
 
@@ -118,9 +131,12 @@ describe('files', () => {
     const head = await call(path, { method: 'HEAD' });
     expect([head.status, await head.text(), head.headers.get('Content-Length')]).toEqual([200, '', '10']);
     const etag = head.headers.get('ETag')!;
-    expect((await call(path, { headers: { 'If-None-Match': etag } })).status).toBe(304);
+    for (const header of [etag, `W/${etag}`, `"x", ${etag}`, '*']) expect((await call(path, { headers: { 'If-None-Match': header } })).status, header).toBe(304);
+    expect((await call(path, { headers: { 'If-None-Match': '"x"' } })).status).toBe(200);
     for (const [range, status, body, header] of [['bytes=2-4', 206, '234', 'bytes 2-4/10'], ['bytes=7-', 206, '789', 'bytes 7-9/10'], ['bytes=-3', 206, '789', 'bytes 7-9/10'],
-      ['bytes=8-99', 206, '89', 'bytes 8-9/10'], ['bytes=0-', 200, '0123456789', null]] as const) {
+      ['bytes=8-99', 206, '89', 'bytes 8-9/10'], ['bytes=0-', 206, '0123456789', 'bytes 0-9/10'], ['bytes=0-9', 206, '0123456789', 'bytes 0-9/10'], ['bytes=-99', 206, '0123456789', 'bytes 0-9/10'],
+      ['bytes=10-', 416, '', 'bytes */10'], ['bytes=10-20', 416, '', 'bytes */10'], ['bytes=-0', 416, '', 'bytes */10'], ['bytes=5-2', 200, '0123456789', null], ['bytes=0-1,4-5', 200, '0123456789', null],
+      ['bytes=-', 200, '0123456789', null], ['items=0-1', 200, '0123456789', null]] as const) {
       const response = await call(path, { headers: { Range: range } });
       expect([range, response.status, await response.text(), response.headers.get('Content-Range')]).toEqual([range, status, body, header]);
     }
@@ -130,9 +146,9 @@ describe('files', () => {
 describe('pages', () => {
   it('adds the bridge at the end, and the theme and language from the address only when they are known', async () => {
     const read = async (path: string) => (await call(`/${token}/${path}`)).text();
-    expect(await read('index.html?mode=light&lang=ar')).toBe(`<!doctype html><html lang="en" data-lawh-mode="light" data-lawh-lang="ar"><head><title>T</title></head><body><h1>Hi</h1></body></html><script src="/${token}/_lawh/bridge.js" data-mode="light" data-lang="ar"></script>`);
+    expect(await read('index.html?mode=light&lang=ar')).toBe(`<!doctype html><html lang="en" data-lawh-mode="light" data-lawh-lang="ar"><head><title>T</title></head><body><h1>Hi</h1><script src="/${token}/_lawh/bridge.js" data-app="http://localhost:8787" data-mode="light" data-lang="ar"></script></body></html>`);
     expect(await read('index.html?mode=%22%3E%3Cscript%3E&lang=x')).toContain('data-lawh-mode="dark" data-lawh-lang="en"');
-    expect(await read('bare.html?mode=light')).toBe(`<h1>No html element</h1><script src="/${token}/_lawh/bridge.js" data-mode="light" data-lang="en"></script>`);
+    expect(await read('bare.html?mode=light')).toBe(`<h1>No html element</h1><script src="/${token}/_lawh/bridge.js" data-app="http://localhost:8787" data-mode="light" data-lang="en"></script>`);
   });
 
   it('serves the bridge, which is valid JavaScript', async () => {
@@ -146,9 +162,9 @@ describe('pages', () => {
   it('sends the sandbox and the rest with every response', async () => {
     for (const path of [`/${token}/index.html`, `/${token}/app.js`, `/${token}/_lawh/bridge.js`, `/${token}/nope`, '/']) {
       const { headers } = await call(path);
-      expect(headers.get('Content-Security-Policy'), path).toBe("sandbox allow-scripts; default-src 'none'; script-src http://localhost:8788 'unsafe-inline' 'wasm-unsafe-eval'; "
-        + "style-src http://localhost:8788 'unsafe-inline'; img-src http://localhost:8788 data: blob:; font-src http://localhost:8788 data:; media-src http://localhost:8788 blob:; "
-        + "connect-src http://localhost:8788; worker-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors http://localhost:8787; webrtc 'block'");
+      expect(headers.get('Content-Security-Policy'), path).toBe("sandbox allow-scripts; default-src 'none'; script-src http://127.0.0.1:8787 'unsafe-inline' 'wasm-unsafe-eval'; "
+        + "style-src http://127.0.0.1:8787 'unsafe-inline'; img-src http://127.0.0.1:8787 data: blob:; font-src http://127.0.0.1:8787 data:; media-src http://127.0.0.1:8787 blob:; "
+        + "connect-src http://127.0.0.1:8787; worker-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors http://localhost:8787; webrtc 'block'");
       for (const [name, value] of [['Referrer-Policy', 'no-referrer'], ['X-Content-Type-Options', 'nosniff'], ['Access-Control-Allow-Origin', '*'], ['Cross-Origin-Resource-Policy', 'cross-origin'],
         ['X-Robots-Tag', 'noindex, nofollow'], ['X-DNS-Prefetch-Control', 'off']] as const) expect(headers.get(name), `${path} ${name}`).toBe(value);
       expect(headers.get('Set-Cookie'), path).toBeNull();

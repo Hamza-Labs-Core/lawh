@@ -1,1 +1,1 @@
-{ "extends": "./tsconfig.json", "compilerOptions": { "types": ["node"], "lib": ["es2024", "dom", "dom.iterable"] }, "include": ["vitest.config.ts", "playwright.config.ts", "e2e/*.spec.ts", "e2e/teardown.ts"] }
+{ "extends": "./tsconfig.json", "compilerOptions": { "types": ["node"], "lib": ["es2024", "dom", "dom.iterable"] }, "include": ["vitest.config.ts", "playwright.config.ts", "e2e/*.spec.ts"] }

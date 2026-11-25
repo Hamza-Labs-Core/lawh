@@ -49,9 +49,11 @@ test('a page works: its own scripts, styles, images and data load, in an opaque 
   expect((await harness.messages()).every((m) => m.origin === 'null')).toBe(true);
 });
 
-test('the trap records what reaches it', async ({ harness }) => {
-  await fetch(`${TRAP}/${harness.who}/control`);
-  expect(await harness.hits()).toEqual(['control']);
+test('the trap records what a browser sends it, from a page that no sandbox holds', async ({ harness, page }) => {
+  await page.route(`${APP}/free`, (route) => route.fulfill({ contentType: 'text/html', body: `<iframe src="${CONTENT}/free"></iframe>` }));
+  await page.route(`${CONTENT}/free`, (route) => route.fulfill({ contentType: 'text/html', body: `<img src="${TRAP}/${harness.who}/img"><script>fetch('${TRAP}/${harness.who}/fetch', { mode: 'no-cors' })</script>` }));
+  await page.goto(`${APP}/free`);
+  await expect.poll(async () => (await harness.hits()).sort()).toEqual(['fetch', 'img']);
 });
 
 test('a hostile page reads nothing and sends nothing', async ({ harness, page }) => {
@@ -89,7 +91,8 @@ test('the bridge tells the outline, scrolling and outside links, and takes the t
   await harness.open('good');
   await harness.result();
   const of = async (type: string) => (await harness.messages()).filter((m) => m.type === type);
-  expect((await of('lawh:outline'))[0]!.items).toEqual([{ id: 's-first-section', title: 'First section', level: 1 }, { id: 's-first-section-2', title: 'First section', level: 2 }, { id: 'own', title: 'Own id', level: 3 }]);
+  expect((await of('lawh:outline'))[0]!.items).toEqual([{ id: 's-first-section', title: 'First section', level: 1 }, { id: 's-first-section-2', title: 'First section', level: 2 }, { id: 'own', title: 'Own id', level: 3 },
+    { id: 's-مرحبا-بكم', title: 'مَرْحَباً بِكُمْ', level: 2 }, { id: 'constructor', title: 'Built in', level: 2 }]);
   const frame = page.frame('page')!;
   await frame.evaluate(() => scrollTo(0, 500));
   await expect.poll(async () => (await of('lawh:scroll-state')).some((m) => m.top === 500)).toBe(true);
@@ -100,8 +103,19 @@ test('the bridge tells the outline, scrolling and outside links, and takes the t
   await frame.locator('#in').click();
   expect(await frame.evaluate(() => [document.title, location.hash])).toEqual(['Good', '#own']);
   expect((await of('lawh:open-link')).length).toBe(1);
+  // Links in a drawing and in an image map are outside links like any other.
+  for (const [i, id] of ['svg', 'xlink', 'area'].entries()) {
+    await frame.evaluate((x) => document.getElementById(x)!.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })), id);
+    await expect.poll(async () => (await of('lawh:open-link')).map((m) => m.url)).toHaveLength(i + 2);
+  }
+  expect((await of('lawh:open-link')).slice(1).map((m) => m.url)).toEqual(['https://example.com/svg', 'https://example.com/xlink', 'https://example.com/area']);
+  await frame.evaluate(() => document.getElementById('long')!.click());
   await page.evaluate(() => document.querySelector('iframe')!.contentWindow!.postMessage({ type: 'lawh:theme', mode: 'light', lang: 'ar' }, '*'));
   await expect.poll(() => frame.evaluate(() => [document.documentElement.dataset.lawhMode, document.documentElement.dataset.lawhLang])).toEqual(['light', 'ar']);
+  expect((await of('lawh:open-link')).length).toBe(4);
+  // Another file of the page keeps them.
+  await frame.locator('#next').click();
+  await expect.poll(() => page.frame('page')!.evaluate(() => [location.pathname.split('/').at(-1), document.documentElement.dataset.lawhMode, document.documentElement.dataset.lawhLang])).toEqual(['next.html', 'light', 'ar']);
 });
 
 test('a page cannot give itself a theme, and its forged messages are only messages', async ({ harness, page }) => {
@@ -131,7 +145,7 @@ test('a page does not open in its own tab, also when the frame has it in the cac
   expect(await harness.hits()).toEqual([]);
 });
 
-test('WebRTC and DNS prefetch are recorded', async ({ harness, page }) => {
+test('whether a page can use WebRTC is recorded', async ({ harness, page }) => {
   await harness.open('good');
   await harness.result();
   const rtc = await page.frame('page')!.evaluate(async () => {

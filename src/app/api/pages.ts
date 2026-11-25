@@ -1,5 +1,6 @@
 import type { AppEnv } from '../../shared/env';
 import { conflict, invalid, notFound } from '../../shared/errors';
+import { matchesEtag } from '../../shared/etag';
 import { newId } from '../../shared/ids';
 import { type Project, projectBySlug, projectJson, projectsById, usableProjects } from './auth';
 import { onlyKeys, oneOf, readJson, text } from './body';
@@ -147,16 +148,11 @@ export async function listPages(ctx: Context): Promise<Response> {
   });
 }
 
-/** If-None-Match compares weakly: the edge makes an ETag weak when it compresses. */
-function matches(header: string | null, etag: string): boolean {
-  return (header ?? '').split(',').map((tag) => tag.trim().replace(/^W\//, '')).some((tag) => tag === etag || tag === '*');
-}
-
 export async function getPage(ctx: Context): Promise<Response> {
   const project = await projectBySlug(ctx.env, ctx.caller, ctx.params[0]!);
   const page = await findPage(ctx.env, project, ctx.params[1]!);
   const etag = `"${page.current_version}-${page.updated_at}"`;
-  if (matches(ctx.request.headers.get('If-None-Match'), etag)) return new Response(null, { status: 304, headers: { ETag: etag } });
+  if (matchesEtag(ctx.request.headers.get('If-None-Match'), etag)) return new Response(null, { status: 304, headers: { ETag: etag } });
   const [tags, files] = await Promise.all([tagsOf(ctx.env, [page.id]), filesOf(ctx.env, page.id, page.current_version)]);
   return Response.json({ ...pageJson(ctx, project, page, tags.get(page.id) ?? []), files }, { headers: { ETag: etag } });
 }

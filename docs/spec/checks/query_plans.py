@@ -69,7 +69,7 @@ Q = {
  "library by project+tag": "SELECT p.id FROM page_tags t JOIN pages p ON p.id=t.page_id WHERE t.project_id=? AND t.tag=? AND p.deleted_at IS NULL ORDER BY t.sort_at DESC,t.page_id DESC LIMIT 30",
  "page by slug": "SELECT * FROM pages WHERE project_id=? AND slug=?",
  "versions": "SELECT n FROM page_versions WHERE page_id=? ORDER BY n DESC LIMIT 50",
- "serve file": "SELECT sha256 FROM version_files WHERE version_id=? AND path=?",
+ "serve file": "SELECT f.path,f.media_type,f.sha256,f.bytes,b.r2_key FROM page_versions v JOIN pages p ON p.id=v.page_id AND p.deleted_at IS NULL LEFT JOIN version_files f ON f.version_id=v.id AND f.path=? LEFT JOIN blobs b ON b.sha256=f.sha256 WHERE v.id=?",
  "blob still used": "SELECT 1 FROM version_files WHERE sha256=? LIMIT 1",
  "blob pending": "SELECT 1 FROM upload_blobs WHERE sha256=? LIMIT 1",
  "blob gc": "SELECT sha256 FROM blobs WHERE unreferenced_at<? AND unreferenced_at IS NOT NULL LIMIT 100",

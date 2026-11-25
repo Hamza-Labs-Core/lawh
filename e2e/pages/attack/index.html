@@ -1,6 +1,6 @@
 <!doctype html><html><head><meta charset="utf-8"><title>Attack</title></head><body><h1>Attack</h1>
 <script>
-const who = new URLSearchParams(location.search).get('who'), TRAP = 'http://localhost:8799/' + who, APP = 'http://localhost:8797';
+const who = (new URLSearchParams(location.search).get('who') || '').replace(/[^0-9a-f-]/g, ''), TRAP = 'http://localhost:8799/' + who, APP = 'http://localhost:8797';
 const results = {};
 const attempt = async (name, run) => {
   try { const value = await Promise.race([run(), new Promise((r) => setTimeout(r, 1500, 'nothing'))]); results[name] = value === undefined ? 'nothing' : String(value); }

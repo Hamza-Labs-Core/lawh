@@ -9,7 +9,7 @@
   // Not real secrets: a copy's own are in the Secrets Store.
   "vars": {
     "APP_ORIGIN": "http://localhost:8787",
-    "CONTENT_ORIGIN": "http://localhost:8788",
+    "CONTENT_ORIGIN": "http://127.0.0.1:8787",
     "PEPPER": "local-development-pepper-not-a-secret",
     "CONTENT_KEY": "local-development-content-key-not-a-secret"
   },

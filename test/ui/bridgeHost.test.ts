@@ -19,7 +19,7 @@ describe('messages from a page', () => {
 
   it.each([
     null, undefined, 1, 'lawh:outline', [], {}, { type: 'outline', items: [] }, { type: 'lawh:answer', option: 'a' }, { type: 'lawh:comment', body: 'x' }, { type: 'lawh:open-media', src: 'x' },
-    { type: 'lawh:outline' }, { type: 'lawh:outline', items: {} }, { type: 'lawh:outline', items: Array.from({ length: 201 }, () => item()) }, { type: 'lawh:outline', items: [null] },
+    { type: 'lawh:outline' }, { type: 'lawh:outline', items: {} }, { type: 'lawh:outline', items: Array.from({ length: 201 }, () => item()) }, { type: 'lawh:outline', items: [null] }, { type: 'lawh:outline', items: new Array(5) }, { type: 'lawh:open-link', url: `https://example.com/${'ب'.repeat(900)}` },
     ...[{ id: '' }, { id: 1 }, { id: 'x'.repeat(201) }, { title: '' }, { title: {} }, { title: 'x'.repeat(201) }, { level: 0 }, { level: 5 }, { level: '1' }].map((change) => ({ type: 'lawh:outline', items: [item(change)] })),
     ...['http://example.com', 'javascript:alert(1)', 'data:text/html,x', 'file:///x', 'https://user@example.com', 'https://a:b@example.com', '/x', '', 1, null, `https://example.com/${'x'.repeat(2000)}`]
       .map((url) => ({ type: 'lawh:open-link', url })),
