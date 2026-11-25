@@ -159,6 +159,7 @@ describe('reading a page', () => {
     expect([url.origin, url.pathname.split('/')[2], url.search]).toEqual([env.CONTENT_ORIGIN, 'in%20dex.html', '?mode=light&lang=ar']);
     expect(await readContentToken(env.CONTENT_KEY as string, url.pathname.split('/')[1]!)).toBe(VERSIONS[2]);
     expect(JSON.stringify(page)).not.toContain(VERSIONS[0]);
+    expect(await readContentToken(env.CONTENT_KEY as string, new URL(page.viewer).pathname.split('/')[1]!)).toBe(VERSIONS[2]);
   });
 
   it('gives an old version when asked', async () => {

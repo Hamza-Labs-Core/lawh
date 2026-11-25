@@ -1,7 +1,7 @@
 import { notFound } from '../../shared/errors';
 import { projectJson } from '../api/auth';
 import { findPage, type PageRow, VERSION, type VersionRow, versionJson, versionList } from '../api/pages';
-import { contentUrl } from '../contentUrl';
+import { contentUrl, viewerUrl } from '../contentUrl';
 import { listPageRows, tagsOf } from '../pages/list';
 import { openProject, visibleProjects } from './access';
 import type { SignedIn } from './router';
@@ -68,7 +68,7 @@ export async function readPage(ctx: SignedIn): Promise<Response> {
   const mode = url.searchParams.get('mode') === 'light' ? 'light' : 'dark', lang = url.searchParams.get('lang') === 'ar' ? 'ar' : 'en';
   return Response.json({
     ...pageJson(project, page, (await tagsOf(env, [page.id])).get(page.id) ?? []), level, version: versionJson(version),
-    frame: await contentUrl(env, version.id, version.entry_path, mode, lang),
+    frame: await contentUrl(env, version.id, version.entry_path, mode, lang), viewer: await viewerUrl(env, version.id),
   });
 }
 

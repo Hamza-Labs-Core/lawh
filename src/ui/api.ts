@@ -23,7 +23,7 @@ export interface ProjectName { slug: string; name: { en: string; ar: string } }
 export type Status = 'draft' | 'in_review' | 'decided' | 'archived';
 export interface PageItem { id: string; project: ProjectName; slug: string; title: string; summary: string; lang: 'en' | 'ar'; tags: string[]; status: Status; currentVersion: number; updatedAt: number }
 export interface Version { n: number; note: string; publishedBy: string; createdAt: number }
-export interface Reading extends PageItem { level: number; version: Version; frame: string }
+export interface Reading extends PageItem { level: number; version: Version; frame: string; viewer: string }
 export interface Listed<T> { items: T[]; next: string | null }
 
 export interface Me { id: string; name: string; isOwner: boolean; instance: boolean }

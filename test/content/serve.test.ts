@@ -144,6 +144,31 @@ describe('files', () => {
   });
 });
 
+describe('the viewer', () => {
+  it('has a page and a script of its own, with a tighter policy', async () => {
+    const page = await call(`/${token}/_lawh/viewer`);
+    expect([page.status, page.headers.get('Content-Type')]).toEqual([200, 'text/html; charset=utf-8']);
+    expect(page.headers.get('Content-Security-Policy')).toBe("sandbox allow-scripts; default-src 'none'; script-src http://127.0.0.1:8787; style-src 'unsafe-inline'; img-src http://127.0.0.1:8787 blob:; base-uri 'none'; form-action 'none'; frame-ancestors http://localhost:8787; webrtc 'block'");
+    const html = await page.text();
+    expect(html).toContain(`<script src="/${token}/_lawh/viewer.js" data-app="http://localhost:8787"></script>`);
+    expect(html).not.toContain('bridge.js');
+    const script = await call(`/${token}/_lawh/viewer.js`);
+    expect(script.headers.get('Content-Type')).toBe('text/javascript; charset=utf-8');
+    expect(await script.text()).toContain("'viewer-ready'");
+  });
+
+  it('is closed like a page: to a tab, to a token that is over, to a deleted page', async () => {
+    for (const path of ['_lawh/viewer', '_lawh/viewer.js']) {
+      expect((await call(`/${token}/${path}`, { headers: { 'Sec-Fetch-Dest': 'document' } })).status).toBe(404);
+      expect((await call(`/${await makeContentToken(KEY, VERSION, Date.now() - 4 * HOUR)}/${path}`)).status).toBe(404);
+      await sql('UPDATE pages SET deleted_at=1');
+      expect((await call(`/${token}/${path}`)).status).toBe(404);
+      await sql('UPDATE pages SET deleted_at=NULL');
+      expect(await (await call(`/${token}/${path}`, { method: 'HEAD' })).text()).toBe('');
+    }
+  });
+});
+
 describe('pages', () => {
   it('adds the bridge at the end, and the theme and language from the address only when they are known', async () => {
     const read = async (path: string) => (await call(`/${token}/${path}`)).text();

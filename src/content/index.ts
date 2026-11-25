@@ -6,6 +6,7 @@ import { matchesEtag } from '../shared/etag';
 import { guarded } from '../shared/handler';
 import { origins } from '../shared/origin';
 import { BRIDGE } from './bridge';
+import { VIEWER, VIEWER_HTML } from './viewer';
 
 /** Security model, section 2. Sent with everything, errors too. */
 function contentHeaders(env: ContentEnv): Record<string, string> {
@@ -56,7 +57,16 @@ async function serve(request: Request, env: ContentEnv): Promise<Response> {
      LEFT JOIN version_files f ON f.version_id = v.id AND f.path = ? LEFT JOIN blobs b ON b.sha256 = f.sha256 WHERE v.id = ?`,
   ).bind(path, versionId).first<FileRow>();
   if (!file) return notFound();
-  if (path === '_lawh/bridge.js') return new Response(request.method === 'HEAD' ? null : BRIDGE, { headers: { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': CACHE } });
+  const script = path === '_lawh/bridge.js' ? BRIDGE : path === '_lawh/viewer.js' ? VIEWER : null;
+  if (script !== null) return new Response(request.method === 'HEAD' ? null : script, { headers: { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': CACHE } });
+  if (path === '_lawh/viewer') {
+    // Nothing inline runs here, and it reaches nothing but this version's images.
+    const { app, content } = origins(env);
+    return new Response(request.method === 'HEAD' ? null : VIEWER_HTML(match[1]!, app), { headers: {
+      'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': CACHE,
+      'Content-Security-Policy': `sandbox allow-scripts; default-src 'none'; script-src ${content}; style-src 'unsafe-inline'; img-src ${content} blob:; base-uri 'none'; form-action 'none'; frame-ancestors ${app}; webrtc 'block'`,
+    } });
+  }
   if (file.path === null) return notFound();
 
   const html = file.media_type.startsWith('text/html');

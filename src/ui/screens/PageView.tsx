@@ -1,26 +1,39 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { call, CallError, type Listed, problemOf, type Reading, type Version } from '../api';
 import { Failure, Fill, go, Heading, Link, useBusy, useSettings, useText, wasInside } from '../app';
-import { readBridgeMessage } from '../bridgeHost';
+import { type Media, readBridgeMessage } from '../bridgeHost';
 import { day, digits, translate } from '../i18n';
 import { StatusMark } from './Library';
+import { Viewer } from './Viewer';
 
-const CALM = { until: 0, wait: 500, pushy: false };
+const CALM = { until: 0, wait: 300, pushy: false, quick: 0 };
 
 /** One version of a page, in its sandboxed frame, with the app's own bar around it. */
 export function PageView({ project, slug, search }: { project: string; slug: string; search: string }) {
   const t = useText(), { lang, mode } = useSettings(), asked = new URLSearchParams(search).get('v'), path = `/projects/${project}/pages/${slug}`;
-  const [page, setPage] = useState<Reading | 'gone' | 'offline' | 'wait' | 'failed' | null>(null), [tries, setTries] = useState(0), [slow, setSlow] = useState(false), [versions, setVersions] = useState<HTMLElement | null>(null), [link, setLink] = useState<string | null>(null);
+  const [page, setPage] = useState<Reading | 'gone' | 'offline' | 'wait' | 'failed' | null>(null), [tries, setTries] = useState(0), [slow, setSlow] = useState(false), [versions, setVersions] = useState<HTMLElement | null>(null), [link, setLink] = useState<string | null>(null), [media, setMedia] = useState<Media | null>(null);
   const frame = useRef<HTMLIFrameElement>(null), ready = useRef(false), theme = useRef({ mode, lang });
   theme.current = { mode, lang };
-  // A page can send messages whenever it likes, so a link it wants to open is shown only when nothing else is: it can't
-  // change an address under a finger. One that keeps asking after a "Cancel" waits longer each time, so it can't trap
-  // the tab; a person who opens or cancels links one by one isn't held up.
+  // A page can send messages whenever it likes, so what it wants to open is shown only right after the person did
+  // something (the browser knows, and a page can't pretend), and only when nothing else is open: it can't change an
+  // address under a finger. One that keeps asking after a close waits longer each time, so it can't trap the tab; a
+  // person who opens links and pictures one by one isn't held up.
   const quiet = useRef({ ...CALM }), dialogOpen = useRef(false);
-  dialogOpen.current = link !== null || versions !== null;
+  dialogOpen.current = link !== null || versions !== null || media !== null;
+  // The picture the viewer asked for; what comes unasked while it is open is not shown.
+  const wanted = useRef<number | null>(null), shown = useRef<number | null>(null);
+  shown.current = media?.index ?? null;
+  const moveTo = (index: number) => { wanted.current = index; frame.current?.contentWindow?.postMessage({ type: 'lawh:show-media', index }, '*'); };
+  const closeMedia = () => {
+    const index = shown.current;
+    pause(); setMedia(null); wanted.current = null;
+    // Back to the picture it was opened from.
+    frame.current?.focus();
+    frame.current?.contentWindow?.postMessage({ type: 'lawh:focus-media', index }, '*');
+  };
   const pause = () => {
-    const { wait, pushy } = quiet.current, next = pushy ? Math.min(wait * 2, 60_000) : CALM.wait;
-    quiet.current = { until: Date.now() + next, wait: next, pushy: false };
+    const { wait, pushy, quick } = quiet.current, next = pushy ? Math.min(wait * 2, 60_000) : CALM.wait;
+    quiet.current = { until: Date.now() + next, wait: next, pushy: false, quick };
   };
   const cancelLink = () => { pause(); setLink(null); };
   const openedLink = () => { quiet.current = { ...CALM }; setLink(null); };
@@ -34,7 +47,7 @@ export function PageView({ project, slug, search }: { project: string; slug: str
 
   useEffect(() => {
     const stop = new AbortController();
-    setPage(null); setSlow(false); setVersions(null); setLink(null); ready.current = false; quiet.current = { ...CALM };
+    setPage(null); setSlow(false); setVersions(null); setLink(null); setMedia(null); wanted.current = null; ready.current = false; quiet.current = { ...CALM };
     // The theme and language are in the address only for the first paint; changes are sent to the page.
     call<Reading>('GET', `${path}?${new URLSearchParams({ mode, lang, ...(asked && { v: asked }) })}`, undefined, stop.signal)
       .then(setPage, (error: unknown) => { if (!stop.signal.aborted) setPage(error instanceof CallError && error.status === 404 ? 'gone' : problemOf(error)); });
@@ -52,14 +65,18 @@ export function PageView({ project, slug, search }: { project: string; slug: str
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       const message = readBridgeMessage(event, frame.current?.contentWindow);
-      if (message?.type === 'open-link') {
+      if (message?.type === 'open-media' && shown.current !== null) {
+        if (message.index === wanted.current) { wanted.current = null; setMedia(message); }
+      } else if (message?.type === 'open-link' || message?.type === 'open-media') {
         const since = Date.now() - quiet.current.until;
+        if (navigator.userActivation?.isActive === false) return;
         if (dialogOpen.current || since < 0) quiet.current.pushy = true;
         else {
-          // Right after a pause ended: a timer, more likely than a finger.
-          if (quiet.current.until > 0 && since < 1000) quiet.current.pushy = true;
+          // The moment a pause ended, five times in a row: a timer, more likely than a finger.
+          quiet.current.quick = quiet.current.until > 0 && since < 100 ? quiet.current.quick + 1 : 0;
+          if (quiet.current.quick >= 5) quiet.current.pushy = true;
           dialogOpen.current = true;
-          setLink(message.url);
+          if (message.type === 'open-link') setLink(message.url); else setMedia(message);
         }
       }
       // The bridge listens now: what changed while the page loaded is sent again.
@@ -90,6 +107,7 @@ export function PageView({ project, slug, search }: { project: string; slug: str
       {slow && <p class="notice" role="status">{t('slow')} <button class="text" onClick={() => setTries(tries + 1)}>{t('reload')}</button></p>}
       <iframe key={page.frame} ref={frame} class="page-frame" title={translate(lang, 'pageFrame', { title: page.title })} sandbox="allow-scripts" referrerpolicy="no-referrer" src={page.frame} onLoad={sendTheme} />
       {versions && <Versions path={path} project={project} slug={slug} shown={page.version.n} current={page.currentVersion} returnTo={versions} onClose={closeVersions} />}
+      {media !== null && <Viewer media={media} frameUrl={page.viewer} onMove={moveTo} onClose={closeMedia} />}
       {link !== null && <LeaveDialog url={link} returnTo={frame.current} onClose={cancelLink} onOpened={openedLink} />}
     </div>
   );

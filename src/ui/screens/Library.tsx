@@ -142,7 +142,7 @@ function TagFilter({ project, value, onChange }: { project: string; value: strin
       <label class="muted" for={id}>{t('tag')}</label>
       <input id={id} class="field" role="combobox" aria-expanded={open && items !== null} aria-controls={`${id}-list`} aria-autocomplete="list" aria-activedescendant={open && items !== null && at >= 0 ? `${id}-${at}` : undefined}
         autocomplete="off" placeholder={t('tagHint')} value={text} onFocus={() => { if (!refocus.current) setOpen(true); }} onClick={() => setOpen(true)}
-        onInput={(event) => { setText(event.currentTarget.value); setAt(-1); setOpen(true); }}
+        onInput={(event) => { setText(event.currentTarget.value); setAt(-1); setOpen(true); if (found?.length === 0) setItems(null); }}
         onKeyDown={(event) => {
           const n = items?.length ?? 0;
           if (event.key === 'Escape') setOpen(false);

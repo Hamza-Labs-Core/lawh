@@ -1,6 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, type Page } from '@playwright/test';
-import { APP, db, enter, join, test } from './people';
+import { activation, APP, db, enter, join, setActive, test } from './people';
 
 const open = async (page: Page, member: string, path = '/') => { await join(member); await enter(page.context(), member); await page.goto(`${APP}${path}`); };
 const frame = (page: Page) => page.frameLocator('iframe.page-frame');
@@ -116,8 +116,13 @@ test('a hostile page cannot do more than ask to open a link', async ({ page, mem
 });
 
 test('a page that asks again and again cannot change the address shown, trap the tab, or cover another dialog', async ({ page, member }) => {
+  await activation(page, false);
   await open(page, member, '/p/one/spam');
   const dialog = page.getByRole('dialog', { name: 'Open another site?' });
+  await expect(frame(page).getByRole('heading', { name: 'Spam' })).toBeVisible();
+  await page.waitForTimeout(1500);
+  await expect(dialog, 'nothing opens by itself').toHaveCount(0);
+  await setActive(page, true);
   await expect(dialog).toBeVisible();
   const address = await dialog.locator('.address').innerText();
   await page.waitForTimeout(600);
@@ -128,20 +133,10 @@ test('a page that asks again and again cannot change the address shown, trap the
   // Time to open another dialog; nothing comes on top of it.
   await page.getByRole('button', { name: 'Version 1' }).click();
   await expect(page.getByRole('dialog', { name: 'Versions' })).toBeVisible();
-  await page.waitForTimeout(1500);
+  await page.waitForTimeout(800);
   await expect(page.getByRole('dialog')).toHaveCount(1);
   await page.getByRole('button', { name: 'Close' }).click();
-  // Each time it waits longer: by now long enough to leave.
-  await expect(dialog).toBeVisible({ timeout: 10_000 });
-  await page.keyboard.press('Escape');
-  await expect(dialog).toHaveCount(0);
-  // Opening and closing another dialog doesn't shorten it.
-  await page.getByRole('button', { name: 'Version 1' }).click();
-  await page.getByRole('button', { name: 'Close' }).click();
-  const shown = Date.now();
-  await expect(dialog).toBeVisible({ timeout: 10_000 });
-  expect(Date.now() - shown).toBeGreaterThan(1500);
-  await page.keyboard.press('Escape');
+  // Whatever it does, a person leaves.
   await page.getByRole('button', { name: 'Back' }).click();
   await expect(page.getByRole('heading', { name: 'Pages' })).toBeVisible();
 });
@@ -162,7 +157,7 @@ test('a person can open and cancel several links in a row', async ({ page, membe
     await dialog.getByRole('button', { name: 'Cancel' }).click();
     await expect(dialog).toHaveCount(0);
     // As long as a person takes to aim again.
-    await page.waitForTimeout(1600);
+    await page.waitForTimeout(500);
   }
   await frame(page).locator('#out').click();
   await expect(dialog).toBeVisible();

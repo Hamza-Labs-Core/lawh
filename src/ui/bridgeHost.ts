@@ -5,7 +5,11 @@
 export type BridgeMessage =
   | { type: 'outline'; items: { id: string; title: string; level: number }[] }
   | { type: 'open-link'; url: string }
-  | { type: 'scroll-state'; top: number; height: number; view: number };
+  | { type: 'scroll-state'; top: number; height: number; view: number }
+  | Media;
+
+export type Picture = { kind: 'image'; path: string } | { kind: 'svg'; text: string; width: number; height: number } | { kind: 'bitmap'; bitmap: ImageBitmap } | { kind: 'none' };
+export interface Media { type: 'open-media'; index: number; total: number; label: string; background: string; picture: Picture }
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 const isSize = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1e8;
@@ -36,7 +40,61 @@ export function readBridgeMessage(event: { source: unknown; data: unknown }, fra
     }
     case 'lawh:scroll-state':
       return isSize(data.top) && isSize(data.height) && isSize(data.view) ? { type: 'scroll-state', top: data.top, height: data.height, view: data.view } : null;
+    case 'lawh:open-media': {
+      const { index, total, label, background } = data;
+      if (typeof index !== 'number' || typeof total !== 'number' || !Number.isInteger(index) || !Number.isInteger(total) || index < 0 || index >= total || total > 500) return null;
+      if (typeof label !== 'string' || label.length > 200 || typeof background !== 'string' || !/^rgba?\([\d., %/]{1,40}\)$/.test(background)) return null;
+      const picture = readPicture(data);
+      return picture && { type: 'open-media', index, total, label, background, picture };
+    }
     default:
       return null;
+  }
+}
+
+const MAX_SVG = 5_000_000;
+
+/** What a page wants shown. It goes to the viewer's frame only; the app itself never turns it into an address or markup. */
+function readPicture(data: Record<string, unknown>): Picture | null {
+  switch (data.kind) {
+    case 'image':
+      // A file of this version, as published paths are: the viewer asks the content host for it with the version's own token.
+      return typeof data.path === 'string' && data.path.length >= 1 && data.path.length <= 512 && data.path.split('/').every((part) => part !== '' && part !== '.' && part !== '..') && !data.path.startsWith('_lawh/')
+        ? { kind: 'image', path: data.path } : null;
+    case 'svg':
+      return typeof data.text === 'string' && data.text.length <= MAX_SVG && isSize(data.width) && isSize(data.height) ? { kind: 'svg', text: data.text, width: data.width, height: data.height } : null;
+    case 'bitmap':
+      return typeof ImageBitmap !== 'undefined' && data.bitmap instanceof ImageBitmap ? { kind: 'bitmap', bitmap: data.bitmap } : null;
+    case 'none':
+      return { kind: 'none' };
+    default:
+      return null;
+  }
+}
+
+export type ViewerMessage = 'ready' | 'shown' | 'failed' | 'close' | 'next' | 'previous' | 'in' | 'out' | 'fit';
+
+/** What the viewer's frame may tell: that it is ready or failed, and the keys a person presses there. `rtl`: arrows are mirrored. */
+export function readViewerMessage(event: { source: unknown; data: unknown }, frame: unknown, rtl: boolean): ViewerMessage | null {
+  if (!frame || event.source !== frame || !isObject(event.data)) return null;
+  const { type, key } = event.data;
+  if (type === 'lawh:viewer-ready') return 'ready';
+  if (type === 'lawh:viewer-shown') return 'shown';
+  if (type === 'lawh:viewer-failed') return 'failed';
+  return type === 'lawh:key' && typeof key === 'string' ? viewerKey(key, rtl) : null;
+}
+
+/** What a key does in the viewer; the same whether it is pressed there or in the app around it. */
+export function viewerKey(key: string, rtl: boolean): ViewerMessage | null {
+  switch (key) {
+    case 'Escape': return 'close';
+    case 'ArrowRight': return rtl ? 'previous' : 'next';
+    case 'ArrowLeft': return rtl ? 'next' : 'previous';
+    case 'ArrowDown': return 'next';
+    case 'ArrowUp': return 'previous';
+    case '+': case '=': return 'in';
+    case '-': return 'out';
+    case '0': return 'fit';
+    default: return null;
   }
 }
