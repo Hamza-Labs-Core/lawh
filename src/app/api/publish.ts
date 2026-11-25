@@ -4,7 +4,8 @@ import { ApiError, conflict, invalid, notFound } from '../../shared/errors';
 import { newId } from '../../shared/ids';
 import { type Declared, declareStatements, readDeclared } from '../decisions/declare';
 import { indexStatements } from '../search';
-import { visibleText } from '../search/text';
+import { pruneVersions, versionsKept } from '../housekeeping';
+import { entryText } from '../search/entry';
 import { type Project, projectById, projectBySlug } from './auth';
 import { integer, isObject, onlyKeys, readJson, text } from './body';
 import { idempotent, type Idempotent, mustChange, replay, type Stored, writeOnce } from './idempotency';
@@ -187,6 +188,7 @@ export async function commitPublish(ctx: Context): Promise<Response> {
   if (earlier) return earlier;
   try {
     const stored = await commitNew(ctx, idem);
+    ctx.ctx.waitUntil(keepVersions(ctx.env, String(stored.json.id), Number(stored.json.currentVersion)).catch(() => undefined));
     return Response.json(stored.json, { status: stored.status });
   } catch (error) {
     // The same request, sent twice at once, may have finished meanwhile: then its reply is the answer.
@@ -196,6 +198,12 @@ export async function commitPublish(ctx: Context): Promise<Response> {
   }
 }
 
+/** Best effort: what is left is pruned at the next publish. */
+async function keepVersions(env: AppEnv, pageId: string, currentVersion: number): Promise<void> {
+  const keep = await versionsKept(env);
+  if (keep !== null) await pruneVersions(env, pageId, currentVersion, keep);
+}
+
 async function commitNew(ctx: Context, idem: Idempotent): Promise<Stored> {
   const { upload, project, manifest } = await findUpload(ctx);
   const { results: sent } = await ctx.env.DB.prepare('SELECT sha256 FROM upload_blobs WHERE upload_id = ?').bind(upload.id).all<{ sha256: string }>();
@@ -203,7 +211,7 @@ async function commitNew(ctx: Context, idem: Idempotent): Promise<Stored> {
   const missing = [...new Set(manifest.files.map((f) => f.sha256))].filter((h) => !have.has(h));
   if (missing.length > 0) throw invalid('Some files were not sent.', { missing });
 
-  const text = await entryText(ctx.env, manifest);
+  const text = await entryText(ctx.env, manifest.files.find((f) => f.path === manifest.entry)!.sha256);
   for (let attempt = 1; ; attempt++) {
     try {
       return await commitOnce(ctx, upload, project, manifest, text, idem);
@@ -215,14 +223,6 @@ async function commitNew(ctx: Context, idem: Idempotent): Promise<Stored> {
       if (attempt === 5) throw conflict('The page keeps changing. Try again.');
     }
   }
-}
-
-/** The text of the page's first file, for the search index. Other HTML files of the page aren't searched. */
-async function entryText(env: AppEnv, manifest: Manifest): Promise<string> {
-  const entry = manifest.files.find((f) => f.path === manifest.entry)!;
-  const blob = await env.DB.prepare('SELECT r2_key FROM blobs WHERE sha256 = ?').bind(entry.sha256).first<{ r2_key: string }>();
-  const object = blob && await env.FILES.get(blob.r2_key);
-  return object ? visibleText(object.body) : '';
 }
 
 async function commitOnce(ctx: Context, upload: UploadRow, project: Project, manifest: Manifest, text: string, idem: Idempotent): Promise<Stored> {

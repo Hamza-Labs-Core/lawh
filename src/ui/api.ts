@@ -43,4 +43,9 @@ export interface Thread extends Comment {
   project?: string; projectName?: { en: string; ar: string }; page?: { slug: string; title: string; lang: 'en' | 'ar' };
 }
 
-export interface Me { id: string; name: string; isOwner: boolean; instance: boolean }
+export interface AgentKey { id: string; label: string | null; scopes: string[]; allProjects: boolean; projects: ProjectName[]; createdAt: number; expiresAt: number; lastUsedAt: number | null; revokedAt: number | null }
+export interface Agent { id: string; name: string; createdAt: number; disabledAt: number | null; keys: AgentKey[] }
+export interface DeletedPage { id: string; project: ProjectName; slug: string; title: string; lang: 'en' | 'ar'; deletedAt: number; purgedAfter: number }
+
+/** `manages`: manages at least one project. */
+export interface Me { id: string; name: string; isOwner: boolean; instance: boolean; manages: boolean }

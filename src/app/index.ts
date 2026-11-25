@@ -1,6 +1,7 @@
 import type { AppEnv } from '../shared/env';
 import { guarded } from '../shared/handler';
 import { cleanUp } from './api/publish';
+import { prune, purge, sweep } from './housekeeping';
 import { api } from './api/router';
 import { appHeaders } from './headers';
 import { cleanUpPeople } from './people/cleanUp';
@@ -23,7 +24,7 @@ export default {
   }),
   async scheduled(_event, env) {
     // One failing must not keep the other from running.
-    const results = await Promise.allSettled([cleanUp(env), cleanUpPeople(env)]);
+    const results = await Promise.allSettled([cleanUp(env), cleanUpPeople(env), purge(env), prune(env), sweep(env)]);
     const failed = results.find((result) => result.status === 'rejected');
     if (failed) throw new Error('Clean-up failed');
   },

@@ -20,8 +20,8 @@ test('a link registers a passkey, which then signs in', async ({ page, member })
   await page.goBack();
   expect(page.url(), 'Back does not return to the used link').not.toContain('/link');
   await page.goto(APP);
-  await page.getByRole('link', { name: 'Account' }).click();
-  await page.getByRole('button', { name: 'Sign out' }).click();
+  await page.getByRole('link', { name: 'Settings' }).click();
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
   await page.getByRole('button', { name: 'Sign in with a passkey' }).click();
   await expect(page.getByRole('heading', { name: 'Signed in as Mona' })).toBeVisible();
   await page.reload();

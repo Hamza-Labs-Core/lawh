@@ -57,6 +57,8 @@ describe('what a person sees', () => {
     const without = ['/me', '/sessions/current', `/sessions/${'0'.repeat(64)}`, '/switches/instance', '/sessions', '/passkeys', '/passkeys/options', '/passkeys/a', '/projects', '/device/look', '/device/approve',
       // In decisions.test.ts, at every level.
       '/decisions', '/decisions/count', `/decisions/dec_${'0'.repeat(26)}`, `/decisions/dec_${'0'.repeat(26)}/answers`, '/projects/one/pages/a/decisions',
+      // In manage.test.ts, at every level.
+      '/projects/one', '/projects/one/pages/a/status', '/deleted', `/deleted/pag_${'0'.repeat(26)}/restore`, '/agents', `/agents/agt_${'0'.repeat(26)}/off`, '/agent-keys', `/agent-keys/key_${'0'.repeat(26)}`, '/settings', '/settings/retention', '/export', '/export/rows', '/export/files',
       // In comments.test.ts, at every level.
       '/comments', '/projects/one/pages/a/comments', `/comments/cmt_${'0'.repeat(26)}`, `/comments/cmt_${'0'.repeat(26)}/replies`, `/comments/cmt_${'0'.repeat(26)}/resolved`];
     for (const route of peopleRoutes.filter((r) => r.who === 'person')) {
@@ -192,12 +194,12 @@ describe('reading a page', () => {
   });
 
   it('the address of a page gives the app’s document, and nothing of the page', async () => {
-    for (const path of ['/p/one/a', '/p/nope/nope', '/account']) {
+    for (const path of ['/p/one/a', '/p/nope/nope', '/settings', '/settings/agents', '/settings/data']) {
       const response = await call('GET', path);
       expect([response.status, response.headers.get('Content-Type')]).toEqual([200, 'text/html; charset=utf-8']);
       expect(await response.text()).not.toContain('Page a');
     }
-    for (const path of ['/p', '/p/one', '/p/one/a/', '/p/ONE/a', '/p/one/a/b']) expect((await call('GET', path)).status, path).toBe(404);
+    for (const path of ['/p', '/p/one', '/p/one/a/', '/p/ONE/a', '/p/one/a/b', '/settings/', '/settings/nope', '/account']) expect((await call('GET', path)).status, path).toBe(404);
   });
 });
 

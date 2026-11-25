@@ -28,9 +28,10 @@ test('another device signs in with a code', async ({ page, browser, member }) =>
     await expect(page.getByRole('status')).toHaveText('Approved. The other device is signing in.');
     await expect(device.getByRole('heading', { name: 'Pages' })).toBeVisible();
     await page.getByRole('button', { name: 'Back' }).click();
-    await page.getByRole('link', { name: 'Account' }).click();
-    await expect(page.getByRole('heading', { name: 'Signed in as Mona' })).toBeFocused();
-    await page.getByRole('button', { name: 'Sign out' }).click();
+    await page.getByRole('link', { name: 'Settings' }).click();
+    await expect(page.getByRole('heading', { name: 'Settings' })).toBeFocused();
+    await expect(page.getByRole('heading', { name: 'Signed in as Mona' })).toBeVisible();
+    await page.getByRole('button', { name: 'Sign out', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Approve from another device' })).toBeVisible();
     await device.reload();
     await expect(device.getByRole('heading', { name: 'Pages' })).toBeVisible();

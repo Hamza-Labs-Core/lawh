@@ -7,7 +7,8 @@ import { auditStatement, sessionCookie } from './session';
 
 export async function whoAmI(ctx: SignedIn): Promise<Response> {
   const { env, person } = ctx;
-  return Response.json({ id: person.memberId, name: person.name, isOwner: person.isOwner, instance: await isOn(env.DB, 'instance') });
+  const manages = person.isOwner || (await env.DB.prepare('SELECT 1 FROM project_access WHERE member_id = ? AND level = 4 LIMIT 1').bind(person.memberId).first()) !== null;
+  return Response.json({ id: person.memberId, name: person.name, isOwner: person.isOwner, instance: await isOn(env.DB, 'instance'), manages });
 }
 
 /** What the app calls a session. Not the stored hash, so a request log and a copy of the database can't be matched. */
@@ -38,7 +39,7 @@ export async function endSession(ctx: SignedIn): Promise<Response> {
   return new Response(null, { status: 204, headers: id === person.sessionId ? { 'Set-Cookie': sessionCookie(env, '', 0) } : {} });
 }
 
-/** The owner's alone, and reachable while the instance is off. Other switches come with Settings (S10). */
+/** The owner's alone, and reachable while the instance is off. */
 export async function setInstance(ctx: SignedIn): Promise<Response> {
   const { env, person } = ctx, { body } = await readJson(ctx.request);
   onlyKeys(body, ['on']);

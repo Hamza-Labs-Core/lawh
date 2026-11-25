@@ -68,6 +68,9 @@ await db(
   `INSERT INTO agent_keys(id,agent_id,secret_hmac,scopes_json,all_projects,created_at,expires_at) VALUES('${keyId}','a','${mac}','["pages:read","pages:write"]',1,1,${Date.now() + 86_400_000})`,
 );
 
+// The owner's passkey, for sessions that tests add: a new one would end all of the owner's others.
+await db(`INSERT INTO access_links(token_sha256,kind,member_id,created_at,expires_at) VALUES('owner-link','owner','o',1,${Date.now() + 600_000})`,
+  "INSERT INTO passkeys(credential_id,member_id,public_key,sign_count,label,created_at,link_id) VALUES('owner-passkey','o',x'00',0,'x',1,'owner-link')");
 const api = async (path, init = {}) => {
   const response = await fetch(`${APP}/v1${path}`, { ...init, headers: { Authorization: `Bearer lawh_${keyId}_${secret}`, 'Idempotency-Key': randomBytes(8).toString('hex'), ...init.headers } });
   if (!response.ok) throw new Error(`${path}: ${response.status} ${await response.text()}`);

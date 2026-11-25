@@ -165,6 +165,8 @@ CREATE INDEX pages_project ON pages(project_id, updated_at DESC, id DESC) WHERE 
 CREATE INDEX pages_status ON pages(status, updated_at DESC, id DESC) WHERE deleted_at IS NULL;
 CREATE INDEX pages_project_status ON pages(project_id, status, updated_at DESC, id DESC) WHERE deleted_at IS NULL;
 CREATE INDEX pages_purge ON pages(deleted_at) WHERE deleted_at IS NOT NULL;
+CREATE INDEX pages_deleted ON pages(project_id, deleted_at, id) WHERE deleted_at IS NOT NULL;
+CREATE INDEX pages_deleted_recent ON pages(deleted_at, id) WHERE deleted_at IS NOT NULL;
 
 -- sort_at copies pages.updated_at, so a tag's list is read in order from an index.
 CREATE TABLE page_tags (

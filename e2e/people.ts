@@ -39,6 +39,18 @@ export async function enter(context: BrowserContext, member: string): Promise<vo
   await context.addCookies([{ name: 'lawh-local', value: token, url: APP, httpOnly: true, sameSite: 'Lax' }]);
 }
 
+/** Signs a browser in as the owner. Everything the owner sees is shared by all tests: add things of your own, and remove them. */
+export async function enterOwner(context: BrowserContext): Promise<void> {
+  const token = randomBytes(32).toString('base64url');
+  await db(`INSERT INTO sessions(token_sha256,member_id,label,created_at,last_seen_at,expires_at,passkey_id) VALUES('${hash(token)}','o','x',${Date.now()},${Date.now()},${Date.now() + 600_000},'owner-passkey')`);
+  await context.addCookies([{ name: 'lawh-local', value: token, url: APP, httpOnly: true, sameSite: 'Lax' }]);
+}
+/** The agents a member made, when their test ends. */
+export async function removeAgents(member: string): Promise<void> {
+  const own = `(SELECT id FROM agents WHERE member_id='${member}')`;
+  await db(`DELETE FROM agent_key_projects WHERE key_id IN (SELECT id FROM agent_keys WHERE agent_id IN ${own})`, `DELETE FROM agent_keys WHERE agent_id IN ${own}`, `DELETE FROM agents WHERE member_id='${member}'`);
+}
+
 /** Says whether the person just did something. Playwright's own calls count as that, so the browser's answer can't be used. */
 export async function activation(page: Page, active: boolean): Promise<void> {
   await page.addInitScript((value) => { if (self === top) { (window as unknown as { active: boolean }).active = value; Object.defineProperty(navigator, 'userActivation', { get: () => ({ isActive: (window as unknown as { active: boolean }).active }) }); } }, active);
@@ -74,7 +86,7 @@ export async function joinAsked(asked: Asked, member: string, level = 3): Promis
 async function removeAsked({ project, pageId }: Asked): Promise<void> {
   // Answers go only with a page deleted long ago.
   const own = `(SELECT id FROM decisions WHERE page_id='${pageId}')`;
-  await db(`DELETE FROM comments WHERE page_id='${pageId}'`, `UPDATE pages SET deleted_at=1 WHERE id='${pageId}'`, `DELETE FROM decision_answers WHERE decision_id IN ${own}`, `DELETE FROM decision_revisions WHERE decision_id IN ${own}`, `DELETE FROM decisions WHERE page_id='${pageId}'`,
+  await db(`DELETE FROM pages_fts WHERE rowid IN (SELECT rowid FROM pages_fts_map WHERE page_id='${pageId}')`, `DELETE FROM pages_fts_map WHERE page_id='${pageId}'`, `DELETE FROM comments WHERE page_id='${pageId}'`, `UPDATE pages SET deleted_at=1 WHERE id='${pageId}'`, `DELETE FROM decision_answers WHERE decision_id IN ${own}`, `DELETE FROM decision_revisions WHERE decision_id IN ${own}`, `DELETE FROM decisions WHERE page_id='${pageId}'`,
     `DELETE FROM version_files WHERE version_id IN (SELECT id FROM page_versions WHERE page_id='${pageId}')`, `DELETE FROM page_versions WHERE page_id='${pageId}'`, `DELETE FROM pages WHERE id='${pageId}'`,
     `DELETE FROM events WHERE project_id='${project}'`, `DELETE FROM teams WHERE id IN (SELECT team_id FROM team_projects WHERE project_id='${project}')`, `DELETE FROM projects WHERE id='${project}'`);
 }

@@ -345,6 +345,6 @@ for (const lang of ['en', 'ar'] as const) for (const mode of ['dark', 'light'] a
     await page.goto(`${APP}/p/one/versions?v=1`); await expect(frame(page).getByRole('heading', { level: 1 })).toBeVisible(); await check('page-old');
     await page.locator('.reader-bar button').last().click(); await expect(page.locator('.versions li').first()).toBeVisible(); await check('versions');
     await page.goto(`${APP}/p/one/versions`); await expect(frame(page).getByRole('heading', { level: 1 })).toBeVisible(); await page.locator('.reader-bar button').last().click(); await expect(page.locator('.versions li').first()).toBeVisible(); await check('versions-current');
-    await page.goto(`${APP}/account`); await expect(page.locator('main h1')).toBeVisible(); await check('account');
+    await page.goto(`${APP}/settings`); await expect(page.locator('main h1')).toBeVisible(); await check('settings');
   });
 }

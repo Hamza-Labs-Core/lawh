@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
-import { call, CallError, type Decision, type Listed, type Me, problemOf, type Reading, type Thread, type Version } from '../api';
+import { call, CallError, type Decision, type Listed, type Me, problemOf, type Reading, type Status, type Thread, type Version } from '../api';
 import { Failure, Fill, go, Heading, Link, useBusy, useSettings, useText, wasInside } from '../app';
 import { discard, type Media, readBridgeMessage, type Section } from '../bridgeHost';
 import { day, digits, translate } from '../i18n';
@@ -15,7 +15,7 @@ export function PageView({ project, slug, search, me }: { project: string; slug:
   const t = useText(), { lang, mode } = useSettings(), asked = new URLSearchParams(search).get('v'), path = `/projects/${project}/pages/${slug}`;
   const [page, setPage] = useState<Reading | 'gone' | 'offline' | 'wait' | 'failed' | null>(null), [tries, setTries] = useState(0), [slow, setSlow] = useState(false), [versions, setVersions] = useState<HTMLElement | null>(null), [link, setLink] = useState<string | null>(null), [media, setMedia] = useState<Media | null>(null);
   const [asks, setAsks] = useState<{ items: Decision[]; answerers: number | null } | null>(null), [asksProblem, setAsksProblem] = useState<'offline' | 'wait' | 'failed' | null>(null), [asksTries, setAsksTries] = useState(0), [sheet, setSheet] = useState<HTMLElement | null>(null), wide = useWide();
-  const [threads, setThreads] = useState<Threads | null>(null), [outline, setOutline] = useState<Section[] | null>(null), outlined = useRef(0), [tab, setTab] = useState<'decisions' | 'comments' | null>(null);
+  const [threads, setThreads] = useState<Threads | null>(null), [outline, setOutline] = useState<Section[] | null>(null), outlined = useRef(0), [tab, setTab] = useState<'decisions' | 'comments' | null>(null), [managing, setManaging] = useState<HTMLElement | null>(null);
   const frame = useRef<HTMLIFrameElement>(null), ready = useRef(false), theme = useRef({ mode, lang });
   theme.current = { mode, lang };
   // A page can send messages whenever it likes, so what it wants to open is shown only while the browser counts the
@@ -25,7 +25,7 @@ export function PageView({ project, slug, search, me }: { project: string; slug:
   const opening = useRef({ ...CALM }), dialogOpen = useRef(false), [blocked, setBlocked] = useState(false), [pushy, setPushy] = useState(false);
   const blockedNow = useRef(false), shown = useRef<number | null>(null), pressed = useRef(0), refocus = useRef(0);
   blockedNow.current = blocked;
-  const open = link !== null || versions !== null || media !== null || (sheet !== null && !wide);
+  const open = link !== null || versions !== null || media !== null || managing !== null || (sheet !== null && !wide);
   dialogOpen.current = open;
   shown.current = media?.index ?? null;
   // A picture that is replaced before the viewer took it over is freed here.
@@ -61,6 +61,7 @@ export function PageView({ project, slug, search, me }: { project: string; slug:
   const cancelLink = () => { closed(); setLink(null); };
   const openedLink = () => { opening.current = { ...CALM }; setLink(null); };
   const closeSheet = () => { closed(); setSheet(null); };
+  const closeManaging = () => { closed(); setManaging(null); };
   const closeVersions = () => { closed(); setVersions(null); };
   const block = pushy ? () => { setBlocked(true); setPushy(false); clearTimeout(refocus.current); showMedia(null); setLink(null); wanted.current = null; } : null;
   // The frame's origin is opaque, so there is no name to send to; nothing in the message is secret.
@@ -68,7 +69,7 @@ export function PageView({ project, slug, search, me }: { project: string; slug:
 
   useEffect(() => {
     const stop = new AbortController();
-    setPage(null); setSlow(false); setVersions(null); setLink(null); showMedia(null); wanted.current = null; clearTimeout(refocus.current); clearTimeout(outlined.current); outlined.current = 0; setOutline(null); ready.current = false; opening.current = { ...CALM }; setBlocked(false); setPushy(false);
+    setPage(null); setSlow(false); setVersions(null); setManaging(null); setLink(null); showMedia(null); wanted.current = null; clearTimeout(refocus.current); clearTimeout(outlined.current); outlined.current = 0; setOutline(null); ready.current = false; opening.current = { ...CALM }; setBlocked(false); setPushy(false);
     // The theme and language are in the address only for the first paint; changes are sent to the page.
     call<Reading>('GET', `${path}?${new URLSearchParams({ mode, lang, ...(asked && { v: asked }) })}`, undefined, stop.signal)
       .then(setPage, (error: unknown) => { if (!stop.signal.aborted) setPage(error instanceof CallError && error.status === 404 ? 'gone' : problemOf(error)); });
@@ -190,7 +191,7 @@ export function PageView({ project, slug, search, me }: { project: string; slug:
           <Heading><bdi lang={page.lang}>{page.title}</bdi></Heading>
           <p class="muted"><bdi>{page.project.name[lang]}</bdi>{lang === 'ar' ? '، ' : ', '}<Fill text="by" agent={page.version.publishedBy} date={day(lang, page.version.createdAt)} /></p>
         </div>
-        <StatusMark status={page.status} />
+        {page.level >= 4 ? <button class="plain" aria-haspopup="dialog" aria-label={`${t('pageMenu')}: ${t(page.status)}`} onClick={(event) => setManaging(event.currentTarget)}><StatusMark status={page.status} /></button> : <StatusMark status={page.status} />}
         <button class="plain" disabled={threads === null} aria-haspopup={wide ? undefined : 'dialog'} aria-expanded={wide ? beside && now === 'comments' : undefined}
           onClick={(event) => { if (beside && now === 'comments') { setSheet(null); setTab('comments'); } else openPanel('comments', event.currentTarget); }}><Fill text="commentsN" n={count} /></button>
         <button class="plain" aria-haspopup="dialog" onClick={(event) => setVersions(event.currentTarget)}><Fill text="version" n={digits(lang, page.version.n)} /></button>
@@ -210,6 +211,7 @@ export function PageView({ project, slug, search, me }: { project: string; slug:
           {panel}
         </Dialog>
       )}
+      {managing && <Manage path={path} status={page.status} returnTo={managing} onClose={closeManaging} onStatus={(status) => setPage((p) => (p !== null && typeof p === 'object' ? { ...p, status } : p))} />}
       {versions && <Versions path={path} project={project} slug={slug} shown={page.version.n} current={page.currentVersion} returnTo={versions} onClose={closeVersions} />}
       {media !== null && <Viewer media={media} frameUrl={page.viewer} onMove={moveTo} onClose={closeMedia} onBlock={block} />}
       {link !== null && <LeaveDialog url={link} returnTo={frame.current} onClose={cancelLink} onOpened={openedLink} onBlock={block} />}
@@ -259,6 +261,27 @@ function LeaveDialog({ url, returnTo, onClose, onOpened, onBlock }: { url: strin
         <a class="primary as-button" href={url} target="_blank" rel="noopener noreferrer" onClick={onOpened}>{t('open')}</a>
       </div>
       {onBlock && <button class="plain wide" onClick={onBlock}>{t('blockPage')}</button>}
+    </Dialog>
+  );
+}
+
+const STATUSES: Status[] = ['draft', 'in_review', 'decided', 'archived'];
+
+/** For managers: the page's status, and deleting it. */
+function Manage({ path, status, returnTo, onClose, onStatus }: { path: string; status: Status; returnTo: HTMLElement; onClose: () => void; onStatus: (next: Status) => void }) {
+  const t = useText(), [busy, run] = useBusy(), [problem, setProblem] = useState<'offline' | 'wait' | 'failed' | 'notAllowed' | null>(null), [asking, setAsking] = useState(false);
+  const act = (what: () => Promise<void>) => run(async () => { setProblem(null); try { await what(); } catch (error) { setProblem(error instanceof CallError && (error.status === 403 || error.status === 404) ? 'notAllowed' : problemOf(error)); } });
+  return (
+    <Dialog title={t('pageMenu')} returnTo={returnTo} onClose={onClose}>
+      <p class="muted" id="page-status">{t('status')}</p>
+      <div class="chips" role="group" aria-labelledby="page-status">
+        {STATUSES.map((s) => <button key={s} class="chip" aria-pressed={s === status} disabled={busy} onClick={() => act(async () => { await call('PUT', `${path}/status`, { status: s }); onStatus(s); })}>{t(s)}</button>)}
+      </div>
+      {problem && <Failure>{t(problem)}</Failure>}
+      {asking
+        ? <button class="plain wide danger" disabled={busy} onClick={() => act(async () => { await call('DELETE', path); go('/', true); })}>{t('deletePageSure')}</button>
+        : <button class="plain wide" onClick={() => setAsking(true)}>{t('deletePage')}</button>}
+      <button class="plain wide" onClick={onClose}>{t('close')}</button>
     </Dialog>
   );
 }

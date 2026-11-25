@@ -100,6 +100,14 @@ Q = {
  "outbox": "SELECT seq FROM events WHERE enqueued_at IS NULL ORDER BY seq LIMIT 100",
  "session": "SELECT s.*,m.role FROM sessions s JOIN members m ON m.id=s.member_id WHERE s.token_sha256=? AND s.expires_at>? AND m.removed_at IS NULL",
  "expired uploads": "SELECT id FROM uploads WHERE expires_at<? LIMIT 100",
+ "deleted in project": "SELECT id FROM pages WHERE project_id=? AND deleted_at IS NOT NULL AND (deleted_at,id)<(?,?) ORDER BY deleted_at DESC,id DESC LIMIT 31",
+ "deleted anywhere": "SELECT id FROM pages WHERE deleted_at IS NOT NULL AND deleted_at>=? AND (deleted_at,id)<(?,?) ORDER BY deleted_at DESC,id DESC LIMIT 31",
+ "versions to prune": "SELECT id FROM page_versions WHERE page_id=? AND n<=? ORDER BY n LIMIT 20",
+ "purge comments": "SELECT id FROM comments WHERE deleted_at<? AND deleted_at IS NOT NULL LIMIT 500",
+ "purge names": "SELECT id FROM members WHERE removed_at<? AND removed_at IS NOT NULL AND name IS NOT NULL LIMIT 500",
+ "walk of pages": "SELECT id,current_version FROM pages WHERE id>? ORDER BY id LIMIT 200",
+ "keys of an agent": "SELECT id FROM agent_keys WHERE agent_id=? ORDER BY created_at",
+ "agents of a person": "SELECT id FROM agents WHERE member_id=? ORDER BY name",
  "purge pages": "SELECT id FROM pages WHERE deleted_at<? AND deleted_at IS NOT NULL LIMIT 20",
 }
 bad = 0

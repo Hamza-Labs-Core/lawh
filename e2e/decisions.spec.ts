@@ -333,7 +333,7 @@ test('moving around while the count is still loading reuses the pending request'
     await route.continue();
   });
   await open(page, member, '/');
-  await page.getByRole('link', { name: 'Account' }).click();
+  await page.getByRole('link', { name: 'Settings' }).click();
   await page.getByRole('link', { name: 'Decisions', exact: true }).click();
   await page.getByRole('link', { name: 'Photo storage options' }).click();
   await expect(page).toHaveURL(`${APP}${asked.path}`);

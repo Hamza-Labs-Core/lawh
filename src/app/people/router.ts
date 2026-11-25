@@ -5,6 +5,11 @@ import { endSession, listSessions, setInstance, whoAmI } from './account';
 import { listMyPages, listMyProjects, listMyTags, listMyVersions, readPage } from './pages';
 import { addComment, deleteComment, listMyThreads, listReplies, listThreads, reply, setResolved } from './comments';
 import { answerDecision, countMyDecisions, listMyDecisions, listPageDecisions, readDecision } from './decisions';
+import { addKey, listAgents, revokeKey, setAgentOff } from './agents';
+import { exportFiles, exportPlan, exportRows } from './exportData';
+import { deletePage, listDeleted, restorePage, setStatus } from './manage';
+import { addProject, renameProject } from './projects';
+import { readSettings, setRetention } from './settings';
 import { approveDevice, claimDevice, lookAtDevice, startDevice } from './devices';
 import { addPasskey, addPasskeyOptions, linkOptions, linkRegister, listPasskeys, removePasskey, signIn, signInOptions } from './passkeys';
 import { checkSameOrigin, findPerson, type Person } from './session';
@@ -45,6 +50,21 @@ export const peopleRoutes: PeopleRoute[] = [
   person('POST', '/passkeys', false, addPasskey),
   person('DELETE', '/passkeys/([A-Za-z0-9_-]{1,1364})', false, removePasskey),
   person('GET', '/projects', false, listMyProjects),
+  person('POST', '/projects', false, addProject),
+  person('PATCH', `/projects/${SLUG}`, false, renameProject),
+  person('PUT', `/projects/${SLUG}/pages/${SLUG}/status`, false, setStatus),
+  person('DELETE', `/projects/${SLUG}/pages/${SLUG}`, false, deletePage),
+  person('GET', '/deleted', false, listDeleted),
+  person('POST', '/deleted/(pag_[0-9A-Z]{26})/restore', false, restorePage),
+  person('GET', '/agents', false, listAgents),
+  person('PUT', '/agents/(agt_[0-9A-Z]{26})/off', false, setAgentOff),
+  person('POST', '/agent-keys', false, addKey),
+  person('DELETE', '/agent-keys/(key_[0-9A-Z]{26})', false, revokeKey),
+  person('GET', '/settings', false, readSettings),
+  person('PUT', '/settings/retention', false, setRetention),
+  person('GET', '/export', false, exportPlan),
+  person('GET', '/export/rows', false, exportRows),
+  person('GET', '/export/files', false, exportFiles),
   person('GET', '/pages', false, listMyPages),
   person('GET', '/tags', false, listMyTags),
   person('GET', `/projects/${SLUG}/pages/${SLUG}`, false, readPage),
