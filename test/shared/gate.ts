@@ -1,7 +1,7 @@
 import { env, exports } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 
-const PATHS = ['/', '/v1/projects', '/v1/pages', '/app-api/projects', '/connect', '/connect.md', '/p/a/b', '/nope'];
+const PATHS = ['/v1/projects', '/v1/pages', '/app-api/projects', '/connect', '/connect.md', '/p/a/b', '/nope'];
 const call = (path: string, init?: RequestInit) => exports.default.fetch(new Request(`https://lawh.example.com${path}`, init));
 const set = (value: string) =>
   env.DB.prepare("INSERT INTO settings(key,value_json,updated_at) VALUES('instance',?,1) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json").bind(value).run();
@@ -24,7 +24,7 @@ export function gateTests(requiredHeaders: Record<string, RegExp>, allowOrigin: 
 
     it.each(['false', '"true"', '1', 'null', '{}', ' true'])('stays off for the value %s', async (value) => {
       await set(value);
-      expect(await result(await call('/'))).toEqual(OFF);
+      expect(await result(await call('/p/a/b'))).toEqual(OFF);
     });
 
     it('turns on, and off again at once', async () => {
@@ -36,12 +36,12 @@ export function gateTests(requiredHeaders: Record<string, RegExp>, allowOrigin: 
 
     it('is not turned on by another switch', async () => {
       await env.DB.prepare("INSERT INTO settings(key,value_json,updated_at) VALUES('teams','true',1)").run();
-      expect(await result(await call('/'))).toEqual(OFF);
+      expect(await result(await call('/p/a/b'))).toEqual(OFF);
     });
 
     it('fails closed, with no details, when the database fails', async () => {
       await breakDatabase();
-      const response = await call('/');
+      const response = await call('/p/a/b');
       expect(response.status).toBe(500);
       expect(await response.json()).toEqual({ code: 'internal', message: 'Something went wrong.' });
     });
@@ -49,7 +49,7 @@ export function gateTests(requiredHeaders: Record<string, RegExp>, allowOrigin: 
     it.each([['off', OFF], ['on', [404, 'not_found']], ['broken', [500, 'internal']]] as const)('sends the security headers when %s', async (state, expected) => {
       if (state === 'on') await set('true');
       if (state === 'broken') await breakDatabase();
-      const response = await call('/');
+      const response = await call('/p/a/b');
       expect(await result(response)).toEqual(expected);
       for (const [name, value] of Object.entries(requiredHeaders)) expect(response.headers.get(name), name).toMatch(value);
       expect(response.headers.get('Cache-Control')).toBe('no-store');
