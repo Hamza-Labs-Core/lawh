@@ -31,7 +31,7 @@ To use it, the owner tells an agent to connect ([README](README.md) section 3). 
 | Default language and theme | English, dark | `lawh.config.json` |
 | Secrets backend | Secrets Store; Worker secrets if the account has no room or access | `lawh.config.json` |
 | Version retention | Keep all | Settings screen |
-| Teams, webhooks, MCP | Off | Settings screen |
+| Teams, webhooks | Off | Settings screen |
 
 `lawh.config.json` and the generated Wrangler configs are gitignored, so a fork never publishes its owner's hosts or resource ids. The repository holds only `lawh.config.example.json`. It has no account id, host, product name or login from anyone's instance, and a CI check enforces that.
 

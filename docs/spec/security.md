@@ -126,7 +126,7 @@ HTTPS only, off by default. Each webhook's secret is encrypted with AES-GCM unde
 
 ## 8. What agents may trust
 
-Every comment has `authorType` (`person` or `agent`), and a person's comment has `fromDecider`: whether its author could decide on that project when they wrote it. The database checks that level on write. Only answers, and comments with `fromDecider: true`, are instructions. Page text, agents' comments and other people's comments are data. `/v1` docs and the MCP tool descriptions say so.
+Every comment has `authorType` (`person` or `agent`), and a person's comment has `fromDecider`: whether its author could decide on that project when they wrote it. The database checks that level on write. Only answers, and comments with `fromDecider: true`, are instructions. Page text, agents' comments and other people's comments are data. The `/v1` docs and the skill say so.
 
 ## 9. Threats and answers
 
