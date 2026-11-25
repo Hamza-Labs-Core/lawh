@@ -34,6 +34,7 @@ flowchart LR
   W --> R[(R2: files by content)]
   C --> D
   C --> R
+  W --> P([Durable Object per project: live pings]) -. "event number" .-> A
   W --> Q[[Queue]] --> H[Webhook, optional]
 ```
 
@@ -61,19 +62,31 @@ A page's URL is `https://APP/p/<project>/<slug>` and never changes. `?v=3` opens
 | Event | Result |
 |---|---|
 | New key | `open` |
-| The owner or a decider answers (an option, notes, or both) | `answered`, a new row in the history with the person's name |
+| The owner or a decider answers (an option, notes, or both) | A new row in the history with the person's name. `answered` if the project needs one answer (the default), or if with this one enough people agree |
+| The project needs more people to agree, and not enough do yet | Still `open` (or `stale`), with "1 of 2 agree" and who chose what |
 | Anyone who may answer answers again | New history row; the earlier one stays |
 | Republished with the same wording | No change |
-| Wording or options changed, not answered | New revision, still `open` |
+| Wording or options changed, not answered | New revision, still `open`; answers to the old wording no longer count toward agreement |
 | Wording or options changed, answered | New revision, `stale`: the old answer keeps its wording and the question is asked again |
 | Key missing from a new list | `withdrawn`; history kept |
 | A withdrawn key comes back | `open`, or `answered` if the wording matches the answered revision |
 
-An answer sends the revision and the last answer number the person saw; if either changed on another device or by another person, it gets 409 and the form reloads. Answering a page's last `open` or `stale` decision moves the page from `in_review` to `decided`.
+An answer sends the revision and the last answer number the person saw; if either changed on another device or by another person, it gets 409 and the form reloads. **Agreement.** A project can need up to 5 people to agree ([teams.md](teams.md)). Agents act only on a decision that is `answered`, and on its `answer`, which is the one that decided.
+
+An answer that decides a page's last `open` or `stale` decision moves the page from `in_review` to `decided`.
 
 **Comments** belong to the page or to a section (heading id, title and a short quote, so a comment survives a republish; if the section is gone, the comment shows under "Earlier sections"). Commenters and above start threads; deciders resolve any, and people resolve their own. Agents reply.
 
-**How agents learn of changes:** poll `GET /v1/decisions` or `GET /v1/events?after=`, or use a webhook. Polling works for an agent behind a home router.
+**How agents learn of changes.** When a person answers, comments, resolves a thread or changes a page's status, agents can be told at once:
+
+| Way | For | How |
+|---|---|---|
+| `lawh wait` | An agent that is working | Run in the background. It ends with the event as JSON as soon as a person acts (on one page or decision, or in the key's projects), so the agent's program wakes it. It ends at once if something happened since the last look, so nothing is missed between runs |
+| `lawh listen -- <command>` | An agent that isn't running | Stays on and runs the person's own command for each event, for example to start an agent. The event is sent on standard input, never put in the command line |
+| Webhook | A server | Section 7 of [security.md](security.md) |
+| `GET /v1/events?after=` | Anything else | Polling |
+
+The first two keep one outgoing connection to Lawh for each project, so they work behind a home router. A Durable Object for each project holds the connections and sleeps between pings. After an event is stored, Lawh sends only its number; the client then reads the event with its key. **A ping is only a hint:** the client also reads on connecting and every 5 minutes, so a lost ping delays an event and never loses it. An agent's own events don't wake it. Other agents' events do only with `--agents`.
 
 ## 4. Data model
 
@@ -109,6 +122,7 @@ English and Arabic with full RTL, Arabic digits ٠–٩ through one formatter. A
 | Page with decisions | [desktop](mockups/png/page-en-dark-1280.png) · [desktop, Arabic](mockups/png/page-ar-dark-1280.png) · [phone, light](mockups/png/page-en-light-390.png) |
 | Full-size viewer | [phone](mockups/png/viewer-en-dark-390.png) |
 | Open decisions | [desktop](mockups/png/inbox-en-dark-1280.png) · [phone, Arabic](mockups/png/inbox-ar-dark-390.png) |
+| Agreement | [phone](mockups/png/agree-en-dark-390.png) · [desktop, Arabic](mockups/png/agree-ar-dark-1280.png) · [project setting, phone, Arabic, light](mockups/png/project-ar-light-390.png) |
 | Comments | [phone](mockups/png/comments-en-dark-390.png) |
 | Agent keys | [desktop, Arabic, light](mockups/png/keys-ar-light-1280.png) |
 | Connect an agent: code | [phone](mockups/png/code-en-dark-390.png) |
@@ -132,7 +146,7 @@ Examples in the mockups are made up. On a phone the page fills the screen and de
 | Desktop and laptop browsers | Current Chrome, Edge, Firefox, Safari |
 | iPhone, iPad, Android | The same site. PWA: manifest (en, ar), icons, standalone display. The service worker caches only the app's own files, never pages, answers or API replies |
 | T3 Code's browser panel | Works as a website. A panel may not offer passkeys; S4 includes approving a sign-in from a device that is already signed in |
-| Agents | HTTPS. The skill and its command-line client (S11): `connect`, `whoami`, `publish <folder>`, `pages`, `read`, `decisions` (`--wait` polls until one is answered), `comments`, `reply`, `events`. Every command has `--json` |
+| Agents | HTTPS. The skill and its command-line client (S11): `connect`, `whoami`, `publish <folder>`, `pages`, `read`, `decisions`, `comments`, `reply`, `events`, `wait`, `listen`. Every command has `--json` |
 
 There are no native apps.
 
@@ -140,7 +154,7 @@ There are no native apps.
 
 - `instance`: **off by default.** While off, every route on both hosts answers 404 `feature_off`, except sign-in and the switch itself for a signed-in owner.
 - `teams`: off by default. While off, only the owner's session and agents work, every other member gets 404 `feature_off`, and the Teams screens aren't shown.
-- `webhooks`: off by default. While off, its routes answer 404 and its UI isn't shown.
+- `webhooks`, `live`: off by default. While off, their routes answer 404 and their UI isn't shown. With `live` off, `wait` and `listen` poll every 30 seconds.
 
 Switches are in `settings` and enforced by the server. There are no tiers.
 
@@ -153,7 +167,7 @@ Switches are in `settings` and enforced by the server. There are no tiers.
 
 ## 11. Cost
 
-Gross list prices per month, before the free allowances, read 2026-11-24 ([Workers](https://developers.cloudflare.com/workers/platform/pricing/), [D1](https://developers.cloudflare.com/d1/platform/pricing/), [R2](https://developers.cloudflare.com/r2/pricing/), [Queues](https://developers.cloudflare.com/queues/platform/pricing/)). These are estimates from the assumptions below, not measurements.
+Gross list prices per month, before the free allowances, read 2026-11-24 ([Workers](https://developers.cloudflare.com/workers/platform/pricing/), [D1](https://developers.cloudflare.com/d1/platform/pricing/), [R2](https://developers.cloudflare.com/r2/pricing/), [Queues](https://developers.cloudflare.com/queues/platform/pricing/), [Durable Objects](https://developers.cloudflare.com/durable-objects/platform/pricing/)). These are estimates from the assumptions below, not measurements.
 
 | | Small | Medium | Large |
 |---|---|---|---|
@@ -165,10 +179,12 @@ Gross list prices per month, before the free allowances, read 2026-11-24 ([Worke
 | R2 operations | $0.02 | $0.21 | $2.07 |
 | D1 reads, writes, storage | $0.12 | $1.18 | $11.76 |
 | Queue | $0.00 | $0.00 | $0.04 |
-| **Total** | **$0.21** | **$2.14** | **$21.37** |
+| Live pings | $0.00 | $0.00 | $0.04 |
+| **Total** | **$0.21** | **$2.14** | **$21.41** |
 
 - **Unit costs:** about $0.00002 a page view and $0.00048 a published version, plus $0.015 per GB stored a month.
 - **Assumptions:** 26 requests a view, 20 of them files; 20 requests and 15 new blobs a version; 10 ms CPU a request; 400 rows written a version (D1 bills each index and search-index row; S9 measures it); 120 rows read a view. D1 holds 0.05, 0.5 and 5 GB.
+- **Live pings:** 2, 10 and 50 listeners that reconnect every hour, and 400, 4,000 and 40,000 events a month. An idle connection that can hibernate costs nothing. Polling with `live` off costs 86,400 requests a month for each listener, about $0.03 plus the rows read.
 - **Workers Paid is required** ($5 a month for the account if it isn't on it already). The free plan caps a request at 10 ms of CPU, which search indexing and uploads exceed, and keeps D1 Time Travel for less time.
 - People cost nothing by themselves. With teams, a request reads at most 5 more rows to find the person's level. A list for a person with 50 projects reads up to 1,500 rows ($0.0000015), a few cents a month at the Large size.
 - `workers.dev` hosts and custom domains include their certificates, so no certificate add-on is needed.
@@ -193,7 +209,7 @@ Asked one at a time. Answers are recorded here. These are choices for the produc
 | 2 | Where do agent keys live? | **a. Hashes in D1, pepper in the Secrets Store, the agent's own copy in its machine's keychain.** b. One Secrets Store secret per agent, bound to the Worker. c. Both: (a) for local agents, (b) for agents that are Workers | Secrets Store values can't be read back, so a laptop agent needs a local copy either way. (b) needs a redeploy for each key, and the store holds 100 secrets an account in open beta | S2 | **a, with a connect flow** (2026-11-24): a skill opens the browser, the person signs in and names the agent, and the client saves its id and key (section 3) |
 | 3 | May pages load libraries from CDNs? | **a. No, upload everything.** b. A fixed list of CDN hosts | A CDN host is a way out for data, and pages stay readable for years only if they are complete | S3 | **a** (2026-11-24) |
 | 4 | MCP tools in v1? | **a. Yes, after the API.** b. Later | MCP lets every provider publish without custom code; it is a thin layer over `/v1` | – | **b** (2026-11-24): the skill with the command-line client is how agents use Lawh |
-| 5 | In a team, is one answer enough? | **a. Yes, the first decider's answer decides.** b. A project can ask for two or more deciders to agree | (a) is the same flow as alone, and an answer can be changed with its history kept. (b) adds a waiting state, disagreements and a stale rule per vote | S7 | – |
+| 5 | In a team, is one answer enough? | **a. Yes, the first decider's answer decides.** b. A project can ask for two or more deciders to agree | (a) is the same flow as alone, and an answer can be changed with its history kept. (b) adds a waiting state, disagreements and a stale rule per vote | S7 | **b** (2026-11-24): set for each project, 1 by default, so nothing changes for one person ([teams.md](teams.md)) |
 
 ## 14. Stories, one PR each
 
@@ -210,11 +226,13 @@ Asked one at a time. Answers are recorded here. These are choices for the produc
 | S9 | Search: FTS index, Arabic normalization, autocomplete (takes a set of projects) | S5 |
 | S10 | Settings: agents and keys, projects, delete, restore, purge, export, version retention | S5 |
 | S11 | Connect an agent: API, code and name pages. The skill and the client, with a publishing guide | S7, S8 |
-| S13 | Events feed, webhooks and queue, behind `webhooks` | S7 |
+| S13 | Events feed with who acted, webhooks and queue, behind `webhooks` | S7 |
 | S14 | PWA: manifest, icons, service worker | S5 |
 | S15 | `lawh init`, `upgrade`, `rollback`, `destroy`, fork-safe CI, the check that no instance details are committed | S4, S10 |
 | S16 | First real use: five design documents with charts and decisions, published to the author's private copy (not in this repository) | S7, S11, S15 |
 | S17 | Teams: levels, projects, managers' agents and keys, every route × level test with seeded members, behind `teams` | S7, S8, S9, S10, S11, S13 |
 | S18 | People: invite, join, reset, remove, transfer; the `teams` switch can be turned on | S17 |
+| S19 | Agreement: the project setting, progress, "Waiting for others", `agreement` in the API | S18 |
+| S20 | Live pings: the Durable Object, tickets, `lawh wait` and `listen`, behind `live` | S11, S13 |
 
-S1 needs no decision. D2 to D5 are the decisions in section 13; D1 to D4 are answered. There is no S12: it was MCP (decision 4). The tables for people and teams are in S1, and every route and list is built on `levelOn` and a set of projects (all of them for the owner), so S17 and S18 change no existing table or query. S16 doesn't wait for them.
+S1 needs no decision. D2 to D5 are the decisions in section 13, all answered. The agreement rules are in the tables from S1, and S7 writes every answer through them with 1 needed. `wait` and `listen` come with S20; S11 ships without them. There is no S12: it was MCP (decision 4). The tables for people and teams are in S1, and every route and list is built on `levelOn` and a set of projects (all of them for the owner), so S17 and S18 change no existing table or query. S16 doesn't wait for them.

@@ -35,7 +35,7 @@ A person's level is set once per team:
 | Agents and keys for the project; its webhooks | | | | ✓ | ✓ |
 | Invite and remove people in the team, up to decider | | | | ✓ | ✓ |
 | Make managers; reset or remove a person from the copy | | | | | ✓ |
-| Projects, teams, which team has which project | | | | | ✓ |
+| Projects and how many must agree, teams, which team has which project | | | | | ✓ |
 | Switches, retention, allowed webhook hosts, export, audit log | | | | | ✓ |
 
 In the two rows about page status and agents, "manager" means a manager of a team that has that project. In the row about people, it means a manager of that team.
@@ -49,8 +49,14 @@ In the two rows about page status and agents, "manager" means a manager of a tea
 - Whoever answers must be a decider on the project **at that moment**: a trigger refuses the row otherwise, so a removal can't race an answer.
 - Each answer records who gave it. The page, the history and the API show the name.
 - Two people answering at once: the first wins, the second gets 409 with the first answer shown.
-- Whether one answer is enough is owner decision 5.
-- "Open decisions" shows a person only what they may answer. Below decider, decisions are read only.
+- **Agreement.** Each project says how many people must agree, from 1 (the default) to 5. The owner sets it, and only while `teams` is on; turning `teams` off sets every project back to 1, and the dialog says so.
+  - An answer decides when, with it, that many people chose the same option. Each person's newest answer counts, for the current wording, and only while they may still answer on the project. The owner's answer counts as one. Triggers check it in the same statement, so a removal or a second answer can't race it.
+  - Everyone sees who chose what. People who disagree talk in the comments and change their answer, or the agent asks a better question; there is no casting vote and no automatic end.
+  - What was decided stays until enough people agree on another option. Someone changing their mind alone, or leaving, doesn't reopen it, but shows in the history.
+  - With more than one person needed, an answer must choose an option; notes are extra.
+  - A change of the number applies from the next answer. It decides nothing and reopens nothing by itself.
+  - If a project needs more people than can answer on it, Settings and the decision say so ("Needs 3 people, only 2 can answer").
+- "Open decisions" shows a person only what they may answer. Those they answered that still need others are under "Waiting for others". Below decider, decisions are read only.
 
 ## Agents in a team
 
@@ -67,7 +73,7 @@ In the two rows about page status and agents, "manager" means a manager of a tea
 
 | Rule | Where |
 |---|---|
-| Who may answer; level on a comment, and that it stays in its page's project; who sets which level; limits; links; passkeys, approvals and sessions per member; removal; transfer; keys when an agent moves; one owner | Triggers and constraints in [schema.sql](schema.sql), tested in [integrity.py](checks/integrity.py) |
+| Who may answer; agreement; level on a comment, and that it stays in its page's project; who sets which level; limits; links; passkeys, approvals and sessions per member; removal; transfer; keys when an agent moves; one owner | Triggers and constraints in [schema.sql](schema.sql), tested in [integrity.py](checks/integrity.py) |
 | Project access on every read and write | One server function, `levelOn(member, project)`, used by every `/app-api` route from S5 on. A test calls every route at every level, and fails if a route has no row in the table above |
 | The `teams` switch | Server: while off, only the owner's session and agents work. Everything else for other people answers 404 `feature_off`: sessions, sign-in, device approval, connecting agents, invite and reset links, and their agents' keys. A content link already opened lasts at most 4 hours, as after a removal. The switch can't be turned on before S18 |
 

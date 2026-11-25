@@ -16,7 +16,7 @@ pnpm lawh init
 
 1. Asks for the instance name (en and ar) and hosts: `workers.dev` (default) or the owner's domain.
 2. Shows everything it will create, with the cost notes, and waits for a yes.
-3. Creates D1, R2 and the queue, and generates the secrets on that machine.
+3. Creates D1, R2, the queue and the Durable Object class, and generates the secrets on that machine.
 4. Applies migrations and deploys both Workers with the `instance` switch off.
 5. Asks for the owner's display name, creates the first project, turns the switch on after a yes, and runs `lawh owner setup`.
 
@@ -31,7 +31,7 @@ To use it, the owner tells an agent to connect ([README](README.md) section 3). 
 | Default language and theme | English, dark | `lawh.config.json` |
 | Secrets backend | Secrets Store; Worker secrets if the account has no room or access | `lawh.config.json` |
 | Version retention | Keep all | Settings screen |
-| Teams, webhooks | Off | Settings screen |
+| Teams, webhooks, live pings | Off | Settings screen |
 
 `lawh.config.json` and the generated Wrangler configs are gitignored, so a fork never publishes its owner's hosts or resource ids. The repository holds only `lawh.config.example.json`. It has no account id, host, product name or login from anyone's instance, and a CI check enforces that.
 

@@ -4,8 +4,10 @@
 CREATE TABLE projects (
   id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE,
   name_en TEXT NOT NULL, name_ar TEXT NOT NULL,
-  created_at INTEGER NOT NULL, archived_at INTEGER
+  created_at INTEGER NOT NULL, archived_at INTEGER,
+  answers_needed INTEGER NOT NULL DEFAULT 1 CHECK (answers_needed BETWEEN 1 AND 5)   -- people who must agree
 );
+CREATE INDEX projects_agreement ON projects(answers_needed) WHERE answers_needed > 1;
 
 -- People. One owner; everyone else is a member. Rows are never deleted: 30 days after removal the name
 -- becomes NULL, and history shows "Former member". An invited person has joined_at NULL and is in no team.
@@ -244,7 +246,8 @@ CREATE TABLE decisions (
   position INTEGER NOT NULL,
   revision INTEGER NOT NULL DEFAULT 1,     -- goes up when the question or its options change
   status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','answered','stale','withdrawn')),
-  answer_seq INTEGER NOT NULL DEFAULT 0,   -- current answer; 0 means none
+  answer_seq INTEGER NOT NULL DEFAULT 0,   -- last answer; 0 means none
+  decided_seq INTEGER NOT NULL DEFAULT 0,  -- the answer that decided; 0 means none
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   UNIQUE (page_id, key),
   FOREIGN KEY (page_id, project_id) REFERENCES pages(id, project_id)
@@ -276,10 +279,13 @@ CREATE TABLE decision_answers (
   revision INTEGER NOT NULL, option_id TEXT,     -- NULL: answered with notes only
   notes TEXT NOT NULL DEFAULT '', answered_at INTEGER NOT NULL,
   member_id TEXT NOT NULL REFERENCES members(id),
+  needed INTEGER NOT NULL DEFAULT 1,             -- how many people had to agree then
+  decides INTEGER NOT NULL DEFAULT 1 CHECK (decides IN (0,1)),
   PRIMARY KEY (decision_id, seq),
   FOREIGN KEY (decision_id, revision) REFERENCES decision_revisions(decision_id, revision),
   CHECK (option_id IS NOT NULL OR length(trim(notes)) > 0)
 ) WITHOUT ROWID;
+CREATE INDEX decision_answers_member ON decision_answers(decision_id, member_id, seq);
 CREATE TRIGGER decision_answers_current BEFORE INSERT ON decision_answers
 WHEN NOT EXISTS (SELECT 1 FROM decisions d JOIN pages p ON p.id = d.page_id AND p.deleted_at IS NULL
                  WHERE d.id = NEW.decision_id AND d.revision = NEW.revision
@@ -292,8 +298,21 @@ WHEN NOT EXISTS (SELECT 1 FROM members o WHERE o.id = NEW.member_id AND o.role =
                  ON x.member_id = NEW.member_id AND x.project_id = d.project_id AND x.level >= 3
                  WHERE d.id = NEW.decision_id)
 BEGIN SELECT RAISE(ABORT, 'answer not allowed'); END;
+-- Agreement: the newest answer of each person counts, for this wording only, and only while they may answer.
+-- An answer decides when, with it, enough people chose its option. What was decided stays until another answer decides.
+CREATE TRIGGER decision_answers_agree BEFORE INSERT ON decision_answers
+WHEN NEW.needed <> (SELECT p.answers_needed FROM decisions d JOIN projects p ON p.id = d.project_id WHERE d.id = NEW.decision_id)
+  OR (NEW.needed > 1 AND NEW.option_id IS NULL)
+  OR NEW.decides <> (NEW.needed <= 1 + (SELECT COUNT(*) FROM decision_answers a JOIN decisions d ON d.id = a.decision_id
+      WHERE a.decision_id = NEW.decision_id AND a.revision = NEW.revision AND a.option_id = NEW.option_id AND a.member_id <> NEW.member_id
+      AND NOT EXISTS (SELECT 1 FROM decision_answers b WHERE b.decision_id = a.decision_id AND b.member_id = a.member_id AND b.seq > a.seq)
+      AND (EXISTS (SELECT 1 FROM members o WHERE o.id = a.member_id AND o.role = 'owner')
+        OR EXISTS (SELECT 1 FROM project_access x WHERE x.member_id = a.member_id AND x.project_id = d.project_id AND x.level >= 3))))
+BEGIN SELECT RAISE(ABORT, 'answer conflict'); END;
 CREATE TRIGGER decision_answers_point AFTER INSERT ON decision_answers
-BEGIN UPDATE decisions SET answer_seq = NEW.seq, status = 'answered', updated_at = NEW.answered_at
+BEGIN UPDATE decisions SET answer_seq = NEW.seq, updated_at = NEW.answered_at,
+        status = CASE NEW.decides WHEN 1 THEN 'answered' ELSE status END,
+        decided_seq = CASE NEW.decides WHEN 1 THEN NEW.seq ELSE decided_seq END
       WHERE id = NEW.decision_id; END;
 CREATE TRIGGER decision_answers_no_update BEFORE UPDATE ON decision_answers
 BEGIN SELECT RAISE(ABORT, 'answers are append only'); END;
@@ -339,7 +358,8 @@ CREATE INDEX comments_purge ON comments(deleted_at) WHERE deleted_at IS NOT NULL
 -- Ordered feed agents can poll, and the outbox webhooks are sent from.
 CREATE TABLE events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL, page_id TEXT,
-  type TEXT NOT NULL, subject_id TEXT NOT NULL, created_at INTEGER NOT NULL, enqueued_at INTEGER
+  type TEXT NOT NULL, subject_id TEXT NOT NULL, created_at INTEGER NOT NULL, enqueued_at INTEGER,
+  actor_type TEXT NOT NULL CHECK (actor_type IN ('person','agent','system')), actor_id TEXT
 );
 CREATE INDEX events_project ON events(project_id, seq);
 CREATE INDEX events_outbox ON events(seq) WHERE enqueued_at IS NULL;
@@ -530,6 +550,19 @@ BEGIN UPDATE members SET removed_at = unixepoch() * 1000 WHERE joined_at IS NULL
   AND id IN (SELECT member_id FROM access_links WHERE team_id = OLD.id AND used_at IS NULL); END;
 
 CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at INTEGER NOT NULL);
+-- Agreement needs teams: without them only the owner can answer. Turning teams off sets every project back to 1.
+CREATE TRIGGER projects_agreement_add BEFORE INSERT ON projects
+WHEN NEW.answers_needed > 1 AND NOT EXISTS (SELECT 1 FROM settings WHERE key = 'teams' AND value_json = 'true')
+BEGIN SELECT RAISE(ABORT, 'agreement needs teams'); END;
+CREATE TRIGGER projects_agreement_set BEFORE UPDATE OF answers_needed ON projects
+WHEN NEW.answers_needed > 1 AND NOT EXISTS (SELECT 1 FROM settings WHERE key = 'teams' AND value_json = 'true')
+BEGIN SELECT RAISE(ABORT, 'agreement needs teams'); END;
+CREATE TRIGGER settings_teams_off AFTER UPDATE ON settings WHEN NEW.key = 'teams' AND NEW.value_json <> 'true'
+BEGIN UPDATE projects SET answers_needed = 1 WHERE answers_needed > 1; END;
+CREATE TRIGGER settings_teams_new AFTER INSERT ON settings WHEN NEW.key = 'teams' AND NEW.value_json <> 'true'
+BEGIN UPDATE projects SET answers_needed = 1 WHERE answers_needed > 1; END;
+CREATE TRIGGER settings_teams_gone BEFORE DELETE ON settings WHEN OLD.key = 'teams'
+BEGIN UPDATE projects SET answers_needed = 1 WHERE answers_needed > 1; END;
 CREATE TABLE audit (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,
   actor_type TEXT NOT NULL CHECK (actor_type IN ('member','agent','command','system')), actor_id TEXT, action TEXT NOT NULL, subject_id TEXT

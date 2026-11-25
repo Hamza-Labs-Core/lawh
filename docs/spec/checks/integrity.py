@@ -11,7 +11,7 @@ def fresh():
     db.executescript(schema)
     db.execute("PRAGMA foreign_keys=ON")
     db.executescript(f"""
-      INSERT INTO projects VALUES('p1','one','One','واحد',1,NULL),('p2','two','Two','اثنان',1,NULL);
+      INSERT INTO projects(id,slug,name_en,name_ar,created_at,archived_at) VALUES('p1','one','One','واحد',1,NULL),('p2','two','Two','اثنان',1,NULL);
       INSERT INTO members(id,name,role,created_at) VALUES('o','Owner','owner',1); UPDATE members SET joined_at=1;
       INSERT INTO agents VALUES('a1','o','bot','x',1,NULL);
       INSERT INTO agent_keys(id,agent_id,secret_hmac,scopes_json,created_at,expires_at) VALUES('k1','a1','h','[]',1,9);
@@ -36,10 +36,10 @@ def check(name, ok):
     fails += not ok
     print("ok  " if ok else "FAIL", name)
 
-ANS = "INSERT INTO decision_answers VALUES('d1',?,?,?,?,5,'o')"
+ANS = "INSERT INTO decision_answers(decision_id,seq,revision,option_id,notes,answered_at,member_id) VALUES('d1',?,?,?,?,5,'o')"
 db = fresh()
 check("first answer accepted", batch(db, (ANS, (1, 1, 'a', ''))))
-check("answer moves the pointer", db.execute("SELECT answer_seq,status FROM decisions").fetchone() == (1, 'answered'))
+check("answer moves the pointer", db.execute("SELECT answer_seq,decided_seq,status FROM decisions").fetchone() == (1, 1, 'answered'))
 check("same answer number refused", not batch(db, (ANS, (1, 1, 'b', ''))))
 check("skipped answer number refused", not batch(db, (ANS, (3, 1, 'b', ''))))
 batch(db, "INSERT INTO decision_revisions VALUES('d1',2,'Q2','','[]','v1',1,1)", "UPDATE decisions SET revision=2,status='stale'")
@@ -158,7 +158,7 @@ db = fresh(); people(db)
 def put_in(team, member, level, by): return batch(db, ("INSERT INTO team_members VALUES(?,?,?,?,1)", (team, member, level, by)))
 def set_level(team, member, level, by): return batch(db, ("UPDATE team_members SET level=?,set_by=? WHERE team_id=? AND member_id=?", (level, by, team, member)))
 def level(m, p): return db.execute("SELECT MAX(level) FROM project_access WHERE member_id=? AND project_id=?", (m, p)).fetchone()[0]
-AM = "INSERT INTO decision_answers VALUES('d1',?,1,'a','',5,?)"
+AM = "INSERT INTO decision_answers(decision_id,seq,revision,option_id,notes,answered_at,member_id) VALUES('d1',?,1,'a','',5,?)"
 CM = "INSERT INTO comments(id,page_id,project_id,thread_id,version_n,member_id,author_level,body,created_at) VALUES(?,'g1','p1',?,1,?,?,'x',1)"
 check("no team, no access", level('m', 'p1') is None and not batch(db, (AM, (1, 'm'))) and not batch(db, (CM, ('q', 'q', 'm', 2))))
 check("a member can't add people", not put_in('t1', 'r', 1, 'm'))
@@ -202,7 +202,7 @@ def remove(t, m, by): return db.execute(REMOVE, dict(t=t, m=m, by=by)).rowcount
 check("a manager removes a member of the team, never a manager", remove('t1', 'm', 'm') == 0 and remove('t1', 'r', 'x') == 0 and remove('t1', 'r', 'm') == 1 and put_in('t1', 'r', 3, 'm'))
 for i in range(4): db.execute("INSERT INTO teams VALUES(?,?,1)", (f"c{i}", f"c{i}"))
 check("at most 5 teams a person", all(put_in(f"c{i}", 'r', 1, 'o') for i in range(3)) and count('team_members', 'r') == 5 and not put_in('c3', 'r', 1, 'o'))
-for i in range(10): db.execute("INSERT INTO projects VALUES(?,?,'N','N',1,NULL)", (f"n{i}", f"n{i}"))
+for i in range(10): db.execute("INSERT INTO projects(id,slug,name_en,name_ar,created_at,archived_at) VALUES(?,?,'N','N',1,NULL)", (f"n{i}", f"n{i}"))
 check("at most 10 projects a team", all(batch(db, ("INSERT INTO team_projects VALUES('c3',?)", (f"n{i}",))) for i in range(10)) and not batch(db, "INSERT INTO team_projects VALUES('c3','p1')"))
 db.executescript("INSERT INTO agents VALUES('am','m','mbot','x',1,NULL); INSERT INTO agent_keys(id,agent_id,secret_hmac,scopes_json,created_at,expires_at) VALUES('km','am','h','[]',1,9); INSERT INTO agent_key_projects VALUES('km','p1')")
 check("a key can't get a project its person doesn't manage", not batch(db, "INSERT INTO agent_key_projects VALUES('km','p2')"))
@@ -358,13 +358,13 @@ db.executescript("""INSERT INTO pages(id,project_id,slug,title,created_by,create
   INSERT INTO decision_revisions VALUES('dx',1,'Q','','[]',NULL,1,1),('dx',2,'Q','','[]',NULL,1,1),('dy',1,'Q','','[]',NULL,1,1);""")
 refused("a version follows its own page's number", "INSERT INTO page_versions VALUES('vb','gx',2,'i','',1,1,'a1','k1',5)")
 check("publishing moves only its own page and tags", sql("INSERT INTO page_versions VALUES('vb','gx',1,'i','',1,1,'a1','k1',77)") and rows('pages', "updated_at=77") == rows('pages', "id='gx'") and rows('page_tags', "sort_at=77") == rows('page_tags', "page_id='gx'"))
-refused("an answer fits its own decision's revision", "INSERT INTO decision_answers VALUES('dx',1,1,'a','',5,'o')")
-check("an answer moves only its own decision", sql("INSERT INTO decision_answers VALUES('dx',1,2,'a','',5,'o')") and rows('decisions', "answer_seq=1") == rows('decisions', "id='dx'"))
-refused("a manager of another project can't answer, beside a decision they may answer", "INSERT INTO decision_answers VALUES('dx',2,2,'a','',5,'r')")
-check("but answers in their own project", sql("INSERT INTO decision_answers VALUES('dy',1,1,'a','',5,'r')"))
+refused("an answer fits its own decision's revision", "INSERT INTO decision_answers(decision_id,seq,revision,option_id,notes,answered_at,member_id) VALUES('dx',1,1,'a','',5,'o')")
+check("an answer moves only its own decision", sql("INSERT INTO decision_answers(decision_id,seq,revision,option_id,notes,answered_at,member_id) VALUES('dx',1,2,'a','',5,'o')") and rows('decisions', "answer_seq=1") == rows('decisions', "id='dx'"))
+refused("a manager of another project can't answer, beside a decision they may answer", "INSERT INTO decision_answers(decision_id,seq,revision,option_id,notes,answered_at,member_id) VALUES('dx',2,2,'a','',5,'r')")
+check("but answers in their own project", sql("INSERT INTO decision_answers(decision_id,seq,revision,option_id,notes,answered_at,member_id) VALUES('dy',1,1,'a','',5,'r')"))
 db.execute("UPDATE pages SET deleted_at=1 WHERE id='gy'")
 refused("a page deleted elsewhere doesn't let answers go", "DELETE FROM decision_answers WHERE decision_id='dx'")
-refused("a live page elsewhere doesn't allow an answer on a deleted one", "INSERT INTO decision_answers VALUES('dy',2,1,'a','',5,'o')")
+refused("a live page elsewhere doesn't allow an answer on a deleted one", "INSERT INTO decision_answers(decision_id,seq,revision,option_id,notes,answered_at,member_id) VALUES('dy',2,1,'a','',5,'o')")
 
 db = fresh()
 check("pruning a version keeps its decision wording", batch(db, "DELETE FROM page_versions WHERE id='v1'")
@@ -424,7 +424,7 @@ refused("a request can't start already answered", NEW % ('q', SOON, "1,'m','sm',
 refused("two requests can't have one code", NEW % ('cu', SOON, "NULL,NULL,NULL,NULL"))
 check("the same row with another code is fine", sql(NEW % ('q', SOON, "NULL,NULL,NULL,NULL"), "DELETE FROM agent_connects WHERE id='q'"))
 for v in ("NULL,'m','sm',NULL", "NULL,NULL,'sm',NULL", "NULL,'m',NULL,NULL"): refused(f"an answer is whole or absent ({v})", NEW % ('q', SOON, v))
-sql("INSERT INTO projects VALUES('p3','three','Three','ثلاثة',1,NULL)", "INSERT INTO team_projects VALUES('t1','p3')")
+sql("INSERT INTO projects(id,slug,name_en,name_ar,created_at,archived_at) VALUES('p3','three','Three','ثلاثة',1,NULL)", "INSERT INTO team_projects VALUES('t1','p3')")
 no("a project they don't manage is refused", 'w', reply('w', 'm', 'sm', 'am', projects='["p1","p2"]'))
 for k in (dict(projects=None), dict(scopes=None), dict(exp=None), dict(everything=None), dict(everything=2), dict(projects='{"a":"p1"}'), dict(projects='"p1"'), dict(projects='x')): no(f"a whole grant is needed {k}", 'w', reply('w', 'm', 'sm', 'am', **k))
 no("the owner's grant has a list or all projects, not both", 'w', reply('w', 'o', 'so', 'a1', 1, '["p1"]'))
@@ -462,4 +462,60 @@ ask('gone'); check("a person removed meanwhile can't answer", sql("UPDATE member
 check("and their connected keys are revoked", rows('agent_keys', "id='u' AND revoked_at=9") and rows('agent_keys', "id='w' AND revoked_at=9"))
 crowd(); ask('tr'); sql("UPDATE members SET role='member' WHERE id='o'", "UPDATE members SET role='owner' WHERE id='m'"); no("a former owner can't connect an agent", 'tr', reply('tr', 'o', 'so', 'a1', projects='[]'))
 crowd(); ask('rs'); sql("DELETE FROM sessions WHERE token_sha256='sm'"); no("a session ended meanwhile can't answer", 'rs', reply('rs', 'm', 'sm', 'am'))
+
+# Agreement
+refused("agreement needs teams", "UPDATE projects SET answers_needed=2 WHERE id='p1'")
+sql("INSERT INTO settings VALUES('webhooks','true',1)"); refused("and no other switch", "UPDATE projects SET answers_needed=2 WHERE id='p1'")
+refused("also for a new project", "INSERT INTO projects VALUES('pz','z','Z','Z',1,NULL,2)")
+def settle(n, level_r=3):
+    crowd(); sql("INSERT INTO settings VALUES('teams','true',1)", f"UPDATE projects SET answers_needed={n} WHERE id='p1'"); set_level('t1', 'r', level_r, 'o')
+    sql("INSERT INTO members(id,name,created_by,created_at) VALUES('z','Zed','o',1)", "UPDATE members SET joined_at=1 WHERE id='z'"); put_in('t1', 'z', 3, 'o')
+VOTE = "INSERT INTO decision_answers(decision_id,seq,revision,option_id,notes,answered_at,member_id,needed,decides) VALUES('d1',?,?,?,'n',?,?,?,?)"
+def vote(who, opt, decides, needed=2, rev=1):
+    seq = db.execute("SELECT answer_seq+1 FROM decisions WHERE id='d1'").fetchone()[0]
+    return sql((VOTE, (seq, rev, opt, 10 + seq, who, needed, decides)))
+def state(): return db.execute("SELECT status,answer_seq,decided_seq FROM decisions WHERE id='d1'").fetchone()
+def only(name, who, opt, decides, **k):
+    check(name, not vote(who, opt, 1 - decides, **k) and vote(who, opt, decides, **k))
+settle(2)
+check("a project starts with one answer needed", rows('projects', "id='p2' AND answers_needed=1"))
+only("the first of two answers doesn't decide", 'm', 'a', 0); check("and the decision stays open", state() == ('open', 1, 0))
+only("the same person again doesn't decide", 'm', 'a', 0)
+only("another option doesn't decide", 'r', 'b', 0)
+only("a second person agreeing decides", 'o', 'a', 1); check("and the answer is the deciding one", state() == ('answered', 4, 4))
+settle(2); vote('m', 'a', 0); vote('r', 'a', 1)
+only("someone changing their mind alone decides nothing", 'm', 'b', 0); check("and what was decided stays", state() == ('answered', 3, 2))
+only("enough people on another option change it", 'z', 'b', 1); check("and that answer is the deciding one", state() == ('answered', 4, 4))
+DQ = "INSERT INTO decisions(id,page_id,project_id,key,position,created_at,updated_at) VALUES('dq','g1','p1','q',1,1,1)"; DQ1 = "INSERT INTO decision_revisions VALUES('dq',1,'Q','','[]','v1',1,1)"
+settle(2); vote('o', 'a', 0); only("the owner's answer counts as one, also first", 'm', 'a', 1)
+settle(3); sql(DQ, DQ1); vote('m', 'a', 0, 3); vote('r', 'a', 0, 3); check("two of three isn't enough", state() == ('open', 2, 0))
+only("three of three is", 'z', 'a', 1, needed=3)
+settle(2); vote('m', 'a', 0); vote('m', 'b', 0); only("an answer a person replaced doesn't count", 'r', 'a', 0); only("their newest does", 'z', 'b', 1)
+settle(2); vote('r', 'a', 0); set_level('t1', 'r', 2, 'o'); only("the answer of someone who may no longer answer doesn't count", 'm', 'a', 0)
+set_level('t1', 'r', 3, 'o'); only("and counts again when they may", 'z', 'a', 1)
+settle(2); vote('r', 'a', 0); sql("UPDATE members SET removed_at=5 WHERE id='r'"); only("nor that of someone removed", 'm', 'a', 0)
+settle(2); vote('r', 'a', 0); db.execute("DELETE FROM team_members WHERE team_id='t1' AND member_id='r'"); only("access in another project doesn't count for agreement", 'm', 'a', 0)
+settle(2); vote('o', 'a', 0); sql("UPDATE members SET role='member' WHERE id='o'", "UPDATE members SET role='owner' WHERE id='m'"); only("nor that of a former owner", 'z', 'a', 0); only("the new owner's counts as one", 'm', 'a', 1)
+settle(2); vote('m', 'a', 0); sql("INSERT INTO decision_revisions VALUES('d1',2,'Q2','','[]','v1',1,1)", "UPDATE decisions SET revision=2 WHERE id='d1'"); only("an answer to the old wording doesn't count", 'r', 'a', 0, rev=2); only("two to the new one do", 'z', 'a', 1, rev=2)
+settle(2); vote('m', 'a', 0); sql("UPDATE decisions SET status='stale' WHERE id='d1'"); vote('m', 'a', 0); check("a question asked again stays so until enough agree", state()[0] == 'stale')
+settle(2); check("with two needed, notes alone are refused", not vote('m', None, 0) and not vote('m', None, 1))
+check("the number must be the project's", not vote('m', 'a', 1, 1) and not vote('m', 'a', 0, 3) and vote('m', 'a', 0))
+sql("UPDATE projects SET answers_needed=1 WHERE id='p1'"); check("changing the number decides nothing by itself", state() == ('open', 1, 0)); only("the next answer does", 'r', 'b', 1, needed=1)
+sql("UPDATE projects SET answers_needed=3 WHERE id='p1'"); check("raising it reopens nothing", state()[0] == 'answered')
+settle(1); check("with one needed, any answer decides, also notes alone", not vote('m', 'a', 0, 1) and vote('m', 'a', 1, 1) and vote('r', None, 1, 1) and state() == ('answered', 2, 2))
+settle(2); sql(DQ, DQ1)
+check("an answer to another question doesn't count", sql((VOTE.replace("'d1'", "'dq'"), (1, 1, 'a', 5, 'm', 2, 0)))); only("here", 'r', 'a', 0)
+settle(2); sql(DQ, DQ1); vote('m', 'a', 0)
+check("newer answers to another question hide nothing here", sql(*[(VOTE.replace("'d1'", "'dq'"), (i, 1, 'b', 5, 'm', 2, 0)) for i in (1, 2, 3)])); only("so two agree", 'r', 'a', 1)
+sql("INSERT INTO pages(id,project_id,slug,title,created_by,created_at,updated_at) VALUES('g2','p2','s2','T','a1',1,1)", "INSERT INTO decisions(id,page_id,project_id,key,position,created_at,updated_at) VALUES('dy','g2','p2','k',0,1,1)", "INSERT INTO decision_revisions VALUES('dy',1,'Q','','[]',NULL,1,1)")
+check("another project keeps its own number", sql((VOTE.replace("'d1'", "'dy'"), (1, 1, 'a', 5, 'o', 1, 1))))
+check("with teams on, a new project can need agreement", sql("INSERT INTO projects VALUES('pz','z','Z','Z',1,NULL,2)"))
+for n in (0, 6): refused(f"{n} people can't be asked for", f"UPDATE projects SET answers_needed={n} WHERE id='p1'")
+sql("INSERT INTO settings VALUES('webhooks','false',1)", "UPDATE settings SET value_json='true' WHERE key='webhooks'", "UPDATE settings SET value_json='false' WHERE key='webhooks'", "DELETE FROM settings WHERE key='webhooks'", "UPDATE settings SET updated_at=2 WHERE key='teams'")
+check("other switches change nothing", rows('projects', "id='p1' AND answers_needed=2"))
+check("turning teams off sets every project back to one", sql("UPDATE settings SET value_json='false' WHERE key='teams'") and not rows('projects', "answers_needed>1"))
+refused("and it can't be set while off", "UPDATE projects SET answers_needed=2 WHERE id='p1'"); refused("nor for a new project", "INSERT INTO projects VALUES('py','y','Z','Z',1,NULL,2)")
+settle(2); check("saving it over again does too", sql("INSERT OR REPLACE INTO settings VALUES('teams','false',1)") and not rows('projects', "answers_needed>1"))
+settle(2); check("removing the setting does the same", sql("DELETE FROM settings WHERE key='teams'") and not rows('projects', "answers_needed>1"))
+check("an event says who acted", not sql("INSERT INTO events(project_id,type,subject_id,created_at) VALUES('p1','t','s',1)") and sql("INSERT INTO events(project_id,type,subject_id,created_at,actor_type,actor_id) VALUES('p1','t','s',1,'person','m')"))
 sys.exit(1 if fails else 0)
