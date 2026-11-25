@@ -2,7 +2,8 @@
 function checked(value: string): string {
   const url = new URL(value);
   const local = url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1');
-  if (url.origin !== value || (url.protocol !== 'https:' && !local)) throw new Error('An origin is not valid');
+  // The URL parser lets quotes and semicolons through in a host name.
+  if (url.origin !== value || !/^[a-z0-9.-]+$/.test(url.hostname) || (url.protocol !== 'https:' && !local)) throw new Error('An origin is not valid');
   return value;
 }
 

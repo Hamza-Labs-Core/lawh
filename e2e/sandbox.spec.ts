@@ -113,8 +113,10 @@ test('the bridge tells the outline, scrolling and outside links, and takes the t
   await page.evaluate(() => document.querySelector('iframe')!.contentWindow!.postMessage({ type: 'lawh:theme', mode: 'light', lang: 'ar' }, '*'));
   await expect.poll(() => frame.evaluate(() => [document.documentElement.dataset.lawhMode, document.documentElement.dataset.lawhLang])).toEqual(['light', 'ar']);
   expect((await of('lawh:open-link')).length).toBe(4);
-  // Another file of the page keeps them.
-  await frame.locator('#next').click();
+  // Another query, or another file of the page, keeps them.
+  await frame.evaluate(() => { const a = document.createElement('a'); a.href = '?tab=2'; document.body.append(a); a.click(); });
+  await expect.poll(() => page.frame('page')!.evaluate(() => [new URLSearchParams(location.search).get('tab'), document.documentElement.dataset.lawhMode, document.documentElement.dataset.lawhLang])).toEqual(['2', 'light', 'ar']);
+  await page.frame('page')!.locator('#next').click();
   await expect.poll(() => page.frame('page')!.evaluate(() => [location.pathname.split('/').at(-1), document.documentElement.dataset.lawhMode, document.documentElement.dataset.lawhLang])).toEqual(['next.html', 'light', 'ar']);
 });
 

@@ -10,6 +10,7 @@ const FILES: Record<string, [string, string]> = {
   'index.html': ['text/html; charset=utf-8', '<!doctype html><html lang="en"><head><title>T</title></head><body><h1>Hi</h1></body></html>'],
   'bare.html': ['text/html; charset=utf-8', '<h1>No html element</h1>'],
   'a b/صورة #1?.png': ['image/png', '0123456789'],
+  'template.html': ['text/html; charset=utf-8', '<html><head><template><body>x</body></template></head><body>y</body></html>'],
   'app.js': ['text/javascript; charset=utf-8', 'export default 1'],
   '100%.txt': ['text/plain; charset=utf-8', 'percent'],
 };
@@ -106,7 +107,7 @@ describe('files', () => {
     const { default: worker } = await import('../../src/content/index');
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      for (const change of [{ CONTENT_KEY: '' }, { CONTENT_KEY: 'short' }, { APP_ORIGIN: 'https://a.example.com/x' }, { CONTENT_ORIGIN: 'http://a.example.com' }, { APP_ORIGIN: "https://a.example.com; script-src *" }, { CONTENT_ORIGIN: '*' }, { CONTENT_ORIGIN: env.APP_ORIGIN }]) {
+      for (const change of [{ CONTENT_KEY: '' }, { CONTENT_KEY: 'short' }, { APP_ORIGIN: 'https://a.example.com/x' }, { CONTENT_ORIGIN: 'http://a.example.com' }, { APP_ORIGIN: "https://a.example.com; script-src *" }, { APP_ORIGIN: 'https://a"b.example.com' }, { APP_ORIGIN: 'https://a;b.example.com' }, { CONTENT_ORIGIN: "https://a'b.example.com" }, { CONTENT_ORIGIN: '*' }, { CONTENT_ORIGIN: env.APP_ORIGIN }]) {
         const response = await worker.fetch(new Request(`http://localhost:8788/${token}/app.js`) as Request<unknown, IncomingRequestCfProperties>, { ...env, ...change }, {} as ExecutionContext);
         expect([response.status, response.headers.get('Content-Security-Policy')!.includes('sandbox')], JSON.stringify(change)).toEqual([500, true]);
       }
@@ -148,6 +149,7 @@ describe('pages', () => {
     const read = async (path: string) => (await call(`/${token}/${path}`)).text();
     expect(await read('index.html?mode=light&lang=ar')).toBe(`<!doctype html><html lang="en" data-lawh-mode="light" data-lawh-lang="ar"><head><title>T</title></head><body><h1>Hi</h1><script src="/${token}/_lawh/bridge.js" data-app="http://localhost:8787" data-mode="light" data-lang="ar"></script></body></html>`);
     expect(await read('index.html?mode=%22%3E%3Cscript%3E&lang=x')).toContain('data-lawh-mode="dark" data-lawh-lang="en"');
+    expect(await read('template.html')).toMatch(/<template><body>x<\/body><\/template><\/head><body>y<script [^>]*><\/script><\/body><\/html>$/);
     expect(await read('bare.html?mode=light')).toBe(`<h1>No html element</h1><script src="/${token}/_lawh/bridge.js" data-app="http://localhost:8787" data-mode="light" data-lang="en"></script>`);
   });
 

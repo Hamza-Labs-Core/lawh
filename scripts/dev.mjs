@@ -1,8 +1,9 @@
 // pnpm dev
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runLocal } from './local/run.mjs';
 
-const { child, app, content } = runLocal({ port: 8787, state: join(new URL('..', import.meta.url).pathname, '.wrangler/dev') });
+const { child, app, content } = runLocal({ port: 8787, state: join(fileURLToPath(new URL('..', import.meta.url)), '.wrangler/dev') });
 console.log(`App ${app}, pages ${content}`);
 for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => child.kill('SIGTERM'));
 child.on('exit', (code) => process.exit(code ?? 0));

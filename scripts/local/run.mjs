@@ -2,8 +2,9 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const root = new URL('../..', import.meta.url).pathname, bin = join(root, 'node_modules/.bin/wrangler');
+const root = fileURLToPath(new URL('../..', import.meta.url)), bin = join(root, 'node_modules/.bin/wrangler');
 export const PEPPER = 'local-development-pepper-not-a-secret', CONTENT_KEY = 'local-development-content-key-not-a-secret';
 
 /** `localhost` is the app and `127.0.0.1` the content host: two host names, so cookies of one never reach the other. */
