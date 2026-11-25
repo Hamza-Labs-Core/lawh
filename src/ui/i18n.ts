@@ -76,6 +76,7 @@ const TEXT = {
   nextPicture: ['Next picture', 'الصورة التالية'],
   noPicture: ['This picture can’t be shown full size.', 'لا يمكن عرض هذه الصورة بالحجم الكامل.'],
   viewerHelp: ['Esc closes, arrows move, + and − zoom, pinch on touch', 'Esc للإغلاق، والأسهم للتنقل، و+ و− للتكبير، والقرص باللمس'],
+  blockPage: ['Stop this page from opening anything', 'منع هذه الصفحة من فتح أي شيء'],
   open: ['Open', 'فتح'],
   cancel: ['Cancel', 'إلغاء'],
   close: ['Close', 'إغلاق'],

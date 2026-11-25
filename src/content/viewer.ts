@@ -9,17 +9,20 @@ export const VIEWER = `(function () {
   'use strict';
   var app = document.currentScript.dataset.app, token = location.pathname.split('/')[1], canvas = document.querySelector('canvas'), pen = canvas.getContext('2d');
   var item = null, width = 0, height = 0, scale = 1, x = 0, y = 0, fitScale = 1, background = 'transparent', shown = 0, waiting = false, release = null;
+  var drop = function () { if (release) release(); release = null; item = null; };
   document.documentElement.style.cssText = 'height:100%;background:transparent;overscroll-behavior:none';
   document.body.style.cssText = 'margin:0;height:100%;overflow:hidden';
   canvas.style.cssText = 'display:block;width:100%;height:100%;touch-action:none;cursor:grab;outline:none';
-  var send = function (type, key) { parent.postMessage({ type: 'lawh:' + type, key: key }, app); };
+  var send = function (type, data) { data.type = 'lawh:' + type; parent.postMessage(data, app); };
   var draw = function () {
     if (waiting) return;
     waiting = true;
     requestAnimationFrame(function () {
       waiting = false;
       var ratio = Math.min(devicePixelRatio || 1, 3), w = canvas.clientWidth, h = canvas.clientHeight;
-      canvas.width = Math.max(1, Math.round(w * ratio)); canvas.height = Math.max(1, Math.round(h * ratio));
+      var bw = Math.max(1, Math.round(w * ratio)), bh = Math.max(1, Math.round(h * ratio));
+      if (canvas.width !== bw || canvas.height !== bh) { canvas.width = bw; canvas.height = bh; }
+      pen.setTransform(1, 0, 0, 1, 0, 0); pen.clearRect(0, 0, bw, bh);
       if (!item) return;
       pen.setTransform(ratio, 0, 0, ratio, 0, 0);
       pen.imageSmoothingEnabled = scale < 4;
@@ -50,16 +53,16 @@ export const VIEWER = `(function () {
   };
   var show = function (source, w, h, ticket, done) {
     if (ticket !== shown) { if (done) done(); return; }
-    if (release) release();
+    drop();
     release = done || null;
     item = source; width = Math.max(1, w); height = Math.max(1, h);
     fit();
-    send('viewer-shown');
+    send('viewer-shown', { id: ticket });
   };
   var load = function (src, w, h, ticket, done) {
     var image = new Image();
     image.onload = function () { show(image, image.naturalWidth || w || 300, image.naturalHeight || h || 150, ticket, done); };
-    image.onerror = function () { if (done) done(); if (ticket === shown) send('viewer-failed'); };
+    image.onerror = function () { if (done) done(); if (ticket === shown) send('viewer-failed', { id: ticket }); };
     // Allowed by the content host for any origin; the canvas stays readable, as it is for drawings.
     if (src.charAt(0) === '/') image.crossOrigin = 'anonymous';
     image.src = src;
@@ -71,29 +74,30 @@ export const VIEWER = `(function () {
     if (data.type === 'lawh:zoom') { zoom(Number(data.by) || 1); return; }
     if (data.type === 'lawh:fit') { if (item) fit(); return; }
     if (data.type !== 'lawh:view') return;
-    var ticket = ++shown;
-    item = null; draw();
+    // The app's number for what it asked for: an answer that comes late is for an earlier one.
+    var ticket = shown = Number(data.id);
+    drop(); draw();
     canvas.setAttribute('aria-label', String(data.label || ''));
     background = String(data.background || 'transparent');
     if (data.kind === 'image') load('/' + token + '/' + String(data.path).split('/').map(encodeURIComponent).join('/'), 0, 0, ticket);
     else if (data.kind === 'svg') {
       var url = URL.createObjectURL(new Blob([String(data.text)], { type: 'image/svg+xml' }));
       load(url, Number(data.width), Number(data.height), ticket, function () { URL.revokeObjectURL(url); });
-    } else if (data.kind === 'bitmap' && data.bitmap instanceof ImageBitmap) show(data.bitmap, data.bitmap.width, data.bitmap.height, ticket);
-    else send('viewer-failed');
+    } else if (data.kind === 'bitmap' && data.bitmap instanceof ImageBitmap) show(data.bitmap, data.bitmap.width, data.bitmap.height, ticket, function () { data.bitmap.close(); });
+    else if (data.kind !== 'none') send('viewer-failed', { id: ticket });
   });
   var KEYS = { Escape: 1, ArrowLeft: 1, ArrowRight: 1, ArrowUp: 1, ArrowDown: 1, '+': 1, '=': 1, '-': 1, '0': 1 };
   addEventListener('keydown', function (event) {
     if (event.metaKey || event.ctrlKey || event.altKey || !KEYS[event.key]) return;
     event.preventDefault();
-    send('key', event.key);
+    send('key', { key: event.key });
   });
   canvas.addEventListener('wheel', function (event) {
     event.preventDefault();
     var box = canvas.getBoundingClientRect();
     zoom(Math.exp(-Math.max(-60, Math.min(60, event.deltaY * (event.deltaMode === 1 ? 16 : 1))) / 200), event.clientX - box.left, event.clientY - box.top);
   }, { passive: false });
-  var fingers = {}, count = function () { return Object.keys(fingers).length; }, lastTap = 0, moved = false;
+  var fingers = {}, count = function () { return Object.keys(fingers).length; }, lastTap = null, moved = false;
   var two = function () {
     var ids = Object.keys(fingers), a = fingers[ids[0]], b = fingers[ids[1]];
     return { cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2, d: Math.hypot(a.x - b.x, a.y - b.y) || 1 };
@@ -102,7 +106,7 @@ export const VIEWER = `(function () {
     if (event.button !== 0) return;
     canvas.focus();
     canvas.setPointerCapture(event.pointerId);
-    fingers[event.pointerId] = { x: event.clientX, y: event.clientY };
+    fingers[event.pointerId] = { x: event.clientX, y: event.clientY, sx: event.clientX, sy: event.clientY };
     if (count() === 1) moved = false;
     canvas.style.cursor = 'grabbing';
   });
@@ -110,7 +114,7 @@ export const VIEWER = `(function () {
     var f = fingers[event.pointerId];
     if (!f || !item) return;
     if (count() === 1) {
-      if (Math.abs(event.clientX - f.x) + Math.abs(event.clientY - f.y) > 3) moved = true;
+      if (Math.hypot(event.clientX - f.sx, event.clientY - f.sy) > 6) moved = true;
       x += event.clientX - f.x; y += event.clientY - f.y; f.x = event.clientX; f.y = event.clientY;
       hold();
     } else if (count() === 2) {
@@ -127,10 +131,10 @@ export const VIEWER = `(function () {
     canvas.style.cursor = 'grab';
     if (moved || event.type !== 'pointerup') return;
     // Two taps: fit, or twice as large when it already fits.
-    if (event.timeStamp - lastTap < 350) { lastTap = 0; if (Math.abs(scale - fitScale) < 0.01) zoom(2, event.clientX, event.clientY); else fit(); } else lastTap = event.timeStamp;
+    if (lastTap && event.timeStamp - lastTap.at < 350 && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 40) { lastTap = null; if (Math.abs(scale - fitScale) < 0.01) zoom(2, event.clientX, event.clientY); else fit(); } else lastTap = { at: event.timeStamp, x: event.clientX, y: event.clientY };
   };
-  canvas.addEventListener('pointerup', up); canvas.addEventListener('pointercancel', up);
+  canvas.addEventListener('pointerup', up); canvas.addEventListener('pointercancel', up); canvas.addEventListener('lostpointercapture', up);
   addEventListener('resize', function () { if (item) fit(); });
-  send('viewer-ready');
+  send('viewer-ready', {});
 })();
 `;

@@ -72,18 +72,18 @@ dialog::backdrop{background:rgb(0 0 0/.6)}
 .versions a:hover,.versions a[aria-current]{background:var(--s2)}
 .versions .status{justify-self:start}
 :root[lang=en] .versions .muted::first-letter{text-transform:uppercase}
-dialog.viewer{width:100vw;height:100dvh;max-width:none;max-height:none;margin:0;border:0;border-radius:0;background:#0b0e11;color:#eef2f4;overflow:hidden}
+dialog.viewer{width:100%;height:100dvh;max-width:none;max-height:none;margin:0;border:0;border-radius:0;background:#0b0e11;color:#eef2f4;overflow:hidden}
 dialog.viewer[open]{display:flex;flex-direction:column}
 .viewer{--line:#34404b;--edge:#6f7f8c;--mut:#a3b0ba;--ac:#e0b15a;--s2:#232b33}
-.viewer-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;padding-top:max(10px,env(safe-area-inset-top))}
+.viewer-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px max(12px,env(safe-area-inset-right)) 10px max(12px,env(safe-area-inset-left));padding-top:max(10px,env(safe-area-inset-top))}
 .viewer-bar p{margin:0;white-space:nowrap}
 .viewer-label{flex:1 1 120px;min-width:0;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .viewer-middle{position:relative;flex:1;min-height:0}
 .viewer-frame{position:absolute;inset:0;width:100%;height:100%;border:0;background:transparent;color-scheme:normal}
 .viewer-note{position:absolute;inset-inline:0;top:40%;text-align:center;margin:0;pointer-events:none}
 .viewer-side{position:absolute;top:50%;transform:translateY(-50%);font-size:24px;background:rgb(11 14 17/.75)}
-.viewer-side.previous{inset-inline-start:10px}
-.viewer-side.next{inset-inline-end:10px}
+.viewer-side.previous{inset-inline-start:max(10px,env(safe-area-inset-left),env(safe-area-inset-right))}
+.viewer-side.next{inset-inline-end:max(10px,env(safe-area-inset-left),env(safe-area-inset-right))}
 .viewer-side:disabled{visibility:hidden}
 .viewer-help{margin:0;padding:8px 12px;padding-bottom:max(8px,env(safe-area-inset-bottom));text-align:center;font-size:14px}
 @media (min-width:601px){.viewer-close{order:1}}
