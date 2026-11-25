@@ -6,17 +6,19 @@ bad = []
 
 entries = sorted((root / "migrations").iterdir())
 for f in entries:
-    if not f.is_file() or not re.fullmatch(r"\d{4}_[a-z0-9_]+\.sql", f.name): sys.exit(f"FAIL {f.name} isn't a migration file name")
+    if not f.is_file() or not re.fullmatch(r"[0-9]{4}_[a-z0-9_]+\.sql", f.name): sys.exit(f"FAIL {f.name} isn't a migration file name")
 if [int(f.name[:4]) for f in entries] != list(range(1, len(entries) + 1)) or not entries: sys.exit("FAIL migration numbers have a gap or repeat")
 
 def build(scripts):
-    db = sqlite3.connect(":memory:")
+    db = sqlite3.connect(":memory:", isolation_level=None)
     db.execute("PRAGMA foreign_keys=ON")
-    for s in scripts:
-        # D1 refuses transactions in a migration. Outside a trigger these words start a statement.
-        outside = re.sub(r"CREATE TRIGGER.*?\bEND;", "", re.sub(r"--[^\n]*", "", s), flags=re.S | re.I)
-        if re.search(r"\b(BEGIN|COMMIT|ROLLBACK|SAVEPOINT)\b", outside, re.I): bad.append("a migration has a transaction statement")
-        db.executescript(s)
+    # D1 refuses transactions in a migration. SQLite's own parser says which statements are some.
+    def allow(action, *_):
+        if action in (sqlite3.SQLITE_TRANSACTION, sqlite3.SQLITE_SAVEPOINT): bad.append("a transaction statement")
+        return sqlite3.SQLITE_OK
+    db.set_authorizer(allow)
+    for s in scripts: db.executescript(s)
+    db.set_authorizer(None)
     return db
 
 def objects(db): return {(t, n): " ".join((sql or "").split()) for t, n, sql in db.execute("SELECT type,name,sql FROM sqlite_master")}
