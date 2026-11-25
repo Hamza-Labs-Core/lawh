@@ -37,6 +37,16 @@ it('finds a key at its position, wherever the chunks are cut', async () => {
   }
 });
 
+it('never gives the whole of a refused file to its reader', async () => {
+  for (const cuts of [[], [5], [300], [315]]) {
+    const bytes = new TextEncoder().encode(`${'y '.repeat(150)}${KEY}`);
+    const body = new ReadableStream<Uint8Array>({ start(c) { for (const [i, from] of [0, ...cuts].entries()) c.enqueue(bytes.slice(from, cuts[i] ?? bytes.length)); c.close(); } });
+    let got = 0;
+    await expect(body.pipeThrough(secretScanner()).pipeTo(new WritableStream({ write(chunk) { got += chunk.byteLength; } }))).rejects.toThrow();
+    expect(got).toBeLessThan(bytes.length);
+  }
+});
+
 it('finds a key cut into single bytes, and one after a word that only looks like one', async () => {
   const text = `${'y '.repeat(150)}${KEY}B ${KEY}.`;
   expect(await scan(text, Array.from({ length: text.length - 1 }, (_, i) => i + 1))).toBe(text.lastIndexOf(KEY));
