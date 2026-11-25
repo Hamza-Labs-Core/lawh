@@ -3,6 +3,9 @@ import { Fill, useSettings, useText } from '../app';
 import { type Act, discard, type Media, readViewerMessage, viewerKey } from '../bridgeHost';
 import { digits } from '../i18n';
 
+/** Pictures the viewer took over: it frees them. */
+export const taken = new WeakSet<Media>();
+
 /**
  * A picture of a page, full size. The frame in the middle is the content host's own viewer, sandboxed like the page;
  * the bar around it is the app's.
@@ -19,6 +22,7 @@ export function Viewer({ media, frameUrl, onMove, onClose, onBlock }: { media: M
     pending.current = null;
     const { picture, label, background } = now, id = ++asked.current;
     setState(picture.kind === 'none' ? 'failed' : 'loading');
+    if (!frame.current?.contentWindow) { discard(picture); setState('failed'); return; }
     try { post({ type: 'lawh:view', id, label: label || t('picture'), background, ...picture }, picture.kind === 'bitmap' ? [picture.bitmap] : []); }
     catch { discard(picture); setState('failed'); }
   };
@@ -38,6 +42,7 @@ export function Viewer({ media, frameUrl, onMove, onClose, onBlock }: { media: M
   const isReady = () => { if (!ready.current) { ready.current = true; now.current.show(); } };
   useEffect(() => {
     if (pending.current) discard(pending.current.picture);
+    taken.add(media);
     pending.current = media;
     show();
   }, [media]);

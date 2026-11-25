@@ -39,7 +39,7 @@ describe('pictures', () => {
     [{ kind: 'svg', text: '<svg/>', width: 1, height: 2, more: 1 }, { kind: 'svg', text: '<svg/>', width: 1, height: 2 }],
     [{ kind: 'none', more: 1 }, { kind: 'none' }],
   ])('copies only what it knows: %j', (data, picture) => {
-    expect(media(data)).toEqual({ type: 'open-media', index: 1, total: 2, label: 'L', background: 'rgba(0, 0, 0, 0.5)', picture });
+    expect(media(data)).toEqual({ type: 'open-media', asked: false, index: 1, total: 2, label: 'L', background: 'rgba(0, 0, 0, 0.5)', picture });
   });
 });
 
@@ -61,6 +61,23 @@ describe('bitmaps', () => {
       expect(bitmap.closed).toBe(1);
     }
   });
+});
+
+it('tells an answer to the arrows from what was pressed in the page', () => {
+  const asked = (value: unknown) => read({ type: 'lawh:open-media', index: 0, total: 1, label: '', background: 'rgb(0, 0, 0)', kind: 'none', asked: value });
+  expect([true, false, 'true', 1, undefined].map((value) => (asked(value) as { asked: boolean }).asked)).toEqual([true, false, false, false, false]);
+});
+
+it('frees a bitmap sent along with a message that has no use for it', () => {
+  class FakeBitmap { closed = 0; width = 1; height = 1; close() { this.closed++; } }
+  vi.stubGlobal('ImageBitmap', FakeBitmap);
+  try {
+    for (const data of [{ type: 'lawh:scroll-state', top: 0, height: 1, view: 1 }, { type: 'lawh:outline', items: [] }, { type: 'lawh:open-media', index: 0, total: 1, label: '', background: 'rgb(0, 0, 0)', kind: 'none' }]) {
+      const bitmap = new FakeBitmap();
+      expect(read({ ...data, bitmap })).not.toBeNull();
+      expect(bitmap.closed).toBe(1);
+    }
+  } finally { vi.unstubAllGlobals(); }
 });
 
 describe('messages from the viewer', () => {

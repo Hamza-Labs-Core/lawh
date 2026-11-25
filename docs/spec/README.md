@@ -137,7 +137,7 @@ English and Arabic with full RTL, Arabic digits ٠–٩ through one formatter. A
 
 Examples in the mockups are made up. On a phone the page fills the screen and decisions open as a sheet from the fixed button.
 
-**Viewer.** Every `img`, `svg`, `canvas` and `picture` in a page opens full size: Esc closes, arrows move between a page's images (mirrored in Arabic), `+`, `−`, wheel and pinch zoom, drag moves, double tap fits. Focus returns to where it was. Pictures inside links and controls keep their own meaning, and `data-lawh-viewer="off"` leaves one out (a map, a chart one can drag). A page opens the viewer or the "another site" dialog only right after the person did something in it; one that keeps coming back can be stopped from the dialog.
+**Viewer.** Every `img`, `svg`, `canvas` and `picture` in a page opens full size: Esc closes, arrows move between a page's images (mirrored in Arabic), `+`, `−`, wheel and pinch zoom, drag moves, double tap fits. Focus returns to where it was. Pictures inside links and controls keep their own meaning, and `data-lawh-viewer="off"` leaves one out (a map, a chart one can drag). A page opens the viewer or the "another site" dialog only while the person is active and the page has the focus; one that comes back soon after a close can be stopped from the dialog.
 
 **What pages must know.** No outside network, no `localStorage`, no popups or form posts. Scripts, styles, fonts, images and JSON data go in the upload. The page receives the theme and language as `data-lawh-mode` and `data-lawh-lang` on `<html>`.
 
