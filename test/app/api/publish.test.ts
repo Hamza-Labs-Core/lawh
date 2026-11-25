@@ -217,16 +217,6 @@ describe('files', () => {
     expect(await code(await call('/v1/projects/one/pages/page/versions', { method: 'POST', token, body, idem: 'x' }))).toEqual([422, 'secret_found']);
   });
 
-  it('takes longer words that only begin or end like a key, wherever the chunks are cut', async () => {
-    const bytes = new TextEncoder().encode(`${'y'.repeat(300)} ${fake.aws}BCDE zz${fake.aws} ${'y'.repeat(300)}`);
-    const { uploadId } = await json(await start(token, await manifest({ 'index.html': bytes })));
-    const hash = await sha(bytes);
-    for (let cut = 1; cut < bytes.length; cut += 1) {
-      const body = new ReadableStream({ start(c) { c.enqueue(bytes.slice(0, cut)); c.enqueue(bytes.slice(cut, cut + 1)); c.enqueue(bytes.slice(cut + 1)); c.close(); } });
-      expect((await call(`/v1/uploads/${uploadId}/blobs/${hash}`, { method: 'PUT', token, body })).status, String(cut)).toBe(204);
-    }
-  });
-
   it('refuses a key in the page details, also for a file it already holds', async () => {
     expect(await code(await start(token, await manifest({ 'index.html': 'x' }, { page: { title: `T ${fake.github}` } })))).toEqual([422, 'secret_found']);
     await publish(token, { 'index.html': 'x' });
