@@ -14,24 +14,34 @@ const SECRET = new RegExp([
   '\\bsk-proj-[A-Za-z0-9_-]{24}',
   '\\bnpm_[A-Za-z0-9]{36}\\b',
   '\\bSG\\.[A-Za-z0-9_-]{22}\\.[A-Za-z0-9_-]{43}',
-].join('|'));
+].join('|'), 'g');
 const OVERLAP = 256;
 
-export const findSecret = (text: string): number => SECRET.exec(text)?.index ?? -1;
+export const hasSecret = (text: string): boolean => { SECRET.lastIndex = 0; return SECRET.test(text); };
 
 /** Passes bytes through, and fails with the position of anything that looks like a key. Holds one chunk at a time. */
 export function secretScanner(): TransformStream<Uint8Array, Uint8Array> {
   // One character for each byte, so positions are byte positions whatever the file is.
   const decoder = new TextDecoder('latin1');
   let tail = '', seen = 0;
+  // Whether a word ends or begins is known only with the characters on both sides. So a match at the end of what has
+  // come waits for the next chunk, and one at the very start of a later window is left out: it was already looked at,
+  // with the character before it. Every pattern is shorter than the tail.
+  const scan = (window: string, final: boolean) => {
+    const base = seen - tail.length;
+    SECRET.lastIndex = base > 0 ? 1 : 0;
+    const match = SECRET.exec(window);
+    if (!match || (!final && match.index + match[0].length === window.length)) return;
+    throw new ApiError('secret_found', 'The file looks like it has a key or password in it.', { position: base + match.index });
+  };
   return new TransformStream({
     transform(chunk, controller) {
       const window = tail + decoder.decode(chunk);
-      const at = findSecret(window);
-      if (at !== -1) throw new ApiError('secret_found', 'The file looks like it has a key or password in it.', { position: seen - tail.length + at });
+      scan(window, false);
       seen += chunk.byteLength;
       tail = window.slice(-OVERLAP);
       controller.enqueue(chunk);
     },
+    flush() { scan(tail, true); },
   });
 }

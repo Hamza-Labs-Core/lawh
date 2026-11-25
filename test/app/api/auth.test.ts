@@ -137,13 +137,15 @@ describe('every route and every kind of key', () => {
       'manager, another project': await makeKey({ agent: 'am', projects: ['p2'] }),
       'manager who lost the level': await makeKey({ agent: 'am', projects: ['p1'] }),
     };
-    await sql("UPDATE team_members SET level=3, set_by='o' WHERE member_id='m'");
+    await publish(keys['manager, another project'].token, { 'index.html': 'x' }, {}, 'two/pages/page');
     for (const [name, { token }] of Object.entries(keys)) {
+      if (name === 'manager, another project') expect((await call('/v1/projects/two/pages/page', { token })).status).toBe(200);
+      if (name === 'manager who lost the level') await sql("UPDATE team_members SET level=3, set_by='o' WHERE member_id='m'");
       for (const [method, path] of paths().filter(([, p]) => p.includes('/one') || p.includes('project='))) {
         const answer = await code(await call(path, { method, token, ...(method !== 'GET' && { json: { title: 'x' }, idem: 'x' }) }));
         expect(answer, `${name}: ${method} ${path}`).toEqual([404, 'not_found']);
       }
-      expect((await json(await call('/v1/pages', { token }))).items, name).toEqual([]);
+      expect((await json(await call('/v1/pages', { token }))).items.filter((p: { project: string }) => p.project === 'one'), name).toEqual([]);
       expect((await json(await call('/v1/me', { token }))).projects.map((p: { slug: string }) => p.slug), name).not.toContain('one');
     }
   });

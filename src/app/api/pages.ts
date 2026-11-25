@@ -1,9 +1,9 @@
 import type { AppEnv } from '../../shared/env';
 import { conflict, invalid, notFound } from '../../shared/errors';
 import { newId } from '../../shared/ids';
-import { type Project, projectBySlug, projectJson, usableProjects } from './auth';
+import { type Project, projectBySlug, projectJson, projectsById, usableProjects } from './auth';
 import { onlyKeys, oneOf, readJson, text } from './body';
-import { idempotent, replay, writeOnce } from './idempotency';
+import { idempotent, mustChange, replay, writeOnce } from './idempotency';
 import type { Context } from './router';
 
 export interface PageRow {
@@ -89,7 +89,7 @@ export function readCursor(url: URL, kinds: readonly ('number' | 'string')[]): (
   throw invalid('The cursor is not valid.');
 }
 
-async function listIn(env: AppEnv, project: Project | null, status: string | null, tag: string | null, after: [number, string], limit: number): Promise<PageRow[]> {
+function listIn(env: AppEnv, project: Project | null, status: string | null, tag: string | null, after: [number, string], limit: number): D1PreparedStatement {
   const where: string[] = [], values: unknown[] = [];
   const add = (sql: string, ...v: unknown[]) => { where.push(sql); values.push(...v); };
   let from: string, order: string;
@@ -105,9 +105,7 @@ async function listIn(env: AppEnv, project: Project | null, status: string | nul
     add('(t.sort_at, t.page_id) < (?, ?)', ...after);
     if (status) add('p.status = ?', status);
   }
-  const { results } = await env.DB.prepare(`SELECT p.* FROM ${from} WHERE ${where.join(' AND ')} AND p.deleted_at IS NULL ORDER BY ${order} LIMIT ?`)
-    .bind(...values, limit).all<PageRow>();
-  return results;
+  return env.DB.prepare(`SELECT p.* FROM ${from} WHERE ${where.join(' AND ')} AND p.deleted_at IS NULL ORDER BY ${order} LIMIT ?`).bind(...values, limit);
 }
 
 export async function listProjects(ctx: Context): Promise<Response> {
@@ -129,38 +127,36 @@ export async function listPages(ctx: Context): Promise<Response> {
   const limit = pageLimit(url);
   const status = query.get('status');
   if (status !== null) oneOf(status, 'status', ['draft', 'in_review', 'decided', 'archived'] as const);
-  const tag = query.get('tag');
+  const tag = query.get('tag')?.trim().normalize('NFC') ?? null;
   const cursor = readCursor(url, ['number', 'string']);
   const after = (cursor ?? [Number.MAX_SAFE_INTEGER, '']) as [number, string];
   const slug = query.get('project');
 
-  let projects: Project[], rows: PageRow[];
-  if (slug !== null) {
-    projects = [await projectBySlug(env, caller, slug)];
-    rows = await listIn(env, projects[0]!, status, tag, after, limit + 1);
-  } else {
-    projects = await usableProjects(env, caller);
-    rows = caller.allProjects
-      ? await listIn(env, null, status, tag, after, limit + 1)
-      : (await Promise.all(projects.map((p) => listIn(env, p, status, tag, after, limit + 1)))).flat()
-        .sort((a, b) => b.updated_at - a.updated_at || (a.id < b.id ? 1 : -1));
-  }
+  const projects = slug !== null ? [await projectBySlug(env, caller, slug)] : caller.allProjects ? null : await usableProjects(env, caller);
+  const queries = (projects ?? [null]).map((project) => listIn(env, project, status, tag, after, limit + 1));
+  let rows = queries.length === 0 ? [] : (await env.DB.batch<PageRow>(queries)).flatMap((r) => r.results);
+  if (queries.length > 1) rows.sort((a, b) => b.updated_at - a.updated_at || (a.id < b.id ? 1 : -1));
   const more = rows.length > limit;
   rows = rows.slice(0, limit);
-  const byId = new Map(projects.map((p) => [p.id, p]));
+  const byId = new Map((projects ?? await projectsById(env, rows.map((row) => row.project_id))).map((p) => [p.id, p]));
   const tags = await tagsOf(env, rows.map((row) => row.id));
   const last = rows.at(-1);
   return Response.json({
-    items: rows.flatMap((row) => { const p = byId.get(row.project_id); return p ? [pageJson(ctx, p, row, tags.get(row.id) ?? [])] : []; }),
+    items: rows.map((row) => pageJson(ctx, byId.get(row.project_id)!, row, tags.get(row.id) ?? [])),
     next: more && last ? encode([last.updated_at, last.id]) : null,
   });
+}
+
+/** If-None-Match compares weakly: the edge makes an ETag weak when it compresses. */
+function matches(header: string | null, etag: string): boolean {
+  return (header ?? '').split(',').map((tag) => tag.trim().replace(/^W\//, '')).some((tag) => tag === etag || tag === '*');
 }
 
 export async function getPage(ctx: Context): Promise<Response> {
   const project = await projectBySlug(ctx.env, ctx.caller, ctx.params[0]!);
   const page = await findPage(ctx.env, project, ctx.params[1]!);
   const etag = `"${page.current_version}-${page.updated_at}"`;
-  if (ctx.request.headers.get('If-None-Match') === etag) return new Response(null, { status: 304, headers: { ETag: etag } });
+  if (matches(ctx.request.headers.get('If-None-Match'), etag)) return new Response(null, { status: 304, headers: { ETag: etag } });
   const [tags, files] = await Promise.all([tagsOf(ctx.env, [page.id]), filesOf(ctx.env, page.id, page.current_version)]);
   return Response.json({ ...pageJson(ctx, project, page, tags.get(page.id) ?? []), files }, { headers: { ETag: etag } });
 }
@@ -185,7 +181,7 @@ export async function updatePage(ctx: Context): Promise<Response> {
     // Nothing matches when someone else changed or deleted the page meanwhile; the next statement then fails the batch.
     env.DB.prepare('UPDATE pages SET title=?, summary=?, lang=?, status=?, updated_at=? WHERE id=? AND updated_at=? AND deleted_at IS NULL')
       .bind(changed.title, changed.summary, changed.lang, changed.status, now, page.id, page.updated_at),
-    env.DB.prepare("SELECT CASE WHEN changes() = 1 THEN 1 ELSE json('page changed') END"),
+    mustChange(env),
     ...(meta.tags ? tagStatements(env, page.id, project.id, tags, now) : []),
     ...(changed.status !== page.status ? [eventStatement(env, project.id, page.id, 'page.status', page.id, caller.agentId, now)] : []),
   ];

@@ -75,7 +75,7 @@ export async function manifest(files: Files, extra: Record<string, unknown> = {}
 }
 
 export const start = (token: string, body: unknown, page = 'one/pages/page', idem = `s${count++}`) =>
-  call(`/v1/projects/${page.replace('/pages/', '/pages/')}/versions`, { method: 'POST', token, json: body, idem });
+  call(`/v1/projects/${page}/versions`, { method: 'POST', token, json: body, idem });
 export const put = async (token: string, uploadId: string, content: string | Uint8Array, hash?: string) =>
   call(`/v1/uploads/${uploadId}/blobs/${hash ?? (await sha(content))}`, { method: 'PUT', token, body: content });
 export const commit = (token: string, uploadId: string, idem = `c${count++}`) => call(`/v1/uploads/${uploadId}/commit`, { method: 'POST', token, idem });
