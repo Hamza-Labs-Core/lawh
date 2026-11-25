@@ -51,4 +51,6 @@ describe('pnpm lawh owner setup --local', { timeout: 120_000 }, () => {
 it('reads JSON with comments', () => {
   expect(parseJsonc('{"a": "// no /* no */ \\" ,}", /* x, ] */ "b": [1, 2, // y\n ], "c": {"d": 1,},}')).toEqual({ a: '// no /* no */ " ,}', b: [1, 2], c: { d: 1 } });
   expect(() => parseJsonc('{"a": 1 /* open')).toThrow();
+  // Long runs of what looks like comments stay quick.
+  expect(parseJsonc(`[1, ${'//\n'.repeat(50_000)} ${'/**/'.repeat(50_000)} ]`)).toEqual([1]);
 });
