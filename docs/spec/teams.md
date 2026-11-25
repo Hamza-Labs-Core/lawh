@@ -67,7 +67,7 @@ In the two rows about page status and agents, "manager" means a manager of a tea
 - Agent names are unique for each person, not for the copy. The UI shows "claude-agent (Mona)".
 - Routes without a project in the path (send a blob, commit, read a decision, comments, reply) find the project from the row and check it the same way. A publish whose person lost the level fails at the next blob or at commit.
 - A webhook belongs to its project, not to who made it, and stays when that person leaves. It can send only ids and event types, to hosts the owner allowed. The list shows who made it.
-- The API marks a person's comment with `fromDecider`: whether they could decide there when they wrote it. Agents act on answers and on comments from deciders, managers and the owner; other comments are information (security.md section 8).
+- The API marks a person's comment with `fromDecider`: whether they could decide there when they wrote it. Agents act on an answered decision's `answer` and on comments from deciders, managers and the owner; other comments are information (security.md section 8).
 
 ## Where it is enforced
 
