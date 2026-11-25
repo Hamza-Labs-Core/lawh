@@ -517,5 +517,11 @@ check("turning teams off sets every project back to one", sql("UPDATE settings S
 refused("and it can't be set while off", "UPDATE projects SET answers_needed=2 WHERE id='p1'"); refused("nor for a new project", "INSERT INTO projects VALUES('py','y','Z','Z',1,NULL,2)")
 settle(2); check("saving it over again does too", sql("INSERT OR REPLACE INTO settings VALUES('teams','false',1)") and not rows('projects', "answers_needed>1"))
 settle(2); check("removing the setting does the same", sql("DELETE FROM settings WHERE key='teams'") and not rows('projects', "answers_needed>1"))
+settle(2); check("saving the switch on again changes nothing", sql("INSERT OR REPLACE INTO settings VALUES('teams','true',2)") and rows('projects', "id='p1' AND answers_needed=2"))
+check("renaming the setting turns it off", sql("UPDATE settings SET key='other' WHERE key='teams'") and not rows('projects', "answers_needed>1"))
+settle(2); sql("INSERT INTO settings VALUES('other','true',1)"); check("another setting's rename changes nothing", sql("UPDATE settings SET key='third' WHERE key='other'") and rows('projects', "answers_needed=2"))
+EV = "INSERT INTO events(project_id,type,subject_id,created_at,actor_type,actor_id) VALUES('p1','t','s',1,"
+for v in ("'member','m')", "NULL,'m')", "NULL,NULL)", "'agent',NULL)", "'person',NULL)", "'system','m')"): refused(f"an event says who acted ({v}", EV + v)
+check("by a person, an agent or the system", all(sql(EV + v) for v in ("'person','m')", "'agent','am')", "'system',NULL)")))
 check("an event says who acted", not sql("INSERT INTO events(project_id,type,subject_id,created_at) VALUES('p1','t','s',1)") and sql("INSERT INTO events(project_id,type,subject_id,created_at,actor_type,actor_id) VALUES('p1','t','s',1,'person','m')"))
 sys.exit(1 if fails else 0)

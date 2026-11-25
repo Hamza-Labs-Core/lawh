@@ -359,7 +359,8 @@ CREATE INDEX comments_purge ON comments(deleted_at) WHERE deleted_at IS NOT NULL
 CREATE TABLE events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL, page_id TEXT,
   type TEXT NOT NULL, subject_id TEXT NOT NULL, created_at INTEGER NOT NULL, enqueued_at INTEGER,
-  actor_type TEXT NOT NULL CHECK (actor_type IN ('person','agent','system')), actor_id TEXT
+  actor_type TEXT NOT NULL CHECK (actor_type IN ('person','agent','system')), actor_id TEXT,
+  CHECK ((actor_type = 'system') = (actor_id IS NULL))
 );
 CREATE INDEX events_project ON events(project_id, seq);
 CREATE INDEX events_outbox ON events(seq) WHERE enqueued_at IS NULL;
@@ -557,7 +558,8 @@ BEGIN SELECT RAISE(ABORT, 'agreement needs teams'); END;
 CREATE TRIGGER projects_agreement_set BEFORE UPDATE OF answers_needed ON projects
 WHEN NEW.answers_needed > 1 AND NOT EXISTS (SELECT 1 FROM settings WHERE key = 'teams' AND value_json = 'true')
 BEGIN SELECT RAISE(ABORT, 'agreement needs teams'); END;
-CREATE TRIGGER settings_teams_off AFTER UPDATE ON settings WHEN NEW.key = 'teams' AND NEW.value_json <> 'true'
+CREATE TRIGGER settings_teams_off AFTER UPDATE ON settings
+WHEN (OLD.key = 'teams' OR NEW.key = 'teams') AND NOT (NEW.key = 'teams' AND NEW.value_json = 'true')
 BEGIN UPDATE projects SET answers_needed = 1 WHERE answers_needed > 1; END;
 CREATE TRIGGER settings_teams_new AFTER INSERT ON settings WHEN NEW.key = 'teams' AND NEW.value_json <> 'true'
 BEGIN UPDATE projects SET answers_needed = 1 WHERE answers_needed > 1; END;
