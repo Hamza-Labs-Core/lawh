@@ -1,0 +1,7 @@
+body { margin: 0; background: rgb(255, 255, 255); }
+.modern { background: oklch(0.627955 0.257683 29.2338); }
+.layers { background: rgba(0, 0, 0, 0.5); }
+.moved { transform: translate(100px, 0); }
+.clipped { clip-path: url(#clip); }
+.pan { cursor: move; }
+svg, canvas { display: block; }

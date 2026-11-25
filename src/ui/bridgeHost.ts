@@ -14,9 +14,19 @@ export interface Media { type: 'open-media'; index: number; total: number; label
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 const isSize = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1e8;
 
+const isBitmap = (value: unknown): value is ImageBitmap => typeof ImageBitmap !== 'undefined' && value instanceof ImageBitmap;
+
+/** Frees the pixels of a picture that won't be shown: they are the browser's memory, not only this page's. */
+export function discard(picture: Picture): void { if (picture.kind === 'bitmap') picture.bitmap.close(); }
+
 export function readBridgeMessage(event: { source: unknown; data: unknown }, frame: unknown): BridgeMessage | null {
-  if (!frame || event.source !== frame || !isObject(event.data)) return null;
-  const { data } = event;
+  if (!isObject(event.data)) return null;
+  const message = frame && event.source === frame ? read(event.data) : null;
+  if (message === null && isBitmap(event.data.bitmap)) event.data.bitmap.close();
+  return message;
+}
+
+function read(data: Record<string, unknown>): BridgeMessage | null {
   switch (data.type) {
     case 'lawh:outline': {
       if (!Array.isArray(data.items) || data.items.length > 200) return null;
@@ -52,7 +62,7 @@ export function readBridgeMessage(event: { source: unknown; data: unknown }, fra
   }
 }
 
-const MAX_SVG = 5_000_000;
+const MAX_SVG = 5_000_000, MAX_SIDE = 16_384;
 
 /** What a page wants shown. It goes to the viewer's frame only; the app itself never turns it into an address or markup. */
 function readPicture(data: Record<string, unknown>): Picture | null {
@@ -64,7 +74,7 @@ function readPicture(data: Record<string, unknown>): Picture | null {
     case 'svg':
       return typeof data.text === 'string' && data.text.length <= MAX_SVG && isSize(data.width) && isSize(data.height) ? { kind: 'svg', text: data.text, width: data.width, height: data.height } : null;
     case 'bitmap':
-      return typeof ImageBitmap !== 'undefined' && data.bitmap instanceof ImageBitmap ? { kind: 'bitmap', bitmap: data.bitmap } : null;
+      return isBitmap(data.bitmap) && data.bitmap.width > 0 && data.bitmap.height > 0 && data.bitmap.width <= MAX_SIDE && data.bitmap.height <= MAX_SIDE ? { kind: 'bitmap', bitmap: data.bitmap } : null;
     case 'none':
       return { kind: 'none' };
     default:
@@ -72,20 +82,20 @@ function readPicture(data: Record<string, unknown>): Picture | null {
   }
 }
 
-export type ViewerMessage = 'ready' | 'shown' | 'failed' | 'close' | 'next' | 'previous' | 'in' | 'out' | 'fit';
+export type ViewerMessage = 'ready' | { done: 'shown' | 'failed'; id: number } | Act;
+export type Act = 'close' | 'next' | 'previous' | 'in' | 'out' | 'fit';
 
 /** What the viewer's frame may tell: that it is ready or failed, and the keys a person presses there. `rtl`: arrows are mirrored. */
 export function readViewerMessage(event: { source: unknown; data: unknown }, frame: unknown, rtl: boolean): ViewerMessage | null {
   if (!frame || event.source !== frame || !isObject(event.data)) return null;
-  const { type, key } = event.data;
+  const { type, key, id } = event.data;
   if (type === 'lawh:viewer-ready') return 'ready';
-  if (type === 'lawh:viewer-shown') return 'shown';
-  if (type === 'lawh:viewer-failed') return 'failed';
+  if ((type === 'lawh:viewer-shown' || type === 'lawh:viewer-failed') && typeof id === 'number') return { done: type === 'lawh:viewer-shown' ? 'shown' : 'failed', id };
   return type === 'lawh:key' && typeof key === 'string' ? viewerKey(key, rtl) : null;
 }
 
 /** What a key does in the viewer; the same whether it is pressed there or in the app around it. */
-export function viewerKey(key: string, rtl: boolean): ViewerMessage | null {
+export function viewerKey(key: string, rtl: boolean): Act | null {
   switch (key) {
     case 'Escape': return 'close';
     case 'ArrowRight': return rtl ? 'previous' : 'next';

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readBridgeMessage, readViewerMessage, viewerKey } from '../../src/ui/bridgeHost';
 
 const frame = {};
@@ -43,12 +43,32 @@ describe('pictures', () => {
   });
 });
 
+describe('bitmaps', () => {
+  class FakeBitmap { closed = 0; constructor(readonly width: number, readonly height: number) {} close() { this.closed++; } }
+  afterEach(() => { vi.unstubAllGlobals(); });
+  const send = (bitmap: unknown, change: object = {}, source: unknown = frame) => { vi.stubGlobal('ImageBitmap', FakeBitmap); return read({ type: 'lawh:open-media', index: 0, total: 1, label: '', background: 'rgb(0, 0, 0)', kind: 'bitmap', bitmap, ...change }, source); };
+
+  it('takes one of a sensible size', () => {
+    const bitmap = new FakeBitmap(16_384, 1);
+    expect(send(bitmap)).toMatchObject({ picture: { kind: 'bitmap' } });
+    expect(bitmap.closed).toBe(0);
+  });
+
+  it('frees one it refuses, whatever the reason', () => {
+    for (const [bitmap, change, source] of [[new FakeBitmap(0, 1), {}, frame], [new FakeBitmap(1, 0), {}, frame], [new FakeBitmap(16_385, 1), {}, frame], [new FakeBitmap(1, 1), { total: 900 }, frame], [new FakeBitmap(1, 1), { kind: 'none' , label: 5 }, frame],
+      [new FakeBitmap(1, 1), { type: 'lawh:other' }, frame], [new FakeBitmap(1, 1), {}, {}]] as const) {
+      expect(send(bitmap, change, source)).toBeNull();
+      expect(bitmap.closed).toBe(1);
+    }
+  });
+});
+
 describe('messages from the viewer', () => {
   const from = (data: unknown, source: unknown = frame, rtl = false) => readViewerMessage({ source, data }, frame, rtl);
   it('takes readiness, results and the keys it knows, and nothing else', () => {
-    expect([from({ type: 'lawh:viewer-ready' }), from({ type: 'lawh:viewer-shown' }), from({ type: 'lawh:viewer-failed' })]).toEqual(['ready', 'shown', 'failed']);
+    expect([from({ type: 'lawh:viewer-ready' }), from({ type: 'lawh:viewer-shown', id: 2 }), from({ type: 'lawh:viewer-failed', id: 3 })]).toEqual(['ready', { done: 'shown', id: 2 }, { done: 'failed', id: 3 }]);
     expect(['Escape', 'ArrowRight', 'ArrowLeft', 'ArrowDown', 'ArrowUp', '+', '=', '-', '0'].map((key) => from({ type: 'lawh:key', key }))).toEqual(['close', 'next', 'previous', 'next', 'previous', 'in', 'in', 'out', 'fit']);
-    for (const data of [null, {}, 'x', { type: 'lawh:key' }, { type: 'lawh:key', key: 'Enter' }, { type: 'lawh:key', key: 5 }, { type: 'lawh:open-link', url: 'https://example.com' }, { type: 'answer' }]) expect(from(data)).toBeNull();
+    for (const data of [null, {}, 'x', { type: 'lawh:viewer-shown' }, { type: 'lawh:viewer-failed', id: '1' }, { type: 'lawh:key' }, { type: 'lawh:key', key: 'Enter' }, { type: 'lawh:key', key: 5 }, { type: 'lawh:open-link', url: 'https://example.com' }, { type: 'answer' }]) expect(from(data)).toBeNull();
   });
   it('takes none from another window', () => { for (const source of [{}, null, undefined]) expect(readViewerMessage({ source, data: { type: 'lawh:key', key: 'Escape' } }, frame, false)).toBeNull(); });
   it('mirrors the side arrows in Arabic', () => {

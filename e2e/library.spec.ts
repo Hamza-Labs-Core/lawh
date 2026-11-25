@@ -115,13 +115,13 @@ test('a hostile page cannot do more than ask to open a link', async ({ page, mem
   expect(page.url()).toBe(`${APP}/p/one/forge`);
 });
 
-test('a page that asks again and again cannot change the address shown, trap the tab, or cover another dialog', async ({ page, member }) => {
+test('a page that asks again and again cannot change the address shown, cover another dialog, or trap the tab', async ({ page, member }) => {
   await activation(page, false);
   await open(page, member, '/p/one/spam');
   const dialog = page.getByRole('dialog', { name: 'Open another site?' });
-  await expect(frame(page).getByRole('heading', { name: 'Spam' })).toBeVisible();
-  await page.waitForTimeout(1500);
-  await expect(dialog, 'nothing opens by itself').toHaveCount(0);
+  await frame(page).getByRole('heading', { name: 'Spam' }).click();
+  await page.waitForTimeout(1000);
+  await expect(dialog, 'nothing opens before the person does something').toHaveCount(0);
   await setActive(page, true);
   await expect(dialog).toBeVisible();
   const address = await dialog.locator('.address').innerText();
@@ -129,14 +129,15 @@ test('a page that asks again and again cannot change the address shown, trap the
   expect(await dialog.locator('.address').innerText(), 'the address stays the one that was shown').toBe(address);
   expect(await dialog.getByRole('link', { name: 'Open' }).getAttribute('href')).toBe(address);
   await page.keyboard.press('Escape');
-  await expect(dialog).toHaveCount(0);
-  // Time to open another dialog; nothing comes on top of it.
   await page.getByRole('button', { name: 'Version 1' }).click();
   await expect(page.getByRole('dialog', { name: 'Versions' })).toBeVisible();
   await page.waitForTimeout(800);
   await expect(page.getByRole('dialog')).toHaveCount(1);
   await page.getByRole('button', { name: 'Close' }).click();
-  // Whatever it does, a person leaves.
+  await frame(page).getByRole('heading', { name: 'Spam' }).click();
+  await dialog.getByRole('button', { name: 'Stop this page from opening anything' }).click();
+  await page.waitForTimeout(1000);
+  await expect(dialog).toHaveCount(0);
   await page.getByRole('button', { name: 'Back' }).click();
   await expect(page.getByRole('heading', { name: 'Pages' })).toBeVisible();
 });
