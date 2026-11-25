@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft, waiting for review. The owner decisions in section 13 are recorded |
+| **Status** | Reviewed and merged on 2026-11-24. Being built, story by story (section 14) |
 | **Last updated** | 2026-11-24 |
 | **Files** | [Data model](schema.sql) · [API (OpenAPI 3.1)](openapi.yaml) · [Security model](security.md) · [People and teams](teams.md) · [Self-hosting](self-hosting.md) · [Mockups](mockups/index.html) · Checks: [query plans](checks/query_plans.py), [integrity](checks/integrity.py) |
 
@@ -21,7 +21,7 @@ Lawh (لوح, a writing tablet) is a private, self-hosted place where agents pub
 
 ## 2. What exists today
 
-This repository has a README and a license. Nothing is built. There is no earlier code to reuse or migrate.
+S1: both Workers (closed by the `instance` switch), the D1 schema as migration 0001, and CI. There is no earlier code to reuse or migrate.
 
 ## 3. How it works
 

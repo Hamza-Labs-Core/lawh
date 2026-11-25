@@ -1,0 +1,9 @@
+node_modules/
+.build/
+.wrangler/
+.dev.vars*
+lawh.config.json
+wrangler.app.jsonc
+wrangler.content.jsonc
+*.log
+.DS_Store
