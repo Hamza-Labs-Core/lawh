@@ -114,6 +114,7 @@ export async function usableProjects(env: AppEnv, caller: Caller): Promise<Proje
 }
 
 export async function projectsById(env: AppEnv, ids: string[]): Promise<Project[]> {
+  if (ids.length === 0) return [];
   return (await env.DB.prepare('SELECT id, slug, name_en, name_ar FROM projects WHERE id IN (SELECT value FROM json_each(?))').bind(JSON.stringify([...new Set(ids)])).all<Project>()).results;
 }
 

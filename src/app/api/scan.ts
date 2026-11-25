@@ -24,6 +24,7 @@ export function secretScanner(): TransformStream<Uint8Array, Uint8Array> {
   // One character for each byte, so positions are byte positions whatever the file is.
   const decoder = new TextDecoder('latin1');
   let tail = '', seen = 0;
+  let held: Uint8Array | null = null;
   // Whether a word ends or begins is known only with the characters on both sides. So a match at the end of what has
   // come waits for the next chunk, and one at the very start of a later window is left out: it was already looked at,
   // with the character before it. Every pattern is shorter than the tail.
@@ -36,12 +37,19 @@ export function secretScanner(): TransformStream<Uint8Array, Uint8Array> {
   };
   return new TransformStream({
     transform(chunk, controller) {
+      if (chunk.byteLength === 0) return;
       const window = tail + decoder.decode(chunk);
       scan(window, false);
       seen += chunk.byteLength;
       tail = window.slice(-OVERLAP);
-      controller.enqueue(chunk);
+      // The last byte waits for the last check, so no reader ever gets the whole of a file that is refused.
+      if (held) controller.enqueue(held);
+      if (chunk.byteLength > 1) controller.enqueue(chunk.subarray(0, -1));
+      held = chunk.slice(-1);
     },
-    flush() { scan(tail, true); },
+    flush(controller) {
+      scan(tail, true);
+      if (held) controller.enqueue(held);
+    },
   });
 }

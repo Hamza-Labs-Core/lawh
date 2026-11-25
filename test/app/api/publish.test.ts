@@ -212,6 +212,7 @@ describe('files', () => {
     const content = `x ${fake.aws}`;
     const { uploadId } = await json(await start(token, await manifest({ 'index.html': content })));
     expect(await code(await put(token, uploadId, content))).toEqual([422, 'secret_found']);
+    expect(await objects()).toEqual([]);
     const body = JSON.stringify(await manifest({ 'index.html': 'x' }, { page: { title: fake.aws } })).replace('AKIA', '\\u0041KIA');
     expect(body).not.toContain('AKIA');
     expect(await code(await call('/v1/projects/one/pages/page/versions', { method: 'POST', token, body, idem: 'x' }))).toEqual([422, 'secret_found']);
@@ -300,6 +301,42 @@ describe('at the same moment', () => {
     expect([await rows('blobs'), await objects()]).toEqual([0, []]);
   });
 
+  it('keeps a file marked again in the queue, when it was used and left while the clean-up ran', async () => {
+    const now = Date.now();
+    const { uploadId } = await json(await start(token, await manifest({ 'index.html': 'x' })));
+    await put(token, uploadId, 'x');
+    await sql('DELETE FROM upload_blobs', 'DELETE FROM uploads', 'UPDATE blobs SET unreferenced_at=1');
+    await cleanUp({ ...env, DB: before(() => sql(`UPDATE blobs SET unreferenced_at=${now}`), (q) => q.includes('DELETE FROM blobs')) }, now);
+    expect(await one('SELECT unreferenced_at u FROM blobs')).toEqual({ u: now });
+    await cleanUp(env, now + 90_000_000);
+    expect([await rows('blobs'), await objects()]).toEqual([0, []]);
+  });
+
+  it('gives the reply of its twin when that one finishes first, at any point', async () => {
+    for (const [i, point] of ['SELECT * FROM uploads', 'SELECT sha256 FROM upload_blobs', 'SELECT * FROM pages', 'SELECT tag FROM page_tags'].entries()) {
+      const { uploadId } = await json(await start(token, await manifest({ 'index.html': 'x' }, { baseVersion: i })));
+      await put(token, uploadId, 'x');
+      let reply: unknown = null;
+      const DB = new Proxy(env.DB, {
+        get(target, name) {
+          if (name !== 'prepare') { const value = Reflect.get(target, name) as unknown; return typeof value === 'function' ? value.bind(target) : value; }
+          return (query: string) => {
+            const statement = target.prepare(query);
+            if (reply !== null || !query.startsWith(point)) return statement;
+            return new Proxy(statement, { get: (s, n) => (n !== 'bind' ? Reflect.get(s, n) : (...values: unknown[]) => new Proxy(s.bind(...values), { get: (b, m) => {
+              const method = Reflect.get(b, m) as unknown;
+              if (m !== 'first' && m !== 'all') return typeof method === 'function' ? method.bind(b) : method;
+              return async () => { reply ??= await json(await commit(token, uploadId, `twin${i}`)); return (method as () => unknown).call(b); };
+            } })) });
+          };
+        },
+      });
+      const response = await call(`/v1/uploads/${uploadId}/commit`, { method: 'POST', token, idem: `twin${i}` }, { DB });
+      expect([response.status, await json(response)], point).toEqual([200, reply]);
+      expect(await rows('page_versions')).toBe(i + 1);
+    }
+  });
+
   it('takes a used file out of the queue of files to remove', async () => {
     await publish(token, { 'index.html': 'x' });
     await sql('UPDATE blobs SET unreferenced_at=1');
@@ -316,10 +353,14 @@ describe('at the same moment', () => {
     expect(await rows('uploads')).toBe(0);
   });
 
-  it('stores nothing when R2 fails, and the file can be sent again', async () => {
+  it.each(['at once', 'after a while', 'in the middle'])('stores nothing when R2 fails %s, and the file can be sent again', async (when) => {
     const large = new Uint8Array(2_000_000).fill(97);
     const { uploadId } = await json(await start(token, await manifest({ 'index.html': large })));
-    const FILES = new Proxy(env.FILES, { get: (target, name) => (name === 'put' ? async () => { throw new Error('R2 is down'); } : Reflect.get(target, name)) });
+    const FILES = new Proxy(env.FILES, { get: (target, name) => (name !== 'put' ? Reflect.get(target, name) : async (_key: string, body: ReadableStream) => {
+      if (when === 'after a while') await new Promise((resolve) => setTimeout(resolve, 20));
+      if (when === 'in the middle') { const reader = body.getReader(); await reader.read(); reader.releaseLock(); }
+      throw new Error('R2 is down');
+    }) });
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       expect((await call(`/v1/uploads/${uploadId}/blobs/${await sha(large)}`, { method: 'PUT', token, body: large }, { FILES })).status).toBe(500);

@@ -135,11 +135,16 @@ export async function putBlob(ctx: Context): Promise<Response> {
     const results = await Promise.allSettled([
       checked.pipeTo(fixed.writable, { signal: stop.signal }),
       // When R2 fails nobody reads the stream, so the pipe is ended too.
-      env.FILES.put(r2Key, fixed.readable, { sha256 }).then(() => { stored = true; }, (error: unknown) => { stop.abort(error); throw error; }),
+      env.FILES.put(r2Key, fixed.readable, { sha256 }).then(() => { stored = true; }, (error: unknown) => {
+        stop.abort(error);
+        void fixed.readable.cancel(error).catch(() => undefined);
+        throw error;
+      }),
     ]);
     const failures = results.flatMap((r) => (r.status === 'rejected' ? [r.reason as unknown] : []));
     if (failures.length > 0) {
-      if (stored) dropObject(ctx, r2Key);
+      // Also when the put failed: it can have failed after storing.
+      dropObject(ctx, r2Key);
       throw failures.find((reason) => reason instanceof ApiError) ?? failures[0];
     }
   }
@@ -168,22 +173,36 @@ export async function putBlob(ctx: Context): Promise<Response> {
 export async function commitPublish(ctx: Context): Promise<Response> {
   const { env, caller } = ctx;
   const idem = await idempotent(ctx.request, '');
-  const earlier = await replay(env, caller, idem);
-  if (earlier) {
+  const given = async (): Promise<Response | null> => {
+    const earlier = await replay(env, caller, idem);
+    if (!earlier) return null;
     // The upload is gone by now, so access is checked on the page it made.
     await projectBySlug(env, caller, String(earlier.json.project));
     return Response.json(earlier.json, { status: earlier.status });
+  };
+  const earlier = await given();
+  if (earlier) return earlier;
+  try {
+    const stored = await commitNew(ctx, idem);
+    return Response.json(stored.json, { status: stored.status });
+  } catch (error) {
+    // The same request, sent twice at once, may have finished meanwhile: then its reply is the answer.
+    const twin = await given();
+    if (twin) return twin;
+    throw error;
   }
+}
+
+async function commitNew(ctx: Context, idem: Idempotent): Promise<Stored> {
   const { upload, project, manifest } = await findUpload(ctx);
-  const { results: sent } = await env.DB.prepare('SELECT sha256 FROM upload_blobs WHERE upload_id = ?').bind(upload.id).all<{ sha256: string }>();
+  const { results: sent } = await ctx.env.DB.prepare('SELECT sha256 FROM upload_blobs WHERE upload_id = ?').bind(upload.id).all<{ sha256: string }>();
   const have = new Set(sent.map((b) => b.sha256));
   const missing = [...new Set(manifest.files.map((f) => f.sha256))].filter((h) => !have.has(h));
   if (missing.length > 0) throw invalid('Some files were not sent.', { missing });
 
   for (let attempt = 1; ; attempt++) {
     try {
-      const stored = await commitOnce(ctx, upload, project, manifest, idem);
-      return Response.json(stored.json, { status: stored.status });
+      return await commitOnce(ctx, upload, project, manifest, idem);
     } catch (error) {
       if (isConflict(error)) throw conflict('Someone published a newer version.');
       if (!String(error).includes('malformed JSON')) throw error;
@@ -254,7 +273,7 @@ export async function cleanUp(env: AppEnv, now = Date.now()): Promise<void> {
       env.DB.prepare(`DELETE FROM blobs WHERE sha256 = ? AND unreferenced_at < ? AND NOT EXISTS (SELECT 1 FROM version_files f WHERE f.sha256 = blobs.sha256)
         AND NOT EXISTS (SELECT 1 FROM upload_blobs u WHERE u.sha256 = blobs.sha256) RETURNING r2_key`).bind(sha256, now - DAY),
       // Still there means it is used: out of this queue.
-      env.DB.prepare('UPDATE blobs SET unreferenced_at = NULL WHERE sha256 = ?').bind(sha256),
+      env.DB.prepare('UPDATE blobs SET unreferenced_at = NULL WHERE sha256 = ? AND unreferenced_at < ?').bind(sha256, now - DAY),
     ]);
     const key = gone?.results[0]?.r2_key;
     if (key) await env.FILES.delete(key);
