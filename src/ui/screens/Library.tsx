@@ -1,0 +1,125 @@
+import { useEffect, useId, useRef, useState } from 'preact/hooks';
+import { call, type Listed, type PageItem, problemOf, type ProjectName, type Status } from '../api';
+import { Failure, Fill, go, Heading, Link, useBusy, useSettings, useText } from '../app';
+import { day, digits } from '../i18n';
+
+const STATUSES: Status[] = ['draft', 'in_review', 'decided', 'archived'];
+const KEYS = ['project', 'status', 'tag'] as const;
+type Filters = Record<(typeof KEYS)[number], string>;
+
+const readFilters = (search: string): Filters => { const query = new URLSearchParams(search); return { project: query.get('project') ?? '', status: query.get('status') ?? '', tag: query.get('tag') ?? '' }; };
+const queryOf = (filters: Filters): string => { const query = new URLSearchParams(); for (const key of KEYS) if (filters[key]) query.set(key, filters[key]); return query.toString(); };
+
+export const StatusMark = ({ status }: { status: Status }) => <span class={`status ${status}`}>{useText()(status)}</span>;
+
+/** Pages, newest first, by project, status and tag. The filters are in the address, so Back and a shared link keep them. */
+export function Library({ search }: { search: string }) {
+  const t = useText(), { lang } = useSettings(), [busy, run] = useBusy(), filters = readFilters(search), query = queryOf(filters);
+  const [projects, setProjects] = useState<ProjectName[] | null>(null), [list, setList] = useState<Listed<PageItem> | null>(null), [problem, setProblem] = useState<'offline' | 'wait' | 'failed' | null>(null), [tries, setTries] = useState(0);
+  useEffect(() => {
+    const stop = new AbortController();
+    setList(null); setProblem(null);
+    void Promise.all([projects ? null : call<Listed<ProjectName>>('GET', '/projects', undefined, stop.signal), call<Listed<PageItem>>('GET', `/pages${query && `?${query}`}`, undefined, stop.signal)])
+      .then(([p, pages]) => { if (p) setProjects(p.items); setList(pages); })
+      .catch((error: unknown) => { if (!stop.signal.aborted) setProblem(problemOf(error)); });
+    return () => stop.abort();
+  }, [query, tries]);
+  const set = (change: Partial<Filters>) => { const next = queryOf({ ...filters, ...change }); go(next ? `/?${next}` : '/'); };
+  const more = () => run(async () => {
+    try {
+      const next = await call<Listed<PageItem>>('GET', `/pages?${query}&cursor=${list!.next!}`);
+      setList((now) => (now === list ? { items: [...now!.items, ...next.items], next: next.next } : now));
+    } catch (error) { setProblem(problemOf(error)); }
+  });
+  return (
+    <>
+      <Heading>{t('pages')}</Heading>
+      {projects !== null && projects.length > 0 && (
+        <div class="filters">
+          <Choice label={t('project')} value={filters.project} onChange={(project) => set({ project })} options={[['', t('allProjects')], ...projects.map((p): [string, string] => [p.slug, p.name[lang]])]} />
+          <Choice label={t('status')} value={filters.status} onChange={(status) => set({ status })} options={[['', t('anyStatus')], ...STATUSES.map((s): [string, string] => [s, t(s)])]} />
+          <TagFilter project={filters.project} value={filters.tag} onChange={(tag) => set({ tag })} />
+        </div>
+      )}
+      <div aria-live="polite">
+        {list === null && !problem && <p class="muted">{t('loading')}</p>}
+        {list?.items.length === 0 && (
+          <div class="card empty">
+            <p>{t(query ? 'noMatches' : projects?.length === 0 ? 'noProjects' : 'noPages')}</p>
+            {query && <button class="plain" onClick={() => go('/')}>{t('clear')}</button>}
+          </div>
+        )}
+      </div>
+      <ul class="grid">
+        {list?.items.map((page) => (
+          <li key={page.id}>
+            <Link class="card page" to={`/p/${page.project.slug}/${page.slug}`}>
+              <StatusMark status={page.status} />
+              <h2><bdi lang={page.lang}>{page.title}</bdi></h2>
+              {page.summary && <p class="clamp"><bdi lang={page.lang}>{page.summary}</bdi></p>}
+              <p class="muted"><bdi>{page.project.name[lang]}</bdi>{lang === 'ar' ? '، ' : ', '}<Fill text="version" n={digits(lang, page.currentVersion)} /></p>
+              <p class="muted"><Fill text="updated" date={day(lang, page.updatedAt)} /></p>
+              {page.tags.length > 0 && <p class="tags">{page.tags.map((tag) => <bdi key={tag} class="tag">{tag}</bdi>)}</p>}
+            </Link>
+          </li>
+        ))}
+      </ul>
+      {problem && <><Failure>{t(problem)}</Failure><button class="plain" onClick={() => setTries(tries + 1)}>{t('retry')}</button></>}
+      {list?.next && <button class="plain wide" disabled={busy} onClick={more}>{t('more')}</button>}
+    </>
+  );
+}
+
+function Choice({ label, value, options, onChange }: { label: string; value: string; options: [string, string][]; onChange: (value: string) => void }) {
+  const id = useId();
+  return (
+    <div class="choice">
+      <label class="muted" for={id}>{label}</label>
+      <select id={id} class="field" value={value} onChange={(event) => onChange(event.currentTarget.value)}>
+        {options.map(([key, text]) => <option key={key} value={key} selected={key === value}>{text}</option>)}
+      </select>
+    </div>
+  );
+}
+
+/** A live list of the tags in use, narrowed while typing. */
+function TagFilter({ project, value, onChange }: { project: string; value: string; onChange: (value: string) => void }) {
+  const t = useText(), id = useId(), [text, setText] = useState(''), [items, setItems] = useState<string[] | null>(null), [open, setOpen] = useState(false), [at, setAt] = useState(-1);
+  const box = useRef<HTMLDivElement>(null), input = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const stop = new AbortController();
+    const timer = setTimeout(() => {
+      const query = new URLSearchParams({ q: text, ...(project && { project }) });
+      call<{ items: string[] }>('GET', `/tags?${query}`, undefined, stop.signal).then((r) => { setItems(r.items); setAt(-1); }, () => undefined);
+    }, 120);
+    return () => { clearTimeout(timer); stop.abort(); };
+  }, [text, project, open]);
+  const choose = (tag: string) => { setOpen(false); setText(''); onChange(tag); };
+  if (value) {
+    return (
+      <div class="choice">
+        <span class="muted">{t('tag')}</span>
+        <button class="field chosen" aria-label={`${t('clearTag')}: ${value}`} onClick={() => onChange('')}><bdi>{value}</bdi><span aria-hidden="true">×</span></button>
+      </div>
+    );
+  }
+  return (
+    <div class="choice" ref={box} onFocusOut={(event) => { if (!box.current?.contains(event.relatedTarget as Node | null)) setOpen(false); }}>
+      <label class="muted" for={id}>{t('tag')}</label>
+      <input id={id} ref={input} class="field" role="combobox" aria-expanded={open} aria-controls={`${id}-list`} aria-autocomplete="list" aria-activedescendant={open && at >= 0 ? `${id}-${at}` : undefined}
+        autocomplete="off" placeholder={t('tagHint')} value={text} onFocus={() => setOpen(true)} onClick={() => setOpen(true)}
+        onInput={(event) => { setText(event.currentTarget.value); setOpen(true); }}
+        onKeyDown={(event) => {
+          const n = items?.length ?? 0;
+          if (event.key === 'Escape') setOpen(false);
+          else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setOpen(true); if (n > 0) setAt((at + (event.key === 'ArrowDown' ? 1 : n + (at < 0 ? 0 : -1))) % n); }
+          else if (event.key === 'Enter' && open) { event.preventDefault(); const tag = items?.[at] ?? items?.find((i) => i === text.trim()); if (tag) choose(tag); }
+        }} />
+      <ul id={`${id}-list`} class="options" role="listbox" aria-label={t('tag')} hidden={!open || items === null}>
+        {items?.map((tag, i) => <li key={tag} id={`${id}-${i}`} role="option" aria-selected={i === at} onMouseDown={(event) => event.preventDefault()} onClick={() => choose(tag)}><bdi>{tag}</bdi></li>)}
+        {items?.length === 0 && <li class="muted" role="option" aria-disabled="true" aria-selected="false">{t('noTags')}</li>}
+      </ul>
+    </div>
+  );
+}

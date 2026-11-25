@@ -24,7 +24,7 @@ export function gateTests(requiredHeaders: Record<string, RegExp>, allowOrigin: 
 
     it.each(['false', '"true"', '1', 'null', '{}', ' true'])('stays off for the value %s', async (value) => {
       await set(value);
-      expect(await result(await call('/p/a/b'))).toEqual(OFF);
+      expect(await result(await call('/nope'))).toEqual(OFF);
     });
 
     it('turns on, and off again at once', async () => {
@@ -36,12 +36,12 @@ export function gateTests(requiredHeaders: Record<string, RegExp>, allowOrigin: 
 
     it('is not turned on by another switch', async () => {
       await env.DB.prepare("INSERT INTO settings(key,value_json,updated_at) VALUES('teams','true',1)").run();
-      expect(await result(await call('/p/a/b'))).toEqual(OFF);
+      expect(await result(await call('/nope'))).toEqual(OFF);
     });
 
     it('fails closed, with no details, when the database fails', async () => {
       await breakDatabase();
-      const response = await call('/p/a/b');
+      const response = await call('/nope');
       expect(response.status).toBe(500);
       expect(await response.json()).toEqual({ code: 'internal', message: 'Something went wrong.' });
     });
@@ -49,7 +49,7 @@ export function gateTests(requiredHeaders: Record<string, RegExp>, allowOrigin: 
     it.each([['off', OFF], ['on', [404, 'not_found']], ['broken', [500, 'internal']]] as const)('sends the security headers when %s', async (state, expected) => {
       if (state === 'on') await set('true');
       if (state === 'broken') await breakDatabase();
-      const response = await call('/p/a/b');
+      const response = await call('/nope');
       expect(await result(response)).toEqual(expected);
       for (const [name, value] of Object.entries(requiredHeaders)) expect(response.headers.get(name), name).toMatch(value);
       expect(response.headers.get('Cache-Control')).toBe('no-store');
