@@ -1,6 +1,6 @@
 import { useState } from 'preact/hooks';
 import { call, type Me, problemOf } from '../api';
-import { Failure, go, useBusy, useText } from '../app';
+import { Failure, go, Heading, useBusy, useText } from '../app';
 
 /** Until the pages screen (S5): who is signed in, and the owner's switch. */
 export function Home({ me, onChange }: { me: Me; onChange: () => void }) {
@@ -8,7 +8,7 @@ export function Home({ me, onChange }: { me: Me; onChange: () => void }) {
   const act = (what: () => Promise<unknown>) => run(async () => { setProblem(null); try { await what(); onChange(); } catch (error) { setProblem(problemOf(error)); } });
   return (
     <section class="card narrow">
-      <h1>{t('signedIn', { name: me.name })}</h1>
+      <Heading>{t('signedIn', { name: me.name })}</Heading>
       {me.isOwner && <p>{t(me.instance ? 'isOn' : 'isOff')}</p>}
       {me.isOwner && !me.instance && <button class="primary" disabled={busy} onClick={() => act(() => call('PUT', '/switches/instance', { on: true }))}>{t('turnOn')}</button>}
       {me.instance && <p class="muted">{t('soon')}</p>}

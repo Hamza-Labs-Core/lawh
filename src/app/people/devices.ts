@@ -50,25 +50,26 @@ export async function claimDevice(ctx: AppContext): Promise<Response> {
   return new Response(null, { status: 204, headers: { 'Set-Cookie': sessionCookie(env, session.token) } });
 }
 
-async function findByCode(ctx: SignedIn): Promise<{ id: string; label: string; created_at: number }> {
+/** What a typed code would sign in, so the person can compare before approving. Guesses are limited. */
+export async function lookAtDevice(ctx: SignedIn): Promise<Response> {
   const { env, person } = ctx, { body } = await readJson(ctx.request);
   onlyKeys(body, ['code']);
   if (!(await env.CODE_LIMIT.limit({ key: person.sessionId })).success) throw new ApiError('rate_limited', 'Too many codes. Wait a minute.');
-  if (typeof body.code !== 'string' || body.code.length > 20) throw notFound();
+  if (typeof body.code !== 'string' || body.code.length > 40) throw notFound();
   const row = await env.DB.prepare('SELECT id, label, created_at FROM device_approvals WHERE code_hmac = ? AND expires_at > ? AND approved_at IS NULL')
     .bind(await codeHmac(env, body.code), Date.now()).first<{ id: string; label: string; created_at: number }>();
   if (!row) throw notFound();
-  return row;
+  return Response.json({ id: row.id, label: row.label, createdAt: row.created_at });
 }
 
-/** What a typed code would sign in, so the person can compare before approving. */
-export async function lookAtDevice(ctx: SignedIn): Promise<Response> {
-  const device = await findByCode(ctx);
-  return Response.json({ label: device.label, createdAt: device.created_at });
-}
-
+/** Needs the id, which only a right code gives, so approving isn't a guess and isn't limited. */
 export async function approveDevice(ctx: SignedIn): Promise<Response> {
-  const { env, person } = ctx, device = await findByCode(ctx), now = Date.now();
+  const { env, person } = ctx, { body } = await readJson(ctx.request);
+  onlyKeys(body, ['id', 'code']);
+  if (typeof body.id !== 'string' || typeof body.code !== 'string' || body.code.length > 40) throw notFound();
+  const now = Date.now();
+  const device = await env.DB.prepare('SELECT id, code_hmac FROM device_approvals WHERE id = ? AND expires_at > ? AND approved_at IS NULL').bind(body.id, now).first<{ id: string; code_hmac: string }>();
+  if (!device || !equalInConstantTime(await codeHmac(env, body.code), device.code_hmac)) throw notFound();
   try {
     await env.DB.batch([
       env.DB.prepare('UPDATE device_approvals SET approved_at = ?, member_id = ?, approver_session = ? WHERE id = ?').bind(now, person.memberId, person.sessionId, device.id),

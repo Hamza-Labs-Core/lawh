@@ -1,5 +1,5 @@
 import { type ComponentChildren, createContext } from 'preact';
-import { useCallback, useContext, useEffect, useState } from 'preact/hooks';
+import { useCallback, useContext, useEffect, useRef, useState } from 'preact/hooks';
 import { type Key, type Lang, translate } from './i18n';
 
 interface Settings { lang: Lang; mode: 'dark' | 'light'; setLang: (lang: Lang) => void; setMode: (mode: 'dark' | 'light') => void }
@@ -40,13 +40,30 @@ export function TopBar({ children }: { children?: ComponentChildren }) {
 
 export const Failure = ({ children }: { children: ComponentChildren }) => <p class="failure" role="alert">{children}</p>;
 
-/** Runs something that takes a while: the button that starts it is disabled meanwhile. */
+/** Runs something that takes a while: the button that starts it is disabled meanwhile, and a second start is ignored. */
 export function useBusy(): [boolean, (run: () => Promise<void>) => void] {
-  const [busy, setBusy] = useState(false);
-  return [busy, (run) => { if (busy) return; setBusy(true); void run().finally(() => setBusy(false)); }];
+  const [busy, setBusy] = useState(false), running = useRef(false);
+  return [busy, (run) => {
+    if (running.current) return;
+    running.current = true;
+    setBusy(true);
+    void run().finally(() => { running.current = false; setBusy(false); });
+  }];
 }
 
-export function go(path: string): void {
-  history.pushState(null, '', path);
+let firstScreen = true;
+/** A screen's heading. It takes the focus when the screen changes, so a keyboard or a screen reader goes on from there. */
+export function Heading({ children, class: className }: { children: ComponentChildren; class?: string }) {
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (!firstScreen) heading.current?.focus();
+    firstScreen = false;
+  }, []);
+  return <h1 ref={heading} tabIndex={-1} class={className}>{children}</h1>;
+}
+
+/** `replace`: Back doesn't return to a page whose work is done. */
+export function go(path: string, replace = false): void {
+  if (replace) history.replaceState(null, '', path); else history.pushState(null, '', path);
   dispatchEvent(new PopStateEvent('popstate'));
 }

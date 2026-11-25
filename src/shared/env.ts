@@ -10,7 +10,7 @@ export interface SharedEnv {
 
 export interface AppEnv extends SharedEnv {
   LIVE: DurableObjectNamespace;
-  /** For the HMAC of agent keys. */
+  /** For the HMACs of agent keys, device codes and session handles. */
   PEPPER: SecretsStoreSecret | string;
   /** Requests for each agent key. */
   KEY_LIMIT: RateLimit;

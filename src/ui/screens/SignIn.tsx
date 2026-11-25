@@ -1,7 +1,7 @@
 import { browserSupportsWebAuthn, startAuthentication } from '@simplewebauthn/browser';
 import { useState } from 'preact/hooks';
 import { call, problemOf } from '../api';
-import { Failure, go, useBusy, useText } from '../app';
+import { Failure, go, Heading, useBusy, useText } from '../app';
 
 export function SignIn({ onDone }: { onDone: () => void }) {
   const t = useText(), [busy, run] = useBusy(), [problem, setProblem] = useState<string | null>(null), supported = browserSupportsWebAuthn();
@@ -19,7 +19,7 @@ export function SignIn({ onDone }: { onDone: () => void }) {
   };
   return (
     <section class="card narrow">
-      <h1 class="brand">{t('app')}</h1>
+      <Heading class="brand">{t('app')}</Heading>
       <p class="muted">{t('tagline')}</p>
       {supported ? <button class="primary" disabled={busy} onClick={() => run(signIn)}>{t('signIn')}</button> : <p>{t('noPasskeys')}</p>}
       <button class="plain wide" onClick={() => go('/device')}>{t('fromOther')}</button>

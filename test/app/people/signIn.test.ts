@@ -1,9 +1,13 @@
 import { env } from 'cloudflare:workers';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { keyHmac } from '../../../src/app/api/auth';
 import { b64, Authenticator } from './authenticator';
 import { api, call, code, cookieOf, count, enter, json, makeLink, one, register, seed, signIn, sql } from './helpers';
 
 beforeEach(() => seed());
+afterEach(() => { vi.useRealTimers(); });
+/** Moves the Worker's clock. The database's own stays, so this tests the Worker's check alone. */
+const later = (ms: number) => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(Date.now() + ms); };
 const NOT = [401, 'unauthorized'];
 
 describe('setup and recovery links', () => {
@@ -42,7 +46,8 @@ describe('setup and recovery links', () => {
       return;
     }
     const { challengeId, options } = await json(await api('POST', '/link/options', { body: { token } }));
-    if (how === 'expired') await sql('UPDATE access_links SET expires_at=1').catch(() => sql('DELETE FROM access_links'));
+    if (how === 'expired') later(601_000);
+    if (how === 'expired') expect(await count('access_links', 'used_at IS NULL')).toBe(1);
     if (how === 'removed') await sql("UPDATE members SET removed_at=1 WHERE id='m'");
     if (how === 'replaced') await makeLink('owner', 'o');
     expect(await code(await api('POST', '/link', { body: { token, challengeId, response: await a.register(options.challenge) } }))).toEqual([404, 'not_found']);
@@ -89,8 +94,10 @@ describe('setup and recovery links', () => {
     const sign = await json(await api('POST', '/sign-in/options'));
     expect(await code(await api('POST', '/link', { body: { token, challengeId: sign.challengeId, response: await authenticator.register(sign.options.challenge) } }))).toEqual(NOT);
     expect((await api('POST', '/link', { body: { token, challengeId, response: await authenticator.register(options.challenge) } })).status).toBe(204);
-    await sql('UPDATE auth_challenges SET expires_at=1');
-    expect(await code(await api('POST', '/link', { body: { token: other, challengeId, response: await authenticator.register(options.challenge) } }))).toEqual(NOT);
+    const late = await Authenticator.make(), offer = await json(await api('POST', '/link/options', { body: { token: other } }));
+    later(301_000);
+    expect(await count('auth_challenges', "member_id='m'")).toBe(1);
+    expect(await code(await api('POST', '/link', { body: { token: other, challengeId: offer.challengeId, response: await late.register(offer.options.challenge) } }))).toEqual(NOT);
   });
 
   it('refuses a passkey that someone already has', async () => {
@@ -135,6 +142,44 @@ describe('signing in', () => {
     expect([401, 422]).toContain((await api('POST', '/sign-in', { body })).status);
   });
 
+  it("refuses an authenticator that names someone else, and takes one that names its person", async () => {
+    const { authenticator } = await enter('o');
+    expect(await code(await signIn(authenticator, { userHandle: b64(new TextEncoder().encode('m')) }))).toEqual(NOT);
+    expect((await signIn(authenticator, { userHandle: b64(new TextEncoder().encode('o')) })).status).toBe(204);
+    expect((await signIn(authenticator, { userHandle: '' })).status).toBe(204);
+  });
+
+  it.each([["the person is removed", "UPDATE members SET removed_at=1 WHERE id='m'"], ['the passkey goes', "DELETE FROM passkeys WHERE member_id='m'"]])('answers 401 when %s just before the session starts', async (_, change) => {
+    const { authenticator } = await enter('m');
+    const { challengeId, options } = await json(await api('POST', '/sign-in/options')), response = await authenticator.sign(options.challenge);
+    const DB = new Proxy(env.DB, { get(target, name) {
+      if (name === 'batch') return async (statements: D1PreparedStatement[]) => { await sql(change); return target.batch(statements); };
+      const value = Reflect.get(target, name) as unknown;
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    expect(await code(await api('POST', '/sign-in', { body: { challengeId, response } }, { DB }))).toEqual(NOT);
+    expect(await count('sessions')).toBe(0);
+  });
+
+  it('never takes the counter back when two sign-ins cross', async () => {
+    const { authenticator } = await enter('o');
+    const first = await json(await api('POST', '/sign-in/options')), a = await authenticator.sign(first.options.challenge);
+    const DB = new Proxy(env.DB, { get(target, name) {
+      if (name === 'batch') return async (statements: D1PreparedStatement[]) => { await sql('UPDATE passkeys SET sign_count=9'); return target.batch(statements); };
+      const value = Reflect.get(target, name) as unknown;
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    expect((await api('POST', '/sign-in', { body: { challengeId: first.challengeId, response: a } }, { DB })).status).toBe(204);
+    expect(await one('SELECT sign_count FROM passkeys')).toEqual({ sign_count: 9 });
+  });
+
+  it('registers and removes a passkey with a long id', async () => {
+    const { cookie } = await enter('o'), long = await Authenticator.make(400);
+    const { challengeId, options } = await json(await api('POST', '/passkeys/options', { cookie }));
+    expect((await api('POST', '/passkeys', { cookie, body: { challengeId, response: await long.register(options.challenge) } })).status).toBe(204);
+    expect((await api('DELETE', `/passkeys/${long.credentialId}`, { cookie })).status).toBe(204);
+  });
+
   it('refuses a removed person', async () => {
     const { authenticator, cookie } = await enter('m');
     await sql("UPDATE members SET removed_at=1 WHERE id='m'");
@@ -159,7 +204,8 @@ describe('switches', () => {
     await sql("UPDATE settings SET value_json='false' WHERE key='instance'");
     const { cookie } = await enter('o'), off = [404, 'feature_off'];
     expect(await json(await api('GET', '/me', { cookie }))).toMatchObject({ instance: false });
-    for (const [method, path] of [['GET', '/sessions'], ['GET', '/passkeys'], ['POST', '/passkeys/options'], ['POST', '/device'], ['POST', '/device/claim'], ['POST', '/device/approve'], ['GET', '/nope']] as const) {
+    for (const [method, path] of [['GET', '/me'], ['PUT', '/switches/instance'], ['DELETE', '/sessions/current']] as const) expect(await code(await api(method, path)), path).toEqual(off);
+    for (const [method, path] of [['GET', '/sessions'], ['DELETE', `/sessions/${'0'.repeat(64)}`], ['GET', '/passkeys'], ['POST', '/passkeys/options'], ['POST', '/device'], ['POST', '/device/claim'], ['POST', '/device/approve'], ['GET', '/nope']] as const) {
       expect(await code(await api(method, path, { cookie })), path).toEqual(off);
     }
     for (const path of ['/device', '/approve', '/p/a/b', '/v1/me']) expect(await code(await call('GET', path, { cookie })), path).toEqual(off);
@@ -218,16 +264,35 @@ describe('sessions', () => {
     expect((await api('GET', '/me', { cookie: `a=b; ${cookie}; c=d` })).status).toBe(200);
     expect(await code(await api('GET', '/me', { headers: { Authorization: 'Bearer x' } }))).toEqual(NOT);
     expect(await count('sessions', `token_sha256='${value}'`)).toBe(0);
+    const [session] = (await json(await api('GET', '/sessions', { cookie }))).items;
+    expect(await count('sessions', `token_sha256='${session.id}'`)).toBe(0);
   });
 
   it('refuses writes from anywhere else', async () => {
     const { cookie } = await enter('o');
-    for (const headers of [{ Origin: 'https://evil.example.com' }, { Origin: 'null' }, { Origin: 'http://127.0.0.1:8787' }, { 'Sec-Fetch-Site': 'same-site' }, { 'Sec-Fetch-Site': 'cross-site' }, { 'Sec-Fetch-Site': 'none' }]) {
+    for (const headers of [{ Origin: 'https://evil.example.com' }, { Origin: 'null' }, { Origin: 'http://127.0.0.1:8787' }, { 'Sec-Fetch-Site': 'same-site' }, { 'Sec-Fetch-Site': 'cross-site' }, { 'Sec-Fetch-Site': 'none' }, { Origin: '' }, { 'Sec-Fetch-Site': '' }, { Origin: '', 'Sec-Fetch-Site': '' }]) {
       for (const [method, path] of [['PUT', '/switches/instance'], ['DELETE', '/sessions/current'], ['POST', '/sign-in/options'], ['POST', '/link'], ['POST', '/device/approve']] as const) {
         expect(await code(await api(method, path, { cookie, headers, body: { on: false } })), JSON.stringify(headers)).toEqual([403, 'forbidden']);
       }
     }
     expect((await api('GET', '/me', { cookie })).status).toBe(200);
+  });
+
+  it('answers 401 to an agent key on every route, known or not, with or without a session', async () => {
+    const { cookie } = await enter('o'), id = `key_${'0'.repeat(26)}`, secret = 's'.repeat(43);
+    await sql("INSERT INTO agents(id,member_id,name,created_at) VALUES('a','o','bot',1)");
+    await env.DB.prepare("INSERT INTO agent_keys(id,agent_id,secret_hmac,scopes_json,all_projects,created_at,expires_at) VALUES(?,'a',?,'[\"pages:read\"]',1,1,?)").bind(id, await keyHmac(env, id, secret), Date.now() + 600_000).run();
+    const headers = { Authorization: `Bearer lawh_${id}_${secret}` };
+    expect((await call('GET', '/v1/me', { headers })).status).toBe(200);
+    for (const [method, path] of [['GET', '/me'], ['POST', '/sign-in/options'], ['PUT', '/switches/instance'], ['POST', '/passkeys'], ['GET', '/nope'], ['POST', '/nope']] as const) {
+      for (const more of [{}, { Origin: '', 'Sec-Fetch-Site': '' }]) for (const c of [undefined, cookie]) expect(await code(await api(method, path, { cookie: c, headers: { ...headers, ...more } })), path).toEqual(NOT);
+    }
+    expect(await code(await call('GET', '/v1/me', { cookie })), 'and a session is nothing on /v1').toEqual(NOT);
+  });
+
+  it('tells another site nothing about which routes there are', async () => {
+    const { cookie } = await enter('o');
+    for (const path of ['/passkeys', '/nope', '/switches/instance']) for (const c of [undefined, cookie]) expect(await code(await api('POST', path, { cookie: c, headers: { Origin: 'https://evil.example.com' } }))).toEqual([403, 'forbidden']);
   });
 
   it('is rate limited before sign-in', async () => {

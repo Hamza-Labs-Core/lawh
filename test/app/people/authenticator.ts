@@ -30,8 +30,8 @@ const ORIGIN = 'http://localhost:8787', RP = 'localhost';
 export class Authenticator {
   counter = 0;
   private constructor(readonly id: Uint8Array, private keys: CryptoKeyPair) {}
-  static async make(): Promise<Authenticator> {
-    return new Authenticator(crypto.getRandomValues(new Uint8Array(32)), await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']) as CryptoKeyPair);
+  static async make(idLength = 32): Promise<Authenticator> {
+    return new Authenticator(crypto.getRandomValues(new Uint8Array(idLength)), await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']) as CryptoKeyPair);
   }
   get credentialId(): string { return b64(this.id); }
 
