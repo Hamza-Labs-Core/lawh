@@ -5,6 +5,7 @@ import { Failure, go, Link, SettingsProvider, TopBar, useSettings, useText } fro
 import { digits } from './i18n';
 import { ApproveDevice, AskDevice } from './screens/Device';
 import { Account } from './screens/Account';
+import { Settings } from './screens/Settings';
 import { Comments } from './screens/Comments';
 import { Decisions } from './screens/Decisions';
 import { Library } from './screens/Library';
@@ -45,7 +46,7 @@ function Nav({ path }: { path: string }) {
       <Link to="/" current={path === '/' || path.startsWith('/p/')}>{t('pages')}</Link>
       <Link to="/decisions" current={path === '/decisions'}>{t('decisions')}{waiting !== null && waiting.count > 0 && <> <span class="badge">{n}</span></>}</Link>
       <Link to="/comments" current={path === '/comments'}>{t('comments')}</Link>
-      <Link to="/account" current={path === '/account'}>{t('account')}</Link>
+      <Link to="/settings" current={path.startsWith('/settings')}>{t('settings')}</Link>
     </nav>
   );
 }
@@ -73,12 +74,13 @@ function App() {
   else if (me === 'failed') screen = <section class="card narrow"><Failure>{t('offline')}</Failure><button class="plain wide" onClick={() => { setMe(null); void load(); }}>{t('retry')}</button></section>;
   else if (me === 'nobody') screen = path === '/device' ? <AskDevice onDone={arrive} /> : <SignIn onDone={() => { setMe(null); void load(); }} />;
   else if (path === '/approve') screen = <ApproveDevice onSignedOut={() => { setMe(null); void load(); }} />;
-  else if (path === '/account' || !me.instance) screen = <Account me={me} onChange={() => void load()} />;
+  else if (!me.instance) screen = <Account me={me} onChange={() => void load()} />;
+  else if (path.startsWith('/settings')) screen = <Settings path={path} me={me} onChange={() => void load()} />;
   else if (reading) screen = <PageView project={reading[1]!} slug={reading[2]!} search={search} me={me} />;
   else if (path === '/comments') screen = <Comments me={me} />;
   else if (path === '/decisions') screen = <Decisions search={search} me={me} />;
   else screen = <Library search={search} />;
-  return <><TopBar>{typeof me === 'object' && me !== null && me.instance && <Nav path={path} />}</TopBar>{/* A new screen starts over; the link page doesn't depend on who is signed in. */}<main key={path === '/link' ? path : `${path} ${typeof me === 'object' && me ? me.id : me}`}>{screen}</main></>;
+  return <><TopBar>{typeof me === 'object' && me !== null && me.instance && <Nav path={path} />}</TopBar>{/* A new screen starts over; the link page doesn't depend on who is signed in. */}<main key={path === '/link' ? path : path.startsWith('/settings') && typeof me === 'object' && me ? `/settings ${me.id}` : `${path} ${typeof me === 'object' && me ? me.id : me}`}>{screen}</main></>;
 }
 
 render(<SettingsProvider><App /></SettingsProvider>, document.getElementById('app')!);

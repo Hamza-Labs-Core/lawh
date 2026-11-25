@@ -147,6 +147,22 @@ button.chip{background:none;color:inherit}
 .write .primary{margin-top:8px}
 .write .row{margin-top:8px;flex-wrap:wrap}
 .write .row .primary{flex:0 1 auto;min-width:96px}
+.form{max-width:640px;margin-bottom:14px}
+.form .as-button.primary{margin-top:14px}
+.form>label.muted{display:block;margin-top:12px}
+.form:focus,.form-closed:focus,.card:focus{outline:none}
+.primary.fit{width:auto;margin:0 0 10px}
+.checks{border:0;padding:0;margin:12px 0 0;min-width:0}
+.check{display:flex;align-items:center;gap:12px;min-height:44px;cursor:pointer}
+.check input{width:22px;height:22px;flex:none;accent-color:var(--ac);margin:0}
+.rows{list-style:none;margin:0;padding:0}
+.rows li{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--line)}
+.rows li>:first-child{flex:1 1 200px;min-width:0}
+.rows p{margin:2px 0}
+.rows li[data-dead=true] strong{color:var(--mut)}
+.card-rows{display:grid;gap:10px}
+.card-rows li{border:1px solid var(--line);padding:12px 16px}
+.danger{color:var(--bad);border-color:var(--bad)}
 @media (min-width:601px){.viewer-close{order:1}}
 @media (max-width:600px){.places{position:fixed;z-index:2;bottom:0;inset-inline:0;background:var(--s1);border-top:1px solid var(--line);justify-content:space-around;padding-bottom:env(safe-area-inset-bottom)}.places a{flex:1;justify-content:center;min-height:56px;padding:0 4px;border-radius:0;flex-wrap:wrap;gap:0 6px}.places a[aria-current]{background:none;color:var(--ac)}body:has(.places) main{padding-bottom:calc(72px + env(safe-area-inset-bottom))}body:has(.places) main:has(>.reader){padding-bottom:calc(56px + env(safe-area-inset-bottom))}body:has(.places) .to-panel{bottom:calc(56px + env(safe-area-inset-bottom))}.viewer-label{flex-basis:calc(100% - 120px)}.viewer-bar .muted{flex:1 1 auto;min-width:40%}.filters{grid-template-columns:repeat(2,minmax(0,1fr))}.filters>:first-child,.filters>:last-child{grid-column:1/-1}.top{padding-inline:12px}.reader-bar{padding:8px 12px;gap:8px}.reader-title{order:-1;flex-basis:100%}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}

@@ -20,6 +20,11 @@ export function indexStatements(env: AppEnv, pageId: string, { title, summary, t
   ];
 }
 
+/** A page that is deleted. */
+export function unindexStatements(env: AppEnv, pageId: string): D1PreparedStatement[] {
+  return [env.DB.prepare(`DELETE FROM pages_fts WHERE rowid = ${ROW}`).bind(pageId), env.DB.prepare('DELETE FROM pages_fts_map WHERE page_id = ?').bind(pageId)];
+}
+
 /** Re-inserts through pages_fts_map's AUTOINCREMENT so rowids never move backwards or reuse deleted ones, while keeping body. */
 function finishMove(env: AppEnv, pageId: string): D1PreparedStatement[] {
   return [
