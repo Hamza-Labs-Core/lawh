@@ -67,13 +67,13 @@ An opaque origin sends no session cookie, so each file URL carries a token: `htt
 | Message | Used for | The app's check |
 |---|---|---|
 | `outline` | Section comments | At most 200 headings, 200 characters each, shown as text |
-| `open-media` | Full-size viewer | Image: a path in this version's file list. SVG: at most 5 MB of text. Canvas: an `ImageBitmap`. Each is passed to the viewer frame |
+| `open-media` | Full-size viewer | Image: a path of the form published paths have. SVG: at most 5 MB of text. Canvas and data images: an `ImageBitmap`. Each is passed to the viewer frame, which can load only this version's files |
 | `open-link` | Outside links | `https:` only; a dialog shows the whole address before it opens |
 | `scroll-state` | Scroll position | Numbers only |
 
 The page shares a realm with the bridge and can forge any of these, so **no message can answer a decision, write a comment or call the API**. The app accepts messages only where `event.source` is the frame's window. Decision forms and comments are drawn by the app outside the frame, from the API's data, as plain text.
 
-**Viewer.** The app never turns page data into an image URL of its own: such a URL would run outside the sandbox if someone opened it in a new tab. The full-size viewer is a second frame, `https://CONTENT/<token>/_lawh/viewer`, with the same sandbox attribute, the same headers, and `script-src CONTENT` without `'unsafe-inline'`. The app posts it the item, and it accepts items only where `event.source` is its parent and `event.origin` is the app host, because the page frame can post to it too. S6 tests this on all three engines, including an SVG from a `blob:` URL of an opaque origin in WebKit. It draws an SVG or image to a canvas at the current zoom, so there is no image element to open elsewhere, and loads an SVG from a `blob:` URL of its own opaque origin, which has no data-URL size limit. It sends back only key names (Escape, arrows, `+`, `−`), which the app acts on as a key press would: close, move or zoom. The app draws the bar around it.
+**Viewer.** The app never turns page data into an image URL of its own: such a URL would run outside the sandbox if someone opened it in a new tab. The full-size viewer is a second frame, `https://CONTENT/<token>/_lawh/viewer`, with the same sandbox attribute, the same headers, and a CSP of its own: `script-src CONTENT` without `'unsafe-inline'`, images from CONTENT and `blob:`, and nothing else. The app posts it the item, and it accepts items only where `event.source` is its parent and `event.origin` is the app host, because the page frame can post to it too. S6 tests this on all three engines, including an SVG from a `blob:` URL of an opaque origin in WebKit. It draws an SVG or image to a canvas at the current zoom, so there is no image element to open elsewhere, and loads an SVG from a `blob:` URL of its own opaque origin, which has no data-URL size limit. It sends back only that it is ready, has drawn or failed, and key names (Escape, arrows, `+`, `−`, `0`), which the app acts on as a key press would: close, move or zoom. The app draws the bar around it.
 
 ## 4. App host
 

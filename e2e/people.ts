@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { type BrowserContext, test as base } from '@playwright/test';
+import { type BrowserContext, type Page, test as base } from '@playwright/test';
 
 export const APP = 'http://localhost:8797';
 
@@ -38,6 +38,12 @@ export async function enter(context: BrowserContext, member: string): Promise<vo
     `INSERT INTO sessions(token_sha256,member_id,label,created_at,last_seen_at,expires_at,passkey_id) SELECT '${hash(token)}','${member}','x',${Date.now()},${Date.now()},${Date.now() + 600_000},credential_id FROM passkeys WHERE member_id='${member}'`);
   await context.addCookies([{ name: 'lawh-local', value: token, url: APP, httpOnly: true, sameSite: 'Lax' }]);
 }
+
+/** Says whether the person just did something. Playwright's own calls count as that, so the browser's answer can't be used. */
+export async function activation(page: Page, active: boolean): Promise<void> {
+  await page.addInitScript((value) => { if (self === top) { (window as unknown as { active: boolean }).active = value; Object.defineProperty(navigator, 'userActivation', { get: () => ({ isActive: (window as unknown as { active: boolean }).active }) }); } }, active);
+}
+export const setActive = (page: Page, value: boolean) => page.evaluate((v) => { (window as unknown as { active: boolean }).active = v; }, value);
 
 export async function leave(member: string): Promise<void> { await db(`UPDATE members SET removed_at=${Date.now()} WHERE id='${member}' AND removed_at IS NULL`); }
 
