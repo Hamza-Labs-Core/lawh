@@ -216,14 +216,14 @@ it('people’s queries never scan a table, and never sort without an index', asy
     return typeof value === 'function' ? value.bind(target) : value;
   } });
   for (const cookie of [(await enter('o')).cookie, await member(['t1', 4], ['t2', 1])]) {
-    for (const path of ['/me', '/projects', '/sessions', '/passkeys', '/pages', '/pages?project=one', '/pages?tag=alpha', '/pages?status=draft', '/pages?project=one&tag=alpha&status=draft', '/tags', '/tags?q=a&project=one',
-      '/projects/one/pages/a', '/projects/one/pages/a?v=1', '/projects/one/pages/a/versions', '/decisions', '/decisions?show=waiting', '/decisions?show=answered', '/decisions/count', '/projects/one/pages/a/decisions', `/decisions/${d1}`]) expect((await api('GET', path, { cookie }, { DB })).status, path).toBe(200);
+    for (const path of ['/me', '/projects', '/sessions', '/passkeys', '/pages', '/pages?project=one', '/pages?tag=alpha', '/pages?status=draft', '/pages?project=one&tag=alpha&status=draft', '/pages?q=a', '/pages?q=a&project=one&tag=alpha&status=draft', '/comments', '/projects/one/pages/a/comments', `/comments/cmt_${'0'.repeat(26)}/replies`, '/decisions', '/decisions?show=waiting', '/decisions?show=answered', '/decisions/count', '/projects/one/pages/a/decisions', `/decisions/${d1}`, '/tags', '/tags?q=a&project=one',
+      '/projects/one/pages/a', '/projects/one/pages/a?v=1', '/projects/one/pages/a/versions']) expect((await api('GET', path, { cookie }, { DB })).status, path).toBe(path.includes('000') ? 404 : 200);
   }
   expect(seen.size).toBeGreaterThan(18);
   for (const query of seen) {
-    const marks = (query.match(/\?(?!\d)/g) ?? []).length, numbered = Math.max(0, ...[...query.matchAll(/\?(\d)/g)].map((m) => Number(m[1])));
+    const marks = (query.match(/\?(?!\d)/g) ?? []).length, numbered = Math.max(0, ...[...query.matchAll(/\?(\d+)/g)].map((m) => Number(m[1])));
     const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${query}`).bind(...Array(marks + numbered).fill(null)).all<{ detail: string }>();
     // The recursive table of the tags list holds at most 51 rows.
-    for (const { detail } of results) expect(/^SCAN (?!j\b|o VIRTUAL TABLE|json_each\b|CONSTANT ROW|t$)/.test(detail) || detail.includes('TEMP B-TREE'), `${detail} | ${query}`).toBe(false);
+    for (const { detail } of results) expect(/^SCAN (?!j\b|json_each\b|CONSTANT ROW|t$|\w+ VIRTUAL TABLE INDEX)/.test(detail) || detail.includes('TEMP B-TREE'), `${detail} | ${query}`).toBe(false);
   }
 });

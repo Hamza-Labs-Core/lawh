@@ -3,6 +3,7 @@ import { integer, oneOf, onlyKeys, readJson, text } from '../api/body';
 import { findPage } from '../api/pages';
 import { answeredStatement, answerers, countInboxStatement, type Decision, decisionJson, inboxStatement, readDecisions } from '../decisions/read';
 import { encodeCursor, pageLimit, readCursor } from '../pages/list';
+import { statusStatements } from '../search';
 import { levelOn, openProject, visibleProjects } from './access';
 import type { SignedIn } from './router';
 
@@ -102,6 +103,7 @@ export async function answerDecision(ctx: SignedIn): Promise<Response> {
         AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.page_id = pages.id AND d.status IN ('open','stale'))`).bind(now, row.page_id, row.id, next),
       env.DB.prepare("INSERT INTO events(project_id, page_id, type, subject_id, created_at, actor_type, actor_id) SELECT ?, ?, 'page.status', ?, ?, 'person', ? WHERE changes() = 1")
         .bind(row.project_id, row.page_id, row.page_id, now, person.memberId),
+      ...statusStatements(env, row.page_id),
     ]);
   } catch (error) {
     // Between the read and the write: someone else answered, the page was published again or deleted, or the person's level changed.

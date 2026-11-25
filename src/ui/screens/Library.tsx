@@ -4,10 +4,10 @@ import { Failure, Fill, go, Heading, Link, useSettings, useText } from '../app';
 import { day, digits } from '../i18n';
 
 const STATUSES: Status[] = ['draft', 'in_review', 'decided', 'archived'];
-const KEYS = ['project', 'status', 'tag'] as const;
+const KEYS = ['q', 'project', 'status', 'tag'] as const;
 type Filters = Record<(typeof KEYS)[number], string>;
 
-const readFilters = (search: string): Filters => { const query = new URLSearchParams(search); return { project: query.get('project') ?? '', status: query.get('status') ?? '', tag: query.get('tag') ?? '' }; };
+const readFilters = (search: string): Filters => { const query = new URLSearchParams(search); return { q: query.get('q') ?? '', project: query.get('project') ?? '', status: query.get('status') ?? '', tag: query.get('tag') ?? '' }; };
 const queryOf = (filters: Filters): string => { const query = new URLSearchParams(); for (const key of KEYS) if (filters[key]) query.set(key, filters[key]); return query.toString(); };
 
 export const StatusMark = ({ status }: { status: Status }) => <span class={`status ${status}`}>{useText()(status)}</span>;
@@ -54,6 +54,7 @@ export function Library({ search }: { search: string }) {
       <Heading>{t('pages')}</Heading>
       {projects !== null && projects.length > 0 && (
         <div class="filters">
+          <SearchBox filters={filters} onSearch={(q) => set({ q })} />
           <Choice label={t('project')} value={filters.project} onChange={(project) => set({ project })} options={[['', t('allProjects')], ...projects.map((p): [string, string] => [p.slug, p.name[lang]])]} />
           <Choice label={t('status')} value={filters.status} onChange={(status) => set({ status })} options={[['', t('anyStatus')], ...STATUSES.map((s): [string, string] => [s, t(s)])]} />
           <TagFilter project={filters.project} value={filters.tag} onChange={(tag) => set({ tag })} />
@@ -99,6 +100,48 @@ function Choice({ label, value, options, onChange }: { label: string; value: str
         {options.map(([key, text]) => <option key={key} value={key} selected={key === value}>{text}</option>)}
       </select>
     </div>
+  );
+}
+
+/** Pages that match, live while typing. One is opened, or Enter shows all in the list. */
+function SearchBox({ filters, onSearch }: { filters: Filters; onSearch: (q: string) => void }) {
+  const t = useText(), { lang } = useSettings(), id = useId(), [text, setText] = useState(filters.q), [items, setItems] = useState<PageItem[] | null>(null), [open, setOpen] = useState(false), [at, setAt] = useState(-1);
+  const box = useRef<HTMLFormElement>(null), { project, status, tag } = filters, now = text.trim();
+  // Back and "Clear filters" change the address, and the field follows it.
+  useEffect(() => { setText(filters.q); setItems(null); setAt(-1); }, [filters.q]);
+  useEffect(() => { if (at >= 0) document.getElementById(`${id}-${at}`)?.scrollIntoView({ block: 'nearest' }); }, [at]);
+  useEffect(() => {
+    setItems(null); setAt(-1);
+    if (!open || now === '') return;
+    const stop = new AbortController();
+    const timer = setTimeout(() => {
+      call<Listed<PageItem>>('GET', `/pages?${queryOf({ q: now, project, status, tag })}&limit=8`, undefined, stop.signal).then((r) => setItems(r.items), () => undefined);
+    }, 150);
+    return () => { clearTimeout(timer); stop.abort(); };
+  }, [now, project, status, tag, open]);
+  const show = open && now !== '' && items !== null;
+  const search = () => { setOpen(false); if (now !== filters.q) onSearch(now); };
+  return (
+    <form class="choice search" role="search" ref={box} onSubmit={(event) => { event.preventDefault(); const page = show ? items[at] : undefined; if (page) go(`/p/${page.project.slug}/${page.slug}`); else search(); }}
+      onFocusOut={(event) => { if (!box.current?.contains(event.relatedTarget as Node | null)) setOpen(false); }}>
+      <label class="muted" for={id}>{t('search')}</label>
+      <input id={id} class="field" enterkeyhint="search" role="combobox" aria-expanded={show} aria-controls={`${id}-list`} aria-autocomplete="list" aria-activedescendant={show && at >= 0 ? `${id}-${at}` : undefined}
+        autocomplete="off" maxLength={100} dir="auto" placeholder={t('searchHint')} value={text}
+        onInput={(event) => { const next = event.currentTarget.value; setText(next); setOpen(true); if (next === '' && filters.q !== '') onSearch(''); }}
+        onKeyDown={(event) => {
+          const n = show ? items.length : 0;
+          if (event.key === 'Escape' && show) { event.preventDefault(); setOpen(false); }
+          else if (n > 0 && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) { event.preventDefault(); setAt((at + (event.key === 'ArrowDown' ? 1 : n + (at < 0 ? 0 : -1))) % n); }
+        }} />
+      <ul id={`${id}-list`} class="options" role="listbox" aria-label={t('search')} hidden={!show}>
+        {items?.map((page, i) => (
+          <li key={page.id} id={`${id}-${i}`} role="option" aria-selected={i === at} onMouseDown={(event) => event.preventDefault()} onClick={() => go(`/p/${page.project.slug}/${page.slug}`)}>
+            <bdi lang={page.lang}>{page.title}</bdi><span class="muted"><bdi>{page.project.name[lang]}</bdi></span>
+          </li>
+        ))}
+        {items?.length === 0 && <li class="muted" role="option" aria-disabled="true" aria-selected="false">{t('noMatches')}</li>}
+      </ul>
+    </form>
   );
 }
 

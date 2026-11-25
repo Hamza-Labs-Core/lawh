@@ -44,6 +44,8 @@ const TEXT = {
   project: ['Project', 'المشروع'],
   status: ['Status', 'الحالة'],
   tag: ['Tag', 'الوسم'],
+  search: ['Search', 'بحث'],
+  searchHint: ['Title, tag or text', 'عنوان أو وسم أو نص'],
   tagHint: ['Type a tag', 'كتابة وسم'],
   clearTag: ['Remove the tag filter', 'إزالة تصفية الوسم'],
   noTags: ['No tags', 'لا توجد وسوم'],

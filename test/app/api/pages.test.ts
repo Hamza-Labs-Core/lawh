@@ -74,7 +74,7 @@ describe('lists', () => {
     expect(await list('', mona.token)).toEqual(['e', 'c', 'a']);
   });
 
-  it.each(['?limit=0', '?limit=101', '?limit=x', '?limit=1.5', '?cursor=x', '?cursor=W10', '?status=gone', '?q=word'])('refuses %s', async (query) => {
+  it.each(['?limit=0', '?limit=101', '?limit=x', '?limit=1.5', '?cursor=x', '?cursor=W10', '?status=gone', `?q=${'x'.repeat(101)}`])('refuses %s', async (query) => {
     expect(await code(await call(`/v1/pages${query}`, { token }))).toEqual([422, 'invalid']);
   });
 
@@ -200,11 +200,11 @@ describe('queries', () => {
     await cleanUp({ ...env, DB }); await cleanUp({ ...env, DB }, Date.now() + 90_000_000);
     expect(seen.size).toBeGreaterThan(40);
     for (const query of seen) {
-      const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${query}`).bind(...Array(Math.max((query.match(/\?(?!\d)/g) ?? []).length, /\?2/.test(query) ? 2 : 0)).fill(null)).all<{ detail: string }>();
+      const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${query}`).bind(...Array((query.match(/\?(?!\d)/g) ?? []).length + Math.max(0, ...[...query.matchAll(/\?(\d+)/g)].map((m) => Number(m[1])))).fill(null)).all<{ detail: string }>();
       for (const { detail } of results) {
         // SQLite emits a guarded FkIfZero branch on webhook_deliveries(event_seq) for INSERT INTO events SELECT; never reached with AUTOINCREMENT.
         if (query.startsWith('INSERT INTO events(') && detail === 'SCAN webhook_deliveries USING INDEX webhook_deliveries_status') continue;
-        expect(/^SCAN (?!j\b|o VIRTUAL TABLE|json_each\b|CONSTANT ROW)/.test(detail) || detail.includes('TEMP B-TREE'), `${detail} | ${query}`).toBe(false);
+        expect(/^SCAN (?!j\b|json_each\b|CONSTANT ROW|\w+ VIRTUAL TABLE INDEX)/.test(detail) || detail.includes('TEMP B-TREE'), `${detail} | ${query}`).toBe(false);
       }
     }
   });

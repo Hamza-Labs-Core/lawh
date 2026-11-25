@@ -93,7 +93,8 @@ for (let i = 0; i < 40; i++) await db(`INSERT INTO pages(id,project_id,slug,titl
   await api(`/uploads/${upload.uploadId}/blobs/${file.sha256}`, { method: 'PUT', body: data });
   await api(`/uploads/${upload.uploadId}/commit`, { method: 'POST' });
 }
-await db("INSERT INTO pages(id,project_id,slug,title,created_by,created_at,updated_at) VALUES('second','p2','second','In the second project','a',1,5)", "INSERT INTO page_tags VALUES('second','second-only','p2',5)");
+await db("INSERT INTO pages(id,project_id,slug,title,created_by,created_at,updated_at) VALUES('second','p2','second','In the second project','a',1,5)", "INSERT INTO page_tags VALUES('second','second-only','p2',5)",
+  "INSERT INTO pages_fts_map(page_id) VALUES('second')", "INSERT INTO pages_fts(rowid,scope,title,summary,tags,body) SELECT rowid,'p7032 s6472616674 t' || lower(hex('second-only')),'In the second project','','second-only','zebra' FROM pages_fts_map WHERE page_id='second'");
 const [versions] = await db('SELECT p.slug, v.id FROM pages p JOIN page_versions v ON v.page_id = p.id AND v.n = p.current_version');
 for (const { slug, id } of versions) pages[slug] = id;
 ready = { pages, contentKey: CONTENT_KEY };

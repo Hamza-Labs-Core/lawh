@@ -3,6 +3,7 @@ import { invalid } from '../../shared/errors';
 import { type Project, projectsById } from '../api/auth';
 import type { PageRow } from '../api/pages';
 import { oneOf } from '../api/body';
+import { matchOf } from '../search';
 
 /** Lists for agents and for people: the same rows, over the projects the caller may see. */
 
@@ -58,21 +59,35 @@ export const STATUSES = ['draft', 'in_review', 'decided', 'archived'] as const;
 
 export interface PageList { items: { page: PageRow; project: Project; tags: string[] }[]; next: string | null }
 
-/** Pages by project, status and tag, newest first. `projects` null means every project. */
+/** Pages by project, status, tag and text (`q`), newest first. `projects` null means every project. */
 export async function listPageRows(env: AppEnv, url: URL, projects: Project[] | null): Promise<PageList> {
   const query = url.searchParams, limit = pageLimit(url), status = query.get('status');
   if (status !== null) oneOf(status, 'status', STATUSES);
   const tag = query.get('tag')?.trim().normalize('NFC') ?? null;
   const after = (readCursor(url, ['number', 'string']) ?? [Number.MAX_SAFE_INTEGER, '']) as [number, string];
+  const q = query.get('q');
+  if (q !== null) {
+    if ([...q].length > 100) throw invalid('q must be text of at most 100 characters.');
+    const match = matchOf(q, { projects: projects && projects.map((p) => p.id), status, tag });
+    // At most 100 matches, so there is nothing to continue.
+    const found = match === null ? [] : (await env.DB.prepare(`SELECT p.* FROM pages_fts f CROSS JOIN pages_fts_map m ON m.rowid = f.rowid CROSS JOIN pages p ON p.id = m.page_id AND p.deleted_at IS NULL
+      WHERE pages_fts MATCH ? ORDER BY f.rowid DESC LIMIT ?`).bind(match, limit).all<PageRow>()).results;
+    return list(env, found, projects, null);
+  }
   const queries = (projects ?? [null]).map((project) => listIn(env, project, status, tag, after, limit + 1));
   let rows = queries.length === 0 ? [] : (await env.DB.batch<PageRow>(queries)).flatMap((r) => r.results);
   if (queries.length > 1) rows.sort((a, b) => b.updated_at - a.updated_at || (a.id < b.id ? 1 : -1));
   const more = rows.length > limit;
   rows = rows.slice(0, limit);
+  const last = rows.at(-1);
+  return list(env, rows, projects, more && last ? encodeCursor([last.updated_at, last.id]) : null);
+}
+
+async function list(env: AppEnv, rows: PageRow[], projects: Project[] | null, next: string | null): Promise<PageList> {
   const byId = new Map((projects ?? await projectsById(env, rows.map((row) => row.project_id))).map((p) => [p.id, p]));
-  const tags = await tagsOf(env, rows.map((row) => row.id)), last = rows.at(-1);
+  const tags = await tagsOf(env, rows.map((row) => row.id));
   return {
     items: rows.map((page) => ({ page, project: byId.get(page.project_id)!, tags: tags.get(page.id) ?? [] })),
-    next: more && last ? encodeCursor([last.updated_at, last.id]) : null,
+    next,
   };
 }
