@@ -62,7 +62,7 @@ const keyId = `key_${'0'.repeat(26)}`, secret = randomBytes(32).toString('base64
 const mac = createHmac('sha256', PEPPER).update(`${keyId}:${createHash('sha256').update(secret).digest('hex')}`).digest('hex');
 await db(
   "INSERT INTO settings(key,value_json,updated_at) VALUES('instance','true',1),('teams','true',1)",
-  "INSERT INTO projects(id,slug,name_en,name_ar,created_at) VALUES('p1','one','One','واحد',1)",
+  "INSERT INTO projects(id,slug,name_en,name_ar,created_at) VALUES('p1','one','One','واحد',1),('p2','two','Two','اثنان',1)",
   "INSERT INTO members(id,name,role,created_at) VALUES('o','Owner','owner',1)", 'UPDATE members SET joined_at=1',
   "INSERT INTO agents(id,member_id,name,created_at) VALUES('a','o','bot',1)",
   `INSERT INTO agent_keys(id,agent_id,secret_hmac,scopes_json,all_projects,created_at,expires_at) VALUES('${keyId}','a','${mac}','["pages:read","pages:write"]',1,1,${Date.now() + 86_400_000})`,
@@ -93,6 +93,7 @@ for (let i = 0; i < 40; i++) await db(`INSERT INTO pages(id,project_id,slug,titl
   await api(`/uploads/${upload.uploadId}/blobs/${file.sha256}`, { method: 'PUT', body: data });
   await api(`/uploads/${upload.uploadId}/commit`, { method: 'POST' });
 }
+await db("INSERT INTO pages(id,project_id,slug,title,created_by,created_at,updated_at) VALUES('second','p2','second','In the second project','a',1,5)", "INSERT INTO page_tags VALUES('second','second-only','p2',5)");
 const [versions] = await db('SELECT p.slug, v.id FROM pages p JOIN page_versions v ON v.page_id = p.id AND v.n = p.current_version');
 for (const { slug, id } of versions) pages[slug] = id;
 ready = { pages, contentKey: CONTENT_KEY };

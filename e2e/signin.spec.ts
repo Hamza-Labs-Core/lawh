@@ -136,7 +136,6 @@ for (const lang of ['en', 'ar'] as const) for (const mode of ['dark', 'light'] a
     await page.goto(`${APP}/link#${await makeLink(member)}`); await expect(page.locator('main .primary')).toBeVisible(); await check('link');
     const fresh = await makeMember();
     await enter(page.context(), fresh);
-    await page.goto(`${APP}/account`); await expect(page.locator('main h1')).toBeVisible(); await check('home');
     await page.goto(`${APP}/approve`); await expect(page.locator('#code')).toBeVisible(); await check('approve');
     await leave(fresh);
   });

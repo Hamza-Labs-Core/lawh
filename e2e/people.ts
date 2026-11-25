@@ -18,10 +18,10 @@ export async function makeMember(name = 'Mona'): Promise<string> {
   return id;
 }
 
-/** Puts a member in a team of their own, with project `one`. */
-export async function join(member: string, level = 1): Promise<void> {
+/** Puts a member in a team of their own, with project `one` (and `two`). */
+export async function join(member: string, level = 1, both = false): Promise<void> {
   const team = `team_${randomUUID()}`;
-  await db(`INSERT INTO teams(id,name,created_at) VALUES('${team}','${team}',1)`, `INSERT INTO team_projects(team_id,project_id) VALUES('${team}','p1')`,
+  await db(`INSERT INTO teams(id,name,created_at) VALUES('${team}','${team}',1)`, `INSERT INTO team_projects(team_id,project_id) VALUES('${team}','p1')${both ? `,('${team}','p2')` : ''}`,
     `INSERT INTO team_members(team_id,member_id,level,set_by,set_at) VALUES('${team}','${member}',${level},'o',1)`);
 }
 

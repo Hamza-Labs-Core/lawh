@@ -67,6 +67,8 @@ Q = {
  "library by project+status": "SELECT id FROM pages WHERE project_id=? AND status=? AND deleted_at IS NULL ORDER BY updated_at DESC,id DESC LIMIT 30",
  "library by tag": "SELECT p.id FROM page_tags t JOIN pages p ON p.id=t.page_id WHERE t.tag=? AND (t.sort_at,t.page_id)<(?,?) AND p.deleted_at IS NULL ORDER BY t.sort_at DESC,t.page_id DESC LIMIT 30",
  "library by project+tag": "SELECT p.id FROM page_tags t JOIN pages p ON p.id=t.page_id WHERE t.project_id=? AND t.tag=? AND p.deleted_at IS NULL ORDER BY t.sort_at DESC,t.page_id DESC LIMIT 30",
+ "next tag in project": "SELECT pt.tag FROM page_tags pt CROSS JOIN pages p ON p.id=pt.page_id AND p.deleted_at IS NULL WHERE pt.project_id=? AND pt.tag>? AND pt.tag<? ORDER BY pt.tag LIMIT 1",
+ "next tag anywhere": "SELECT pt.tag FROM page_tags pt CROSS JOIN pages p ON p.id=pt.page_id AND p.deleted_at IS NULL WHERE pt.tag>? AND pt.tag<? ORDER BY pt.tag LIMIT 1",
  "page by slug": "SELECT * FROM pages WHERE project_id=? AND slug=?",
  "versions": "SELECT n FROM page_versions WHERE page_id=? ORDER BY n DESC LIMIT 50",
  "serve file": "SELECT f.path,f.media_type,f.sha256,f.bytes,b.r2_key FROM page_versions v JOIN pages p ON p.id=v.page_id AND p.deleted_at IS NULL LEFT JOIN version_files f ON f.version_id=v.id AND f.path=? LEFT JOIN blobs b ON b.sha256=f.sha256 WHERE v.id=?",

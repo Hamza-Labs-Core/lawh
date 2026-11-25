@@ -9,7 +9,16 @@ import { StatusMark } from './Library';
 export function PageView({ project, slug, search }: { project: string; slug: string; search: string }) {
   const t = useText(), { lang, mode } = useSettings(), asked = new URLSearchParams(search).get('v'), path = `/projects/${project}/pages/${slug}`;
   const [page, setPage] = useState<Reading | 'gone' | 'offline' | 'wait' | 'failed' | null>(null), [tries, setTries] = useState(0), [slow, setSlow] = useState(false), [versions, setVersions] = useState<HTMLElement | null>(null), [link, setLink] = useState<string | null>(null);
-  const frame = useRef<HTMLIFrameElement>(null), ready = useRef(false);
+  const frame = useRef<HTMLIFrameElement>(null), ready = useRef(false), theme = useRef({ mode, lang });
+  theme.current = { mode, lang };
+  // A page can send messages whenever it likes, so a link it wants to open is shown only when nothing else is, and
+  // after each dialog that was closed it has to wait longer: it can't change an address under a finger or trap the tab.
+  const quiet = useRef({ until: 0, wait: 1000 }), dialogOpen = useRef(false);
+  dialogOpen.current = link !== null || versions !== null;
+  const closeLink = () => { quiet.current = { until: Date.now() + quiet.current.wait, wait: Math.min(quiet.current.wait * 2, 60_000) }; setLink(null); };
+  const closeVersions = () => { quiet.current.until = Math.max(quiet.current.until, Date.now() + 1000); setVersions(null); };
+  // The frame's origin is opaque, so there is no name to send to; nothing in the message is secret.
+  const sendTheme = () => frame.current?.contentWindow?.postMessage({ type: 'lawh:theme', ...theme.current }, '*');
 
   useEffect(() => {
     const stop = new AbortController();
@@ -26,15 +35,15 @@ export function PageView({ project, slug, search }: { project: string; slug: str
     const timer = setTimeout(() => { if (!ready.current) setSlow(true); }, 10_000);
     const onMessage = (event: MessageEvent) => {
       const message = readBridgeMessage(event, frame.current?.contentWindow);
-      if (message?.type === 'open-link') setLink(message.url);
-      if (message?.type === 'outline') { ready.current = true; setSlow(false); }
+      if (message?.type === 'open-link' && !dialogOpen.current && Date.now() >= quiet.current.until) { dialogOpen.current = true; setLink(message.url); }
+      // The bridge listens now: what changed while the page loaded is sent again.
+      if (message?.type === 'outline') { ready.current = true; setSlow(false); sendTheme(); }
     };
     addEventListener('message', onMessage);
     return () => { clearTimeout(timer); removeEventListener('message', onMessage); };
   }, [url]);
 
-  // The frame's origin is opaque, so there is no name to send to; nothing in the message is secret.
-  useEffect(() => { frame.current?.contentWindow?.postMessage({ type: 'lawh:theme', mode, lang }, '*'); }, [mode, lang]);
+  useEffect(() => { sendTheme(); }, [mode, lang]);
 
   if (page === null) return <p class="muted" role="status">{t('loading')}</p>;
   if (page === 'gone') return <section class="card narrow"><Heading>{t('app')}</Heading><p role="status">{t('pageGone')}</p><Link class="plain as-button" to="/">{t('pages')}</Link></section>;
@@ -54,8 +63,8 @@ export function PageView({ project, slug, search }: { project: string; slug: str
       {old && <p class="notice" role="status"><Fill text="oldVersion" n={digits(lang, page.version.n)} current={digits(lang, page.currentVersion)} /> <Link to={`/p/${project}/${slug}`}>{t('toCurrent')}</Link></p>}
       {slow && <p class="notice" role="status">{t('slow')} <button class="text" onClick={() => setTries(tries + 1)}>{t('reload')}</button></p>}
       <iframe key={page.frame} ref={frame} class="page-frame" title={translate(lang, 'pageFrame', { title: page.title })} sandbox="allow-scripts" referrerpolicy="no-referrer" src={page.frame} />
-      {versions && <Versions path={path} project={project} slug={slug} shown={page.version.n} current={page.currentVersion} returnTo={versions} onClose={() => setVersions(null)} />}
-      {link !== null && <LeaveDialog url={link} returnTo={frame.current} onClose={() => setLink(null)} />}
+      {versions && <Versions path={path} project={project} slug={slug} shown={page.version.n} current={page.currentVersion} returnTo={versions} onClose={closeVersions} />}
+      {link !== null && <LeaveDialog url={link} returnTo={frame.current} onClose={closeLink} />}
     </div>
   );
 }
@@ -104,7 +113,7 @@ function Versions({ path, project, slug, shown, current, returnTo, onClose }: { 
       <ul class="versions">
         {list?.items.map((v) => (
           <li key={v.n}>
-            <Link to={`/p/${project}/${slug}${v.n === current ? '' : `?v=${v.n}`}`} current={v.n === shown}>
+            <Link to={`/p/${project}/${slug}${v.n === current ? '' : `?v=${v.n}`}`} current={v.n === shown} onGo={v.n === shown ? onClose : undefined}>
               <strong><Fill text="version" n={digits(lang, v.n)} /></strong>{v.n === current && <span class="status decided">{t('current')}</span>}
               <span class="muted"><Fill text="by" agent={v.publishedBy} date={day(lang, v.createdAt)} /></span>
               {v.note && <span><bdi>{v.note}</bdi></span>}

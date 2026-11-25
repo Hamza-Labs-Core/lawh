@@ -22,18 +22,38 @@ export async function listMyPages(ctx: SignedIn): Promise<Response> {
   return Response.json({ items: items.map(({ page, project, tags }) => pageJson(project, page, tags)), next });
 }
 
-/** The tags in use, for the filter: those that start with `q`, 50 at most. Each is one index seek, however many pages have it. */
+/** The first text, in the database's order, that doesn't start with `prefix`; null when there is none. */
+function afterPrefix(prefix: string): string | null {
+  const points = [...prefix].map((c) => c.codePointAt(0)!);
+  while (points.length > 0) {
+    const last = points.pop()!;
+    // Past the surrogates, which aren't characters.
+    if (last < 0x10FFFF) return String.fromCodePoint(...points, last === 0xD7FF ? 0xE000 : last + 1);
+  }
+  return null;
+}
+
+/** By code point, as the database sorts; JavaScript's own order differs past U+FFFF. */
+function byCodePoint(a: string, b: string): number {
+  const x = [...a], y = [...b];
+  for (let i = 0; i < Math.min(x.length, y.length); i++) if (x[i] !== y[i]) return x[i]!.codePointAt(0)! - y[i]!.codePointAt(0)!;
+  return x.length - y.length;
+}
+
+/** The tags in use on pages that aren't deleted, for the filter: those that start with `q`, 50 at most. Each is found by an index seek, however many pages have it. */
 export async function listMyTags(ctx: SignedIn): Promise<Response> {
-  const { env, person, url } = ctx, slug = url.searchParams.get('project'), q = (url.searchParams.get('q') ?? '').trim().normalize('NFC').slice(0, 40);
-  const projects = slug !== null ? [(await openProject(env, person, slug, 1)).project] : await visibleProjects(env, person);
-  const end = `${q}\u{10FFFF}`;
-  const batches: D1PreparedStatement[] = projects.slice(0, 100).map((p) => env.DB.prepare(
-    `WITH RECURSIVE t(tag) AS (
-       SELECT MIN(tag) FROM page_tags WHERE project_id = ?1 AND tag >= ?2 AND tag < ?3
-       UNION ALL SELECT (SELECT MIN(tag) FROM page_tags WHERE project_id = ?1 AND tag > t.tag AND tag < ?3) FROM t WHERE t.tag IS NOT NULL LIMIT 51)
-     SELECT tag FROM t WHERE tag IS NOT NULL`).bind(p.id, q, end));
-  const found = batches.length === 0 ? [] : (await env.DB.batch<{ tag: string }>(batches)).flatMap((r) => r.results.map((row) => row.tag));
-  return Response.json({ items: [...new Set(found)].sort((a, b) => a.localeCompare(b)).slice(0, 50) });
+  const { env, person, url } = ctx, slug = url.searchParams.get('project');
+  const q = [...(url.searchParams.get('q') ?? '').trim().normalize('NFC')].slice(0, 40).join('').toWellFormed(), end = afterPrefix(q);
+  const query = (project: string | null): D1PreparedStatement => {
+    const next = (from: string) => `(SELECT pt.tag FROM page_tags pt CROSS JOIN pages p ON p.id = pt.page_id AND p.deleted_at IS NULL
+      WHERE ${project === null ? '' : 'pt.project_id = ?3 AND '}pt.tag ${from}${end === null ? '' : ' AND pt.tag < ?2'} ORDER BY pt.tag LIMIT 1)`;
+    return env.DB.prepare(`WITH RECURSIVE t(tag) AS (SELECT ${next('>= ?1')} UNION ALL SELECT ${next('> t.tag')} FROM t WHERE t.tag IS NOT NULL LIMIT 51) SELECT tag FROM t WHERE tag IS NOT NULL AND ?2 IS ?2`)
+      .bind(q, end, ...(project === null ? [] : [project]));
+  };
+  // The owner's is one query over every project; anyone else's is one for each of at most 50.
+  const projects = slug !== null ? [(await openProject(env, person, slug, 1)).project.id] : person.isOwner ? [null] : (await visibleProjects(env, person)).map((p) => p.id);
+  const found = projects.length === 0 ? [] : (await env.DB.batch<{ tag: string }>(projects.map(query))).flatMap((r) => r.results.map((row) => row.tag));
+  return Response.json({ items: [...new Set(found)].sort(byCodePoint).slice(0, 50) });
 }
 
 /** A page to read: its details, the version asked for, and the address for its sandboxed frame. */

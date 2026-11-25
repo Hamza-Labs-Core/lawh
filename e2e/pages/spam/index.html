@@ -1,0 +1,5 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Spam</title></head><body><h1>Spam</h1>
+<script>
+let n = 0;
+setInterval(() => { n++; document.title = String(n); parent.postMessage({ type: 'lawh:open-link', url: n === 1 ? 'https://docs.example.com/safe' : 'https://evil.example.com/' + n }, '*'); }, 50);
+</script></body></html>

@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'preact/hooks';
-import { call, type Listed, type PageItem, problemOf, type ProjectName, type Status } from '../api';
-import { Failure, Fill, go, Heading, Link, useBusy, useSettings, useText } from '../app';
+import { call, CallError, type Listed, type PageItem, problemOf, type ProjectName, type Status } from '../api';
+import { Failure, Fill, go, Heading, Link, useSettings, useText } from '../app';
 import { day, digits } from '../i18n';
 
 const STATUSES: Status[] = ['draft', 'in_review', 'decided', 'archived'];
@@ -14,23 +14,39 @@ export const StatusMark = ({ status }: { status: Status }) => <span class={`stat
 
 /** Pages, newest first, by project, status and tag. The filters are in the address, so Back and a shared link keep them. */
 export function Library({ search }: { search: string }) {
-  const t = useText(), { lang } = useSettings(), [busy, run] = useBusy(), filters = readFilters(search), query = queryOf(filters);
-  const [projects, setProjects] = useState<ProjectName[] | null>(null), [list, setList] = useState<Listed<PageItem> | null>(null), [problem, setProblem] = useState<'offline' | 'wait' | 'failed' | null>(null), [tries, setTries] = useState(0);
+  const t = useText(), { lang } = useSettings(), filters = readFilters(search), query = queryOf(filters);
+  const [projects, setProjects] = useState<ProjectName[] | null>(null), [list, setList] = useState<Listed<PageItem> | null>(null), [tries, setTries] = useState(0);
+  const [problem, setProblem] = useState<'offline' | 'wait' | 'failed' | 'filter' | null>(null);
+  // Ends with the list it belongs to: "Show more" of an old list must not touch the new one.
+  const stopList = useRef(new AbortController());
+  // On their own: the filters are there even when a filter in the address is wrong.
+  useEffect(() => {
+    if (projects !== null) return;
+    const stop = new AbortController();
+    call<Listed<ProjectName>>('GET', '/projects', undefined, stop.signal).then((r) => setProjects(r.items), () => undefined);
+    return () => stop.abort();
+  }, [tries]);
   useEffect(() => {
     const stop = new AbortController();
-    setList(null); setProblem(null);
-    void Promise.all([projects ? null : call<Listed<ProjectName>>('GET', '/projects', undefined, stop.signal), call<Listed<PageItem>>('GET', `/pages${query && `?${query}`}`, undefined, stop.signal)])
-      .then(([p, pages]) => { if (p) setProjects(p.items); setList(pages); })
-      .catch((error: unknown) => { if (!stop.signal.aborted) setProblem(problemOf(error)); });
+    stopList.current = stop;
+    setList(null); setProblem(null); setLoadingMore(false);
+    call<Listed<PageItem>>('GET', `/pages${query && `?${query}`}`, undefined, stop.signal).then(setList, (error: unknown) => {
+      if (!stop.signal.aborted) setProblem(query && error instanceof CallError && (error.status === 404 || error.status === 422) ? 'filter' : problemOf(error));
+    });
     return () => stop.abort();
   }, [query, tries]);
   const set = (change: Partial<Filters>) => { const next = queryOf({ ...filters, ...change }); go(next ? `/?${next}` : '/'); };
-  const more = () => run(async () => {
+  const [loadingMore, setLoadingMore] = useState(false);
+  const more = async () => {
+    const { signal } = stopList.current;
+    if (loadingMore) return;
+    setLoadingMore(true); setProblem(null);
     try {
-      const next = await call<Listed<PageItem>>('GET', `/pages?${query}&cursor=${list!.next!}`);
-      setList((now) => (now === list ? { items: [...now!.items, ...next.items], next: next.next } : now));
-    } catch (error) { setProblem(problemOf(error)); }
-  });
+      const next = await call<Listed<PageItem>>('GET', `/pages?${query}&cursor=${list!.next!}`, undefined, signal);
+      if (!signal.aborted) setList((now) => ({ items: [...now!.items, ...next.items], next: next.next }));
+    } catch (error) { if (!signal.aborted) setProblem(problemOf(error)); }
+    if (!signal.aborted) setLoadingMore(false);
+  };
   return (
     <>
       <Heading>{t('pages')}</Heading>
@@ -43,6 +59,7 @@ export function Library({ search }: { search: string }) {
       )}
       <div aria-live="polite">
         {list === null && !problem && <p class="muted">{t('loading')}</p>}
+        {problem === 'filter' && <div class="card empty"><p>{t('badFilter')}</p><button class="plain" onClick={() => go('/')}>{t('clear')}</button></div>}
         {list?.items.length === 0 && (
           <div class="card empty">
             <p>{t(query ? 'noMatches' : projects?.length === 0 ? 'noProjects' : 'noPages')}</p>
@@ -64,8 +81,8 @@ export function Library({ search }: { search: string }) {
           </li>
         ))}
       </ul>
-      {problem && <><Failure>{t(problem)}</Failure><button class="plain" onClick={() => setTries(tries + 1)}>{t('retry')}</button></>}
-      {list?.next && <button class="plain wide" disabled={busy} onClick={more}>{t('more')}</button>}
+      {problem && problem !== 'filter' && <><Failure>{t(problem)}</Failure>{list === null && <button class="plain" onClick={() => setTries(tries + 1)}>{t('retry')}</button>}</>}
+      {list?.next && <button class="plain wide" disabled={loadingMore} onClick={() => void more()}>{t('more')}</button>}
     </>
   );
 }
@@ -85,7 +102,15 @@ function Choice({ label, value, options, onChange }: { label: string; value: str
 /** A live list of the tags in use, narrowed while typing. */
 function TagFilter({ project, value, onChange }: { project: string; value: string; onChange: (value: string) => void }) {
   const t = useText(), id = useId(), [text, setText] = useState(''), [items, setItems] = useState<string[] | null>(null), [open, setOpen] = useState(false), [at, setAt] = useState(-1);
-  const box = useRef<HTMLDivElement>(null), input = useRef<HTMLInputElement>(null);
+  const box = useRef<HTMLDivElement>(null), refocus = useRef(false);
+  // Another project has other tags.
+  useEffect(() => setItems(null), [project]);
+  // Choosing and clearing swap the field for a button and back; the focus goes along.
+  useEffect(() => {
+    if (refocus.current) box.current?.querySelector<HTMLElement>('.field')?.focus();
+    refocus.current = false;
+  }, [value]);
+  useEffect(() => { if (at >= 0) document.getElementById(`${id}-${at}`)?.scrollIntoView({ block: 'nearest' }); }, [at]);
   useEffect(() => {
     if (!open) return;
     const stop = new AbortController();
@@ -95,26 +120,26 @@ function TagFilter({ project, value, onChange }: { project: string; value: strin
     }, 120);
     return () => { clearTimeout(timer); stop.abort(); };
   }, [text, project, open]);
-  const choose = (tag: string) => { setOpen(false); setText(''); onChange(tag); };
+  const choose = (tag: string) => { setOpen(false); setText(''); refocus.current = true; onChange(tag); };
   if (value) {
     return (
-      <div class="choice">
+      <div class="choice" ref={box}>
         <span class="muted">{t('tag')}</span>
-        <button class="field chosen" aria-label={`${t('clearTag')}: ${value}`} onClick={() => onChange('')}><bdi>{value}</bdi><span aria-hidden="true">×</span></button>
+        <button class="field chosen" aria-label={`${t('clearTag')}: ${value}`} onClick={() => { refocus.current = true; onChange(''); }}><bdi>{value}</bdi><span aria-hidden="true">×</span></button>
       </div>
     );
   }
   return (
     <div class="choice" ref={box} onFocusOut={(event) => { if (!box.current?.contains(event.relatedTarget as Node | null)) setOpen(false); }}>
       <label class="muted" for={id}>{t('tag')}</label>
-      <input id={id} ref={input} class="field" role="combobox" aria-expanded={open} aria-controls={`${id}-list`} aria-autocomplete="list" aria-activedescendant={open && at >= 0 ? `${id}-${at}` : undefined}
-        autocomplete="off" placeholder={t('tagHint')} value={text} onFocus={() => setOpen(true)} onClick={() => setOpen(true)}
+      <input id={id} class="field" role="combobox" aria-expanded={open && items !== null} aria-controls={`${id}-list`} aria-autocomplete="list" aria-activedescendant={open && at >= 0 ? `${id}-${at}` : undefined}
+        autocomplete="off" placeholder={t('tagHint')} value={text} onFocus={() => { if (!refocus.current) setOpen(true); }} onClick={() => setOpen(true)}
         onInput={(event) => { setText(event.currentTarget.value); setOpen(true); }}
         onKeyDown={(event) => {
           const n = items?.length ?? 0;
           if (event.key === 'Escape') setOpen(false);
           else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setOpen(true); if (n > 0) setAt((at + (event.key === 'ArrowDown' ? 1 : n + (at < 0 ? 0 : -1))) % n); }
-          else if (event.key === 'Enter' && open) { event.preventDefault(); const tag = items?.[at] ?? items?.find((i) => i === text.trim()); if (tag) choose(tag); }
+          else if (event.key === 'Enter' && open) { event.preventDefault(); const tag = items?.[at] ?? items?.find((i) => i === text.trim().normalize('NFC')); if (tag) choose(tag); }
         }} />
       <ul id={`${id}-list`} class="options" role="listbox" aria-label={t('tag')} hidden={!open || items === null}>
         {items?.map((tag, i) => <li key={tag} id={`${id}-${i}`} role="option" aria-selected={i === at} onMouseDown={(event) => event.preventDefault()} onClick={() => choose(tag)}><bdi>{tag}</bdi></li>)}

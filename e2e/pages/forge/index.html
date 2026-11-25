@@ -7,5 +7,6 @@ send({ type: 'lawh:outline', items: Array(1000).fill({ id: 'a', title: 'x', leve
 send({ type: 'lawh:open-link', url: 'javascript:alert(1)' });
 send({ type: 'lawh:scroll-state', top: 'x', height: {}, view: -1 });
 postMessage({ type: 'lawh:theme', mode: 'light', lang: 'ar' }, '*');
+document.body.append(Object.assign(document.createElement('p'), { textContent: 'sent' }));
 setTimeout(() => send({ type: 'result', result: document.documentElement.dataset.lawhMode }), 500);
 </script></body></html>
