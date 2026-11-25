@@ -16,7 +16,7 @@ pnpm lawh init
 
 1. Asks for the instance name (en and ar) and hosts: `workers.dev` (default) or the owner's domain.
 2. Shows everything it will create, with the cost notes, and waits for a yes.
-3. Creates D1, R2, the queue and the Durable Object class, and generates the secrets on that machine.
+3. Creates D1, R2 and the queue, writes the Durable Object class into the generated Wrangler config (step 4 creates it), and generates the secrets on that machine.
 4. Applies migrations and deploys both Workers with the `instance` switch off.
 5. Asks for the owner's display name, creates the first project, turns the switch on after a yes, and runs `lawh owner setup`.
 
@@ -39,7 +39,7 @@ To use it, the owner tells an agent to connect ([README](README.md) section 3). 
 
 ## Upgrades
 
-`git pull && pnpm install && pnpm lawh upgrade`. It lists the pending migrations, records a D1 Time Travel bookmark and both Workers' current version ids, applies the migrations, deploys and checks both hosts. If a migration fails, it prints the one command that restores the bookmark. It doesn't use `wrangler d1 export`, which doesn't give a dump D1 can import again when the database has a virtual table such as the search index. Migrations only add or backfill, so the previous release still works on the new schema; `lawh rollback` puts each Worker back to its recorded version id, even if the upgrade stopped between the two. Breaking API changes get a new version (`/v2`), and releases follow semantic versioning with a changelog.
+`git pull && pnpm install && pnpm lawh upgrade`. It lists the pending migrations, records a D1 Time Travel bookmark and both Workers' current version ids, applies the migrations, deploys and checks both hosts. If a migration fails, it prints the one command that restores the bookmark. It doesn't use `wrangler d1 export`, which doesn't give a dump D1 can import again when the database has a virtual table such as the search index. Migrations only add or backfill, so the previous release still works on the new schema; `lawh rollback` puts each Worker back to its recorded version id, even if the upgrade stopped between the two. Cloudflare refuses a rollback across a Durable Object migration, so the class exists from the first release and no later release adds, renames or removes one. Breaking API changes get a new version (`/v2`), and releases follow semantic versioning with a changelog.
 
 ## Removal
 

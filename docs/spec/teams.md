@@ -55,7 +55,7 @@ In the two rows about page status and agents, "manager" means a manager of a tea
   - What was decided stays until enough people agree on another option. Someone changing their mind alone, or leaving, doesn't reopen it, but shows in the history.
   - With more than one person needed, an answer must choose an option; notes are extra.
   - A change of the number applies from the next answer. It decides nothing and reopens nothing by itself.
-  - If a project needs more people than can answer on it, Settings and the decision say so ("Needs 3 people, only 2 can answer").
+  - If a project needs more people than can answer on it, Settings and the decision say so ("Needs 3 people, only 2 can answer"). Each person counts once, however many teams they are in, and the owner counts.
 - "Open decisions" shows a person only what they may answer. Those they answered that still need others are under "Waiting for others". Below decider, decisions are read only.
 
 ## Agents in a team
