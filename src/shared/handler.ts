@@ -4,13 +4,21 @@ import { isOn } from './switches';
 
 type Route<E> = (request: Request, env: E, ctx: ExecutionContext) => Promise<Response> | Response;
 
+/** For a failure in building the host's own headers. */
+const FALLBACK_HEADERS = {
+  'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'; sandbox",
+  'X-Robots-Tag': 'noindex, nofollow',
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
+};
+
 /** Adds the host's headers. A route may set its own CSP or caching; nothing else of it is kept. */
 function withHeaders(response: Response, headers: Record<string, string>): Response {
   const result = new Response(response.body, response);
   for (const [name, value] of Object.entries(headers)) {
-    if (name !== 'Content-Security-Policy' || !result.headers.has(name)) result.headers.set(name, value);
+    if (name.toLowerCase() !== 'content-security-policy' || !result.headers.get(name)) result.headers.set(name, value);
   }
-  if (!result.headers.has('Cache-Control')) result.headers.set('Cache-Control', 'no-store');
+  if (!result.headers.get('Cache-Control')) result.headers.set('Cache-Control', 'no-store');
   return result;
 }
 
@@ -28,7 +36,12 @@ export function guarded<E extends SharedEnv>(route: Route<E>, headers: (env: E) 
     } catch (error) {
       // The name only: a message can hold page text, and logs must not.
       console.error('unhandled', error instanceof Error ? error.name : typeof error);
-      return withHeaders(errorResponse('internal', 'Something went wrong.'), headers(env));
+      const failure = () => errorResponse('internal', 'Something went wrong.');
+      try {
+        return withHeaders(failure(), headers(env));
+      } catch {
+        return withHeaders(failure(), FALLBACK_HEADERS);
+      }
     }
   };
 }
