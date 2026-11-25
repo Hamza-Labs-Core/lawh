@@ -20,27 +20,13 @@ const isBitmap = (value: unknown): value is ImageBitmap => typeof ImageBitmap !=
 /** Frees the pixels of a picture that won't be shown: they are the browser's memory, not only this page's. */
 export function discard(picture: Picture): void { if (picture.kind === 'bitmap') picture.bitmap.close(); }
 
-/** Every bitmap in a message, wherever the page put it. A page that hides them behind very many other values only slows itself. */
-function bitmapsIn(data: unknown): Set<ImageBitmap> {
-  const found = new Set<ImageBitmap>(), seen = new Set<unknown>(), queue: unknown[] = [data];
-  for (let i = 0; i < queue.length && i < 10_000; i++) {
-    const value = queue[i];
-    if (!isObject(value) || seen.has(value)) continue;
-    seen.add(value);
-    if (isBitmap(value)) found.add(value);
-    else if (value instanceof Map) queue.push(...[...value.keys(), ...value.values()].slice(0, 10_000));
-    else if (value instanceof Set) queue.push(...[...value].slice(0, 10_000));
-    else if (!ArrayBuffer.isView(value)) queue.push(...Object.values(value).slice(0, 10_000));
-  }
-  return found;
-}
-
 export function readBridgeMessage(event: { source: unknown; data: unknown }, frame: unknown): BridgeMessage | null {
   if (!isObject(event.data)) return null;
   const message = frame && event.source === frame ? read(event.data) : null;
   const kept = message?.type === 'open-media' && message.picture.kind === 'bitmap' ? message.picture.bitmap : null;
-  // Also those sent along with a message that has no use for them.
-  for (const bitmap of bitmapsIn(event.data)) if (bitmap !== kept) bitmap.close();
+  // The one place a picture is read from. A page can hide others, or any other data, elsewhere in a message: nothing
+  // keeps those, so the browser frees them, and looking for them would be work a page could make endless.
+  if (isBitmap(event.data.bitmap) && event.data.bitmap !== kept) event.data.bitmap.close();
   return message;
 }
 

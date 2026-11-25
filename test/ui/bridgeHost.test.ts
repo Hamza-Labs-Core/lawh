@@ -68,22 +68,11 @@ it('tells an answer to the arrows from what was pressed in the page', () => {
   expect([true, false, 'true', 1, undefined].map((value) => (asked(value) as { asked: boolean }).asked)).toEqual([true, false, false, false, false]);
 });
 
-it('frees a bitmap wherever it is in a message, once, and keeps the one that is shown', () => {
-  class FakeBitmap { closed = 0; width = 1; height = 1; close() { this.closed++; } }
-  vi.stubGlobal('ImageBitmap', FakeBitmap);
-  try {
-    const scroll = { type: 'lawh:scroll-state', top: 0, height: 1, view: 1 };
-    const places: ((b: unknown) => unknown)[] = [(b) => b, (b) => [b], (b) => ({ ...scroll, extra: b }), (b) => ({ ...scroll, a: { b: [{ c: b }, b] } }), (b) => ({ ...scroll, m: new Map([['k', b]]) }), (b) => ({ ...scroll, m: new Map([[b, 1]]) }), (b) => ({ ...scroll, s: new Set([b]) }),
-      (b) => { const loop: Record<string, unknown> = { b }; loop.self = loop; return loop; }];
-    for (const place of places) {
-      const bitmap = new FakeBitmap();
-      read(place(bitmap));
-      expect(bitmap.closed).toBe(1);
-    }
-    const shown = new FakeBitmap(), hidden = new FakeBitmap();
-    expect(read({ type: 'lawh:open-media', index: 0, total: 1, label: '', background: 'rgb(0, 0, 0)', kind: 'bitmap', bitmap: shown, again: shown, more: [hidden] })).not.toBeNull();
-    expect([shown.closed, hidden.closed]).toEqual([0, 1]);
-  } finally { vi.unstubAllGlobals(); }
+it('does not look through a message: however large it is, only the known fields are read', () => {
+  const read1 = vi.fn(() => 'x'), data = { type: 'lawh:scroll-state', top: 0, height: 1, view: 1 };
+  Object.defineProperty(data, 'more', { enumerable: true, get: read1 });
+  expect(read(data)).not.toBeNull();
+  expect(read1).not.toHaveBeenCalled();
 });
 
 it('frees a bitmap sent along with a message that has no use for it', () => {
