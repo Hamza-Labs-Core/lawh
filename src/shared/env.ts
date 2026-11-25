@@ -2,6 +2,10 @@
 export interface SharedEnv {
   DB: D1Database;
   FILES: R2Bucket;
+  APP_ORIGIN: string;
+  CONTENT_ORIGIN: string;
+  /** Signs content addresses. */
+  CONTENT_KEY: SecretsStoreSecret | string;
 }
 
 export interface AppEnv extends SharedEnv {

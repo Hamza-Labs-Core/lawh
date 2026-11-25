@@ -1,0 +1,11 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Forge</title></head><body><h1>Forge</h1>
+<script>
+const send = (data) => parent.postMessage(data, '*');
+for (const type of ['lawh:answer', 'lawh:comment', 'lawh:api', 'answer']) send({ type, option: 'a', decision: 'd', body: 'x', path: '/app-api/answer' });
+send({ type: 'lawh:outline', items: [{ id: 'a', title: '<img src=x onerror=alert(1)>', level: 1 }] });
+send({ type: 'lawh:outline', items: Array(1000).fill({ id: 'a', title: 'x', level: 1 }) });
+send({ type: 'lawh:open-link', url: 'javascript:alert(1)' });
+send({ type: 'lawh:scroll-state', top: 'x', height: {}, view: -1 });
+postMessage({ type: 'lawh:theme', mode: 'light', lang: 'ar' }, '*');
+setTimeout(() => send({ type: 'result', result: document.documentElement.dataset.lawhMode }), 500);
+</script></body></html>

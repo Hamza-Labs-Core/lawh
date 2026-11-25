@@ -16,3 +16,5 @@ node_modules/
 /wrangler.content.toml
 *.log
 .DS_Store
+test-results/
+playwright-report/

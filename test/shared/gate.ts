@@ -10,7 +10,7 @@ const result = async (response: Response) => [response.status, (await response.j
 const OFF = [404, 'feature_off'];
 
 /** Every route of a Worker is closed until the `instance` switch is on. */
-export function gateTests(requiredHeaders: Record<string, RegExp>) {
+export function gateTests(requiredHeaders: Record<string, RegExp>, allowOrigin: string | null = null) {
   describe('instance switch', () => {
     it.each(PATHS)('is off by default: %s answers 404 feature_off', async (path) => {
       expect(await result(await call(path))).toEqual(OFF);
@@ -54,7 +54,7 @@ export function gateTests(requiredHeaders: Record<string, RegExp>) {
       for (const [name, value] of Object.entries(requiredHeaders)) expect(response.headers.get(name), name).toMatch(value);
       expect(response.headers.get('Cache-Control')).toBe('no-store');
       expect(response.headers.get('Set-Cookie')).toBeNull();
-      expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
+      expect(response.headers.get('Access-Control-Allow-Origin')).toBe(allowOrigin);
     });
   });
 }

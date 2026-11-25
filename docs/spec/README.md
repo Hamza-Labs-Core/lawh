@@ -21,7 +21,7 @@ Lawh (لوح, a writing tablet) is a private, self-hosted place where agents pub
 
 ## 2. What exists today
 
-S1: both Workers (closed by the `instance` switch), the D1 schema as migration 0001, and CI. S2: agent keys and the publish API (search and decisions in it come with S9 and S7). There is no earlier code to reuse or migrate.
+S1: both Workers (closed by the `instance` switch), the D1 schema as migration 0001, and CI. S2: agent keys and the publish API (search and decisions in it come with S9 and S7). S3: the content Worker, its tokens, sandbox and bridge (images and charts open full size with S6). There is no earlier code to reuse or migrate.
 
 ## 3. How it works
 
