@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { call, CallError, type Listed, problemOf, type Reading, type Version } from '../api';
 import { Failure, Fill, go, Heading, Link, useBusy, useSettings, useText, wasInside } from '../app';
 import { discard, type Media, readBridgeMessage } from '../bridgeHost';
 import { day, digits, translate } from '../i18n';
 import { StatusMark } from './Library';
-import { Viewer } from './Viewer';
+import { taken, Viewer } from './Viewer';
 
 const CALM = { closedAt: 0, again: 0 };
 
@@ -14,45 +14,56 @@ export function PageView({ project, slug, search }: { project: string; slug: str
   const [page, setPage] = useState<Reading | 'gone' | 'offline' | 'wait' | 'failed' | null>(null), [tries, setTries] = useState(0), [slow, setSlow] = useState(false), [versions, setVersions] = useState<HTMLElement | null>(null), [link, setLink] = useState<string | null>(null), [media, setMedia] = useState<Media | null>(null);
   const frame = useRef<HTMLIFrameElement>(null), ready = useRef(false), theme = useRef({ mode, lang });
   theme.current = { mode, lang };
-  // A page can send messages whenever it likes, so what it wants to open is shown only right after the person did
-  // something in it (the browser knows), and only when nothing else is open: it can't change an address under a finger.
-  // One that keeps coming back after it was closed is offered to be stopped, as browsers do with their own dialogs.
+  // A page can send messages whenever it likes, so what it wants to open is shown only while the browser counts the
+  // person as active and the page has the focus, and only when nothing else is open: it can't change an address under a
+  // finger. A page can still claim the focus after a click in the app, and nothing tells that from a person for sure.
+  // So one that comes back soon after it was closed is offered to be stopped, as browsers do with their own dialogs.
   const opening = useRef({ ...CALM }), dialogOpen = useRef(false), [blocked, setBlocked] = useState(false), [pushy, setPushy] = useState(false);
-  const blockedNow = useRef(false), shown = useRef<number | null>(null);
+  const blockedNow = useRef(false), shown = useRef<number | null>(null), pressed = useRef(0), refocus = useRef(0);
   blockedNow.current = blocked;
-  dialogOpen.current = link !== null || versions !== null || media !== null;
+  const open = link !== null || versions !== null || media !== null;
+  dialogOpen.current = open;
   shown.current = media?.index ?? null;
+  // A picture that is replaced before the viewer took it over is freed here.
+  const held = useRef<Media | null>(null);
+  const showMedia = (next: Media | null) => {
+    if (held.current && !taken.has(held.current)) discard(held.current.picture);
+    held.current = next;
+    setMedia(next);
+  };
   const closed = () => { opening.current.closedAt = Date.now(); };
   const mayOpen = (): boolean => {
     if (blockedNow.current) return false;
     const since = Date.now() - opening.current.closedAt;
     if (dialogOpen.current || since < 300) { opening.current.again++; return false; }
+    // What was just pressed in the app was not meant for the page.
+    if (Date.now() - pressed.current < 600) return false;
     if (navigator.userActivation?.isActive === false || document.activeElement !== frame.current) return false;
-    // Within the five seconds that closing something also counts as "did something".
-    opening.current.again = since < 5000 ? opening.current.again + 1 : 0;
+    // Far past the seconds in which closing something counts as activity, and never forgotten at once.
+    opening.current.again = since < 15_000 ? opening.current.again + 1 : Math.max(0, opening.current.again - 1);
     setPushy(opening.current.again >= 3);
     dialogOpen.current = true;
     return true;
   };
-  // The picture the viewer asked for; what comes unasked while it is open is not shown.
+  // The picture the viewer asked for last; nothing else is shown while it is open.
   const wanted = useRef<number | null>(null);
   const moveTo = (index: number) => { wanted.current = index; frame.current?.contentWindow?.postMessage({ type: 'lawh:show-media', index }, '*'); };
   const closeMedia = () => {
     const index = shown.current;
-    closed(); setMedia(null); wanted.current = null;
+    closed(); showMedia(null); wanted.current = null;
     // Back to the picture it was opened from, once the dialog is gone.
-    setTimeout(() => { frame.current?.focus(); frame.current?.contentWindow?.postMessage({ type: 'lawh:focus-media', index }, '*'); });
+    refocus.current = setTimeout(() => { frame.current?.focus(); frame.current?.contentWindow?.postMessage({ type: 'lawh:focus-media', index }, '*'); }) as unknown as number;
   };
   const cancelLink = () => { closed(); setLink(null); };
   const openedLink = () => { opening.current = { ...CALM }; setLink(null); };
   const closeVersions = () => { closed(); setVersions(null); };
-  const block = pushy ? () => { setBlocked(true); setPushy(false); setMedia(null); setLink(null); wanted.current = null; } : null;
+  const block = pushy ? () => { setBlocked(true); setPushy(false); clearTimeout(refocus.current); showMedia(null); setLink(null); wanted.current = null; } : null;
   // The frame's origin is opaque, so there is no name to send to; nothing in the message is secret.
   const sendTheme = () => frame.current?.contentWindow?.postMessage({ type: 'lawh:theme', ...theme.current }, '*');
 
   useEffect(() => {
     const stop = new AbortController();
-    setPage(null); setSlow(false); setVersions(null); setLink(null); setMedia(null); wanted.current = null; ready.current = false; opening.current = { ...CALM }; setBlocked(false); setPushy(false);
+    setPage(null); setSlow(false); setVersions(null); setLink(null); showMedia(null); wanted.current = null; clearTimeout(refocus.current); ready.current = false; opening.current = { ...CALM }; setBlocked(false); setPushy(false);
     // The theme and language are in the address only for the first paint; changes are sent to the page.
     call<Reading>('GET', `${path}?${new URLSearchParams({ mode, lang, ...(asked && { v: asked }) })}`, undefined, stop.signal)
       .then(setPage, (error: unknown) => { if (!stop.signal.aborted) setPage(error instanceof CallError && error.status === 404 ? 'gone' : problemOf(error)); });
@@ -71,16 +82,49 @@ export function PageView({ project, slug, search }: { project: string; slug: str
     const onMessage = (event: MessageEvent) => {
       const message = readBridgeMessage(event, frame.current?.contentWindow);
       if (message?.type === 'open-media' && shown.current !== null) {
-        if (message.index === wanted.current) { wanted.current = null; setMedia(message); } else { opening.current.again++; discard(message.picture); }
+        if (message.asked && message.index === wanted.current) { wanted.current = null; showMedia(message); } else {
+          // An answer to an earlier press of an arrow is no fault of the page.
+          if (!message.asked) opening.current.again++;
+          discard(message.picture);
+        }
       } else if (message?.type === 'open-media') {
-        if (mayOpen()) setMedia(message); else discard(message.picture);
+        // A late answer, after the viewer was closed, opens nothing and counts for nothing.
+        if (!message.asked && mayOpen()) showMedia(message); else discard(message.picture);
       } else if (message?.type === 'open-link' && mayOpen()) setLink(message.url);
       // The bridge listens now: what changed while the page loaded is sent again.
       if (message?.type === 'outline') { ready.current = true; setSlow(false); sendTheme(); }
     };
+    const onPress = () => { pressed.current = Date.now(); };
     addEventListener('message', onMessage);
-    return () => removeEventListener('message', onMessage);
+    for (const type of ['pointerdown', 'pointerup', 'keydown', 'keyup']) addEventListener(type, onPress, true);
+    return () => {
+      removeEventListener('message', onMessage);
+      for (const type of ['pointerdown', 'pointerup', 'keydown', 'keyup']) removeEventListener(type, onPress, true);
+      clearTimeout(refocus.current);
+      if (held.current && !taken.has(held.current)) discard(held.current.picture);
+    };
   }, []);
+
+  // WebKit lets a page take the keyboard from behind an open dialog: it's taken back, so Escape works and no key goes to the page.
+  useLayoutEffect(() => {
+    if (!open) return;
+    // The window loses the focus to a frame, sometimes while a button of the dialog still counts as focused.
+    let away = false;
+    const keep = () => {
+      const dialog = document.querySelector<HTMLElement>('dialog[open]'), at = document.activeElement;
+      if (!dialog || !document.hasFocus() || (dialog.contains(at) && (!away || at?.tagName === 'IFRAME'))) return;
+      away = false;
+      if (at instanceof HTMLElement) at.blur();
+      focus();
+      (dialog.contains(at) && at instanceof HTMLElement ? at : dialog.querySelector('button'))?.focus();
+    };
+    // Not at once: WebKit hands the keyboard over only after this.
+    const onBlur = () => { away = true; }, onFocus = () => { away = false; };
+    const timer = setInterval(keep, 100);
+    addEventListener('blur', onBlur);
+    addEventListener('focus', onFocus);
+    return () => { clearInterval(timer); removeEventListener('blur', onBlur); removeEventListener('focus', onFocus); };
+  }, [open]);
 
   useEffect(() => { sendTheme(); }, [mode, lang]);
 

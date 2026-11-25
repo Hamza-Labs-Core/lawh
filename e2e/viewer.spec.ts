@@ -5,7 +5,7 @@ import { APP, enter, join, test } from './people';
 const open = async (page: Page, member: string, slug = 'media') => {
   await join(member); await enter(page.context(), member); await page.goto(`${APP}/p/one/${slug}`);
   // The bridge has marked the pictures: it listens now.
-  if (slug.startsWith('media') && slug !== 'media-spam') await expect(inside(page).locator('img').first()).toHaveAttribute('tabindex', '0');
+  if (slug.startsWith('media') && slug !== 'media-spam' && slug !== 'media-focus') await expect(inside(page).locator('img').first()).toHaveAttribute('tabindex', '0');
 };
 const inside = (page: Page) => page.frameLocator('iframe.page-frame');
 const viewer = (page: Page) => page.locator('dialog.viewer');
@@ -50,7 +50,7 @@ test('every kind of picture opens full size, with its name and place', async ({ 
     await page.keyboard.press('Escape');
     await expect(viewer(page)).toHaveCount(0);
     // As quick as a person.
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(800);
   }
   await inside(page).locator('#broken').click();
   await expect(page.getByText('This picture can’t be shown full size.')).toBeVisible();
@@ -189,7 +189,54 @@ test('a hostile page opens nothing by itself, and one that keeps coming back can
   expect(await (await fetch('http://localhost:8799/hits/viewer-svg')).json()).toEqual([]);
 });
 
+test('a picture in a layout wrapper opens', async ({ page, member }) => {
+  await open(page, member, 'media-more');
+  await inside(page).locator('#in-layout').click();
+  await expect(label(page)).toHaveText('In a layout');
+});
+
+test('a page without colors is shown on the color the app has behind it', async ({ page, member }) => {
+  await page.addInitScript(() => { if (self === top && location.protocol !== 'about:') localStorage.setItem('lawh-mode', 'light'); });
+  await open(page, member, 'plain');
+  await inside(page).locator('svg').click();
+  expect(await color(page)).toEqual([246, 244, 239, 255]);
+});
+
+test('a person who looks at many pictures is not asked to stop the page, also when pressing arrows fast', async ({ page, member }) => {
+  await open(page, member);
+  await inside(page).locator('#photo').click();
+  await color(page);
+  for (let i = 0; i < 6; i++) await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('Escape');
+  await expect(viewer(page)).toHaveCount(0);
+  await page.waitForTimeout(800);
+  await inside(page).locator('#file').click();
+  await expect(viewer(page)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Stop this page from opening anything' })).toHaveCount(0);
+});
+
+test('a page that claims the focus and waits cannot keep the Stop button away', async ({ page, member }) => {
+  test.setTimeout(90_000);
+  await join(member); await enter(page.context(), member); await page.goto(APP);
+  await page.getByRole('link', { name: /media-focus/ }).click();
+  await page.waitForTimeout(800);
+  await inside(page).locator('#go').click();
+  const stop = page.getByRole('button', { name: 'Stop this page from opening anything' });
+  for (let i = 0; i < 5; i++) {
+    await expect(viewer(page)).toBeVisible({ timeout: 12_000 });
+    if (await stop.isVisible()) break;
+    // The keyboard is the dialog's, also when the page took it (WebKit lets it).
+    await expect.poll(() => page.evaluate(() => !!document.activeElement?.closest('dialog'))).toBe(true);
+    await page.keyboard.press('Escape');
+    await expect(viewer(page)).toHaveCount(0);
+  }
+  await stop.click();
+  await page.waitForTimeout(6000);
+  await expect(viewer(page)).toHaveCount(0);
+});
+
 test('a drawing keeps its transforms, clips, size, symbols and gradients, on the color behind it', async ({ page, member }) => {
+  test.setTimeout(60_000);
   await open(page, member, 'media-more');
   const near = (got: number[], expected: number[], what: string) => got.forEach((value, i) => expect(Math.abs(value - expected[i]!), `${what}: ${got.join()}`).toBeLessThanOrEqual(4));
   const cases: [string, [number, number], number[]][] = [
@@ -198,13 +245,14 @@ test('a drawing keeps its transforms, clips, size, symbols and gradients, on the
     ['#clipped', [0.6, 0.5], [0, 128, 0, 255]], ['#clipped', [0.4, 0.5], [255, 255, 255, 255]],
     ['#scaled', [0.6, 0.5], [0, 128, 0, 255]], ['#scaled', [0.4, 0.5], [255, 255, 255, 255]],
     ['#use', [0.4, 0.5], [0, 0, 255, 255]], ['#use', [0.6, 0.5], [255, 0, 255, 255]],
+    ['#ext', [0.6, 0.5], [0, 128, 0, 255]], ['#own', [0.5, 0.5], [0, 255, 0, 255]], ['#many', [0.5, 0.5], [0, 0, 255, 255]],
   ];
   for (const [id, at, expected] of cases) {
     await inside(page).locator(id).click({ position: { x: 20, y: 20 } });
     near(await color(page, at), expected, id);
     await page.keyboard.press('Escape');
     await expect(viewer(page)).toHaveCount(0);
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(800);
   }
 });
 

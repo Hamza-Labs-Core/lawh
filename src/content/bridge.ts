@@ -72,18 +72,21 @@ export const BRIDGE = `(function () {
   });
   // Pictures open full size. What is part of a link or a control keeps its own meaning, and so does anything marked
   // data-lawh-viewer="off" or hidden from assistive technology.
-  var SKIP = 'a[href],a[xlink\\\\:href],button,input,select,textarea,label,summary,[role=button],[contenteditable]:not([contenteditable=false]),[aria-hidden=true],[role=presentation],[role=none],[data-lawh-viewer="off"]';
+  var SKIP = 'a[*|href],button,input,select,textarea,label,summary,[role=button],[contenteditable]:not([contenteditable=false]),[aria-hidden=true],[data-lawh-viewer="off"]';
   var isMedia = function (el) {
-    if (el.closest(SKIP) || (el.parentNode && el.parentNode.closest && el.parentNode.closest('svg'))) return false;
+    if (el.closest(SKIP) || el.matches('[role=presentation],[role=none]') || (el.parentNode && el.parentNode.closest && el.parentNode.closest('svg'))) return false;
     var box = el.getBoundingClientRect();
     return box.width >= 24 && box.height >= 24 && getComputedStyle(el).visibility !== 'hidden';
   };
   var media = function () { return Array.prototype.filter.call(document.querySelectorAll('img,svg,canvas'), isMedia).slice(0, 500); };
+  // The weakest rule there is: any cursor the page chooses wins, also later.
+  var sheet = document.createElement('style');
+  sheet.textContent = ':where([data-lawh-zoom]){cursor:zoom-in}';
+  (document.head || root).appendChild(sheet);
   var mark = function () {
     media().forEach(function (el) {
       if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '0');
-      // A cursor the page chose stays.
-      if (getComputedStyle(el).cursor === 'auto') el.style.cursor = 'zoom-in';
+      el.setAttribute('data-lawh-zoom', '');
     });
   };
   var labelOf = function (el) {
@@ -99,8 +102,8 @@ export const BRIDGE = `(function () {
     one.width = one.height = 1;
     var ink = one.getContext('2d', { willReadFrequently: true });
     ink.fillStyle = root.dataset.lawhMode === 'light' ? 'rgb(246, 244, 239)' : 'rgb(18, 22, 26)';
-    // A page that says nothing about its colors is drawn on white.
-    if (!/dark/.test(getComputedStyle(root).colorScheme)) ink.fillStyle = 'rgb(255, 255, 255)';
+    // In a dark app, a page that says nothing about its colors is drawn on white.
+    if (root.dataset.lawhMode !== 'light' && !/dark/.test(getComputedStyle(root).colorScheme)) ink.fillStyle = 'rgb(255, 255, 255)';
     ink.fillRect(0, 0, 1, 1);
     for (var i = layers.length - 1; i >= 0; i--) { ink.fillStyle = 'rgba(0, 0, 0, 0)'; ink.fillStyle = layers[i]; ink.fillRect(0, 0, 1, 1); }
     var d = ink.getImageData(0, 0, 1, 1).data;
@@ -112,7 +115,7 @@ export const BRIDGE = `(function () {
   var TEXT = ['font-family', 'font-size', 'font-weight', 'font-style', 'text-anchor', 'letter-spacing', 'direction', 'dominant-baseline'];
   var OWN = { opacity: '1', display: 'inline', transform: 'none', 'clip-path': 'none', mask: 'none', filter: 'none', 'stop-color': 'rgb(0, 0, 0)', 'stop-opacity': '1' };
   var MAX_SVG = 4500000;
-  var inline = function (from, to) {
+  var inline = function (from, to, whole) {
     var a = [from].concat(Array.from(from.querySelectorAll('*'))), b = [to].concat(Array.from(to.querySelectorAll('*')));
     for (var i = 0; i < a.length && i < 5000; i++) {
       var el = a[i], style = getComputedStyle(el), above = i > 0 && el.parentElement ? getComputedStyle(el.parentElement) : null, out = '', tag = el.tagName.toLowerCase();
@@ -121,33 +124,37 @@ export const BRIDGE = `(function () {
         var value = style.getPropertyValue(name);
         if (value && (!above || value !== above.getPropertyValue(name) || el.hasAttribute(name))) add(name, value);
       });
-      // The outermost one is shown as it is, without the place and turn its page gives it.
-      if (i > 0) Object.keys(OWN).forEach(function (name) {
+      // The drawing itself is shown as it is, without the place and turn its page gives it.
+      if (i > 0 || whole) Object.keys(OWN).forEach(function (name) {
         var value = style.getPropertyValue(name);
         if (value && value !== OWN[name]) { add(name, value); if (name === 'transform') { add('transform-origin', style.transformOrigin); add('transform-box', style.transformBox || 'view-box'); } }
       });
-      b[i].setAttribute('style', (i > 0 && b[i].getAttribute('style') ? b[i].getAttribute('style') + ';' : '') + out);
+      b[i].setAttribute('style', ((i > 0 || whole) && b[i].getAttribute('style') ? b[i].getAttribute('style') + ';' : '') + out);
     }
   };
   var drawing = function (svg) {
     var copy = svg.cloneNode(true), size = function (side, client) { try { return svg[side].baseVal.value || client; } catch (e) { return client; } };
     var w = size('width', svg.clientWidth) || 300, h = size('height', svg.clientHeight) || 150, NS = 'http://www.w3.org/2000/svg';
-    inline(svg, copy);
+    inline(svg, copy, false);
     // Symbols, gradients and the like that live in another drawing of the page.
-    var defs = document.createElementNS(NS, 'defs'), done = {}, text = '';
+    var defs = document.createElementNS(NS, 'defs'), done = {}, text = '', budget = 5000;
     copy.insertBefore(defs, copy.firstChild);
     for (var round = 0; round < 4; round++) {
       text = new XMLSerializer().serializeToString(copy);
       if (text.length > MAX_SVG) return { kind: 'none' };
       var names = text.match(/(?:href="|url\\((?:&quot;|["'])?)#[^"')&]+/g) || [], added = false;
-      for (var i = 0; i < names.length && i < 2000; i++) {
+      for (var i = 0; i < names.length && budget > 0; i++) {
         var id = names[i].slice(names[i].indexOf('#') + 1);
         if (done[':' + id]) continue;
         done[':' + id] = true;
+        // Its own come first.
+        if (copy.querySelector('#' + CSS.escape(id))) continue;
         var target = document.getElementById(id);
         if (!target || svg.contains(target) || !(target instanceof SVGElement) || target.contains(svg)) continue;
         var other = target.cloneNode(true);
-        inline(target, other); defs.appendChild(other); added = true;
+        budget -= 1 + target.querySelectorAll('*').length;
+        if (budget < 0) break;
+        inline(target, other, true); defs.appendChild(other); added = true;
       }
       if (!added) break;
     }
@@ -166,14 +173,18 @@ export const BRIDGE = `(function () {
     }
     return createImageBitmap(el).then(function (bitmap) { return { kind: 'bitmap', bitmap: bitmap }; });
   };
-  var openMedia = function (index, all) {
+  // asked: the app wants it, for its arrows.
+  var openMedia = function (index, all, asked) {
     var el = all[index];
-    if (!el) return;
-    var about = { type: 'lawh:open-media', index: index, total: all.length, label: labelOf(el), background: backgroundOf(el) };
-    var post = function (data) { parent.postMessage(Object.assign({}, about, data), app, data.bitmap ? [data.bitmap] : []); };
-    Promise.resolve().then(function () { return picture(el); }).catch(function () { return { kind: 'none' }; }).then(post)
+    // The page took it away since: said, so the arrows don't wait.
+    if (!el) { if (index >= 0 && index < 500) parent.postMessage({ type: 'lawh:open-media', asked: asked, kind: 'none', index: index, total: index + 1, label: '', background: 'rgb(0, 0, 0)' }, app); return; }
+    var about = { type: 'lawh:open-media', asked: asked, index: index, total: all.length, label: labelOf(el), background: backgroundOf(el) };
+    var post = function (data) {
+      try { parent.postMessage(Object.assign({}, about, data), app, data.bitmap ? [data.bitmap] : []); }
       // A bitmap made from another origin's pixels can't be sent.
-      .catch(function () { post({ kind: 'none' }); });
+      catch (e) { if (data.bitmap) data.bitmap.close(); parent.postMessage(Object.assign({}, about, { kind: 'none' }), app); }
+    };
+    Promise.resolve().then(function () { return picture(el); }).catch(function () { return { kind: 'none' }; }).then(post);
   };
   addEventListener('click', function (event) {
     if (event.defaultPrevented || event.button !== 0) return;
@@ -192,7 +203,7 @@ export const BRIDGE = `(function () {
   });
   addEventListener('message', function (event) {
     if (event.source !== parent || event.origin !== app || !event.data) return;
-    if (event.data.type === 'lawh:show-media') openMedia(Number(event.data.index), media());
+    if (event.data.type === 'lawh:show-media') openMedia(Number(event.data.index), media(), true);
     if (event.data.type === 'lawh:focus-media') { var el = media()[Number(event.data.index)]; if (el) el.focus(); }
   });
   var ready = function () {

@@ -9,7 +9,8 @@ export type BridgeMessage =
   | Media;
 
 export type Picture = { kind: 'image'; path: string } | { kind: 'svg'; text: string; width: number; height: number } | { kind: 'bitmap'; bitmap: ImageBitmap } | { kind: 'none' };
-export interface Media { type: 'open-media'; index: number; total: number; label: string; background: string; picture: Picture }
+/** asked: an answer to the viewer's arrows, not something that was pressed in the page. */
+export interface Media { type: 'open-media'; asked: boolean; index: number; total: number; label: string; background: string; picture: Picture }
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 const isSize = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1e8;
@@ -22,7 +23,9 @@ export function discard(picture: Picture): void { if (picture.kind === 'bitmap')
 export function readBridgeMessage(event: { source: unknown; data: unknown }, frame: unknown): BridgeMessage | null {
   if (!isObject(event.data)) return null;
   const message = frame && event.source === frame ? read(event.data) : null;
-  if (message === null && isBitmap(event.data.bitmap)) event.data.bitmap.close();
+  const kept = message?.type === 'open-media' && message.picture.kind === 'bitmap' ? message.picture.bitmap : null;
+  // Also one sent along with a message that has no use for it.
+  if (isBitmap(event.data.bitmap) && event.data.bitmap !== kept) event.data.bitmap.close();
   return message;
 }
 
@@ -55,7 +58,7 @@ function read(data: Record<string, unknown>): BridgeMessage | null {
       if (typeof index !== 'number' || typeof total !== 'number' || !Number.isInteger(index) || !Number.isInteger(total) || index < 0 || index >= total || total > 500) return null;
       if (typeof label !== 'string' || label.length > 200 || typeof background !== 'string' || !/^rgba?\([\d., %/]{1,40}\)$/.test(background)) return null;
       const picture = readPicture(data);
-      return picture && { type: 'open-media', index, total, label, background, picture };
+      return picture && { type: 'open-media', asked: data.asked === true, index, total, label, background, picture };
     }
     default:
       return null;

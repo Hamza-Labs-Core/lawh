@@ -152,13 +152,14 @@ test('a person can open and cancel several links in a row', async ({ page, membe
     await dialog.getByRole('link', { name: 'Open' }).click();
     await (await popup).close();
     await expect(dialog).toHaveCount(0);
+    await page.waitForTimeout(800);
   }
   for (let i = 0; i < 4; i++) {
     await frame(page).locator('#out').click();
     await dialog.getByRole('button', { name: 'Cancel' }).click();
     await expect(dialog).toHaveCount(0);
     // As long as a person takes to aim again.
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(800);
   }
   await frame(page).locator('#out').click();
   await expect(dialog).toBeVisible();

@@ -1,13 +1,21 @@
 <!doctype html><html><head><meta charset="utf-8"><title>More</title><link rel="stylesheet" href="style.css"></head><body><h1>More</h1>
-<svg width="0" height="0" aria-hidden="true"><symbol id="sprite" viewBox="0 0 10 10"><rect width="10" height="10" fill="rgb(0, 0, 255)"/></symbol><linearGradient id="grad"><stop offset="0" stop-color="rgb(255, 0, 255)"/><stop offset="1" stop-color="rgb(255, 0, 255)"/></linearGradient></svg>
+<svg width="0" height="0" aria-hidden="true"><rect id="ext-moved" class="moved" width="100" height="100" fill="rgb(0, 128, 0)"/><linearGradient id="dup"><stop stop-color="rgb(255, 0, 0)"/></linearGradient><linearGradient id="late"><stop stop-color="rgb(0, 0, 255)"/></linearGradient><symbol id="sprite" viewBox="0 0 10 10"><rect width="10" height="10" fill="rgb(0, 0, 255)"/></symbol><linearGradient id="grad"><stop offset="0" stop-color="rgb(255, 0, 255)"/><stop offset="1" stop-color="rgb(255, 0, 255)"/></linearGradient></svg>
 <div class="modern"><svg id="modern" width="200" height="100"></svg></div>
 <div class="layers"><svg id="layers" width="200" height="100"></svg></div>
 <svg id="moved" width="200" height="100"><rect class="moved" width="100" height="100" fill="rgb(0, 128, 0)"/></svg>
 <svg id="clipped" width="200" height="100"><clipPath id="clip"><rect x="100" width="100" height="100"/></clipPath><rect class="clipped" width="200" height="100" fill="rgb(0, 128, 0)"/></svg>
 <svg id="scaled" width="400" height="200" style="transform: scale(0.5); transform-origin: 0 0; margin-bottom: -100px"><rect x="200" width="200" height="200" fill="rgb(0, 128, 0)"/></svg>
 <svg id="use" width="200" height="100"><use href="#sprite" width="100" height="100"/><rect x="100" width="100" height="100" fill="url(#grad)"/></svg>
+<svg id="ext" width="200" height="100"><use href="#ext-moved"/></svg>
+<svg id="own" width="200" height="100"><linearGradient id="dup"><stop stop-color="rgb(0, 255, 0)"/></linearGradient><rect width="200" height="100" fill="url(#dup)"/></svg>
+<svg id="many" width="200" height="100"></svg>
+<table role="presentation"><tr><td><img id="in-layout" src="dot.svg" width="80" height="40" alt="In a layout"></td></tr></table>
 <canvas id="pan" class="pan" width="100" height="60"></canvas>
 <svg id="hidden-icon" aria-hidden="true" width="60" height="60"><rect width="60" height="60"/></svg>
 <canvas id="empty" width="0" height="0" style="width:100px;height:60px"></canvas>
 <p contenteditable="false"><img id="plain" src="dot.svg" width="80" height="40" alt=""></p>
-</body></html>
+<script>
+const many = document.getElementById('many'), NS = 'http://www.w3.org/2000/svg';
+for (let i = 0; i < 2050; i++) { const u = document.createElementNS(NS, 'use'); u.setAttribute('href', '#sprite'); u.setAttribute('width', '1'); u.setAttribute('height', '1'); many.append(u); }
+const late = document.createElementNS(NS, 'rect'); late.setAttribute('width', '200'); late.setAttribute('height', '100'); late.setAttribute('fill', 'url(#late)'); many.append(late);
+</script></body></html>
