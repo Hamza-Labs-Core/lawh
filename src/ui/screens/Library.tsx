@@ -15,37 +15,39 @@ export const StatusMark = ({ status }: { status: Status }) => <span class={`stat
 /** Pages, newest first, by project, status and tag. The filters are in the address, so Back and a shared link keep them. */
 export function Library({ search }: { search: string }) {
   const t = useText(), { lang } = useSettings(), filters = readFilters(search), query = queryOf(filters);
-  const [projects, setProjects] = useState<ProjectName[] | null>(null), [list, setList] = useState<Listed<PageItem> | null>(null), [tries, setTries] = useState(0);
+  const [projects, setProjects] = useState<ProjectName[] | null>(null), [projectsProblem, setProjectsProblem] = useState<'offline' | 'wait' | 'failed' | null>(null), [list, setList] = useState<Listed<PageItem> | null>(null), [tries, setTries] = useState(0), [projectTries, setProjectTries] = useState(0);
   const [problem, setProblem] = useState<'offline' | 'wait' | 'failed' | 'filter' | null>(null);
   // Ends with the list it belongs to: "Show more" of an old list must not touch the new one.
-  const stopList = useRef(new AbortController());
+  const stopList = useRef(new AbortController()), loadingNow = useRef(false), [loadingMore, setLoadingMore] = useState(false);
   // On their own: the filters are there even when a filter in the address is wrong.
   useEffect(() => {
     if (projects !== null) return;
     const stop = new AbortController();
-    call<Listed<ProjectName>>('GET', '/projects', undefined, stop.signal).then((r) => setProjects(r.items), () => undefined);
+    setProjectsProblem(null);
+    call<Listed<ProjectName>>('GET', '/projects', undefined, stop.signal).then((r) => setProjects(r.items), (error: unknown) => { if (!stop.signal.aborted) setProjectsProblem(problemOf(error)); });
     return () => stop.abort();
-  }, [tries]);
+  }, [tries, projectTries]);
   useEffect(() => {
     const stop = new AbortController();
     stopList.current = stop;
-    setList(null); setProblem(null); setLoadingMore(false);
+    setList(null); setProblem(null); setLoadingMore(false); loadingNow.current = false;
     call<Listed<PageItem>>('GET', `/pages${query && `?${query}`}`, undefined, stop.signal).then(setList, (error: unknown) => {
       if (!stop.signal.aborted) setProblem(query && error instanceof CallError && (error.status === 404 || error.status === 422) ? 'filter' : problemOf(error));
     });
     return () => stop.abort();
   }, [query, tries]);
   const set = (change: Partial<Filters>) => { const next = queryOf({ ...filters, ...change }); go(next ? `/?${next}` : '/'); };
-  const [loadingMore, setLoadingMore] = useState(false);
   const more = async () => {
     const { signal } = stopList.current;
-    if (loadingMore) return;
+    // A ref, because a second press can come before the button is drawn as disabled.
+    if (loadingNow.current) return;
+    loadingNow.current = true;
     setLoadingMore(true); setProblem(null);
     try {
       const next = await call<Listed<PageItem>>('GET', `/pages?${query}&cursor=${list!.next!}`, undefined, signal);
       if (!signal.aborted) setList((now) => ({ items: [...now!.items, ...next.items], next: next.next }));
     } catch (error) { if (!signal.aborted) setProblem(problemOf(error)); }
-    if (!signal.aborted) setLoadingMore(false);
+    if (!signal.aborted) { loadingNow.current = false; setLoadingMore(false); }
   };
   return (
     <>
@@ -60,7 +62,7 @@ export function Library({ search }: { search: string }) {
       <div aria-live="polite">
         {list === null && !problem && <p class="muted">{t('loading')}</p>}
         {problem === 'filter' && <div class="card empty"><p>{t('badFilter')}</p><button class="plain" onClick={() => go('/')}>{t('clear')}</button></div>}
-        {list?.items.length === 0 && (
+        {list?.items.length === 0 && (query || projects !== null || projectsProblem) && (
           <div class="card empty">
             <p>{t(query ? 'noMatches' : projects?.length === 0 ? 'noProjects' : 'noPages')}</p>
             {query && <button class="plain" onClick={() => go('/')}>{t('clear')}</button>}
@@ -81,6 +83,7 @@ export function Library({ search }: { search: string }) {
           </li>
         ))}
       </ul>
+      {projectsProblem && !problem && <><Failure>{t(projectsProblem)}</Failure><button class="plain" onClick={() => setProjectTries(projectTries + 1)}>{t('retry')}</button></>}
       {problem && problem !== 'filter' && <><Failure>{t(problem)}</Failure>{list === null && <button class="plain" onClick={() => setTries(tries + 1)}>{t('retry')}</button>}</>}
       {list?.next && <button class="plain wide" disabled={loadingMore} onClick={() => void more()}>{t('more')}</button>}
     </>
@@ -104,7 +107,8 @@ function TagFilter({ project, value, onChange }: { project: string; value: strin
   const t = useText(), id = useId(), [text, setText] = useState(''), [items, setItems] = useState<string[] | null>(null), [open, setOpen] = useState(false), [at, setAt] = useState(-1);
   const box = useRef<HTMLDivElement>(null), refocus = useRef(false);
   // Another project has other tags.
-  useEffect(() => setItems(null), [project]);
+  const forget = () => { setItems(null); setAt(-1); };
+  useEffect(forget, [project]);
   // Choosing and clearing swap the field for a button and back; the focus goes along.
   useEffect(() => {
     if (refocus.current) box.current?.querySelector<HTMLElement>('.field')?.focus();
@@ -120,7 +124,7 @@ function TagFilter({ project, value, onChange }: { project: string; value: strin
     }, 120);
     return () => { clearTimeout(timer); stop.abort(); };
   }, [text, project, open]);
-  const choose = (tag: string) => { setOpen(false); setText(''); refocus.current = true; onChange(tag); };
+  const choose = (tag: string) => { setOpen(false); setText(''); forget(); refocus.current = true; onChange(tag); };
   if (value) {
     return (
       <div class="choice" ref={box}>
@@ -132,14 +136,14 @@ function TagFilter({ project, value, onChange }: { project: string; value: strin
   return (
     <div class="choice" ref={box} onFocusOut={(event) => { if (!box.current?.contains(event.relatedTarget as Node | null)) setOpen(false); }}>
       <label class="muted" for={id}>{t('tag')}</label>
-      <input id={id} class="field" role="combobox" aria-expanded={open && items !== null} aria-controls={`${id}-list`} aria-autocomplete="list" aria-activedescendant={open && at >= 0 ? `${id}-${at}` : undefined}
+      <input id={id} class="field" role="combobox" aria-expanded={open && items !== null} aria-controls={`${id}-list`} aria-autocomplete="list" aria-activedescendant={open && items !== null && at >= 0 ? `${id}-${at}` : undefined}
         autocomplete="off" placeholder={t('tagHint')} value={text} onFocus={() => { if (!refocus.current) setOpen(true); }} onClick={() => setOpen(true)}
-        onInput={(event) => { setText(event.currentTarget.value); setOpen(true); }}
+        onInput={(event) => { setText(event.currentTarget.value); setAt(-1); setOpen(true); }}
         onKeyDown={(event) => {
           const n = items?.length ?? 0;
           if (event.key === 'Escape') setOpen(false);
           else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setOpen(true); if (n > 0) setAt((at + (event.key === 'ArrowDown' ? 1 : n + (at < 0 ? 0 : -1))) % n); }
-          else if (event.key === 'Enter' && open) { event.preventDefault(); const tag = items?.[at] ?? items?.find((i) => i === text.trim().normalize('NFC')); if (tag) choose(tag); }
+          else if (event.key === 'Enter' && open) { event.preventDefault(); const now = text.trim().normalize('NFC'), tag = items?.[at] ?? items?.find((i) => i === now); if (tag?.startsWith(now)) choose(tag); }
         }} />
       <ul id={`${id}-list`} class="options" role="listbox" aria-label={t('tag')} hidden={!open || items === null}>
         {items?.map((tag, i) => <li key={tag} id={`${id}-${i}`} role="option" aria-selected={i === at} onMouseDown={(event) => event.preventDefault()} onClick={() => choose(tag)}><bdi>{tag}</bdi></li>)}
