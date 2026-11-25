@@ -34,4 +34,13 @@ export interface Decision {
   answerers?: number | null;
 }
 
+export interface Comment {
+  id: string; threadId: string; authorType: 'person' | 'agent'; person: { id: string; name: string | null } | null; fromDecider: boolean; agent: string | null; versionN: number;
+  sectionId: string | null; sectionTitle: string | null; quote: string | null; body: string; createdAt: number; resolvedAt: number | null; mayDelete: boolean;
+}
+export interface Thread extends Comment {
+  replies: Comment[]; moreReplies: string | null; mayReply: boolean; mayResolve: boolean;
+  project?: string; projectName?: { en: string; ar: string }; page?: { slug: string; title: string; lang: 'en' | 'ar' };
+}
+
 export interface Me { id: string; name: string; isOwner: boolean; instance: boolean }

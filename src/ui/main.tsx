@@ -5,6 +5,7 @@ import { Failure, go, Link, SettingsProvider, TopBar, useSettings, useText } fro
 import { digits } from './i18n';
 import { ApproveDevice, AskDevice } from './screens/Device';
 import { Account } from './screens/Account';
+import { Comments } from './screens/Comments';
 import { Decisions } from './screens/Decisions';
 import { Library } from './screens/Library';
 import { LinkPage } from './screens/LinkPage';
@@ -43,6 +44,7 @@ function Nav({ path }: { path: string }) {
     <nav class="places" aria-label={t('app')}>
       <Link to="/" current={path === '/' || path.startsWith('/p/')}>{t('pages')}</Link>
       <Link to="/decisions" current={path === '/decisions'}>{t('decisions')}{waiting !== null && waiting.count > 0 && <> <span class="badge">{n}</span></>}</Link>
+      <Link to="/comments" current={path === '/comments'}>{t('comments')}</Link>
       <Link to="/account" current={path === '/account'}>{t('account')}</Link>
     </nav>
   );
@@ -73,6 +75,7 @@ function App() {
   else if (path === '/approve') screen = <ApproveDevice onSignedOut={() => { setMe(null); void load(); }} />;
   else if (path === '/account' || !me.instance) screen = <Account me={me} onChange={() => void load()} />;
   else if (reading) screen = <PageView project={reading[1]!} slug={reading[2]!} search={search} me={me} />;
+  else if (path === '/comments') screen = <Comments me={me} />;
   else if (path === '/decisions') screen = <Decisions search={search} me={me} />;
   else screen = <Library search={search} />;
   return <><TopBar>{typeof me === 'object' && me !== null && me.instance && <Nav path={path} />}</TopBar>{/* A new screen starts over; the link page doesn't depend on who is signed in. */}<main key={path === '/link' ? path : `${path} ${typeof me === 'object' && me ? me.id : me}`}>{screen}</main></>;

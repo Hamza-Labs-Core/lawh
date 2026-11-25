@@ -66,7 +66,7 @@ An opaque origin sends no session cookie, so each file URL carries a token: `htt
 
 | Message | Used for | The app's check |
 |---|---|---|
-| `outline` | Section comments | At most 200 headings, 200 characters each, shown as text |
+| `outline` | Section comments | At most 200 headings, 200 characters each, with up to 300 characters of how each section begins, shown as text. Taken at most 5 times a second, so a page can't keep the app busy with it |
 | `open-media` | Full-size viewer | Image: a path of the form published paths have. SVG: at most 5 MB of text. Canvas and data images: an `ImageBitmap`. Each is passed to the viewer frame, which can load only this version's files |
 | `open-link` | Outside links | `https:` only; a dialog shows the whole address before it opens |
 | `scroll-state` | Scroll position | Numbers only |

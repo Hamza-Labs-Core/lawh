@@ -108,6 +108,8 @@ describe('every route and every kind of key', () => {
     'GET file': () => '/v1/projects/one/pages/page/versions/1/file?path=index.html',
     'PUT blob': ({ upload, hash }) => `/v1/uploads/${upload}/blobs/${hash}`,
     'POST commit': ({ upload }) => `/v1/uploads/${upload}/commit`,
+    'GET comments': () => `/v1/pages/pag_${'0'.repeat(26)}/comments`,
+    'POST reply': () => `/v1/comments/cmt_${'0'.repeat(26)}/replies`,
     'GET decisions': () => '/v1/decisions',
     'GET decision': () => `/v1/decisions/dec_${'0'.repeat(26)}`,
   };

@@ -353,6 +353,8 @@ CREATE INDEX comments_page ON comments(page_id, created_at, id);
 CREATE INDEX comments_thread ON comments(thread_id, created_at, id);
 CREATE INDEX comments_open ON comments(project_id, created_at, id)
   WHERE resolved_at IS NULL AND deleted_at IS NULL AND id = thread_id;
+CREATE INDEX comments_open_recent ON comments(created_at, id)
+  WHERE resolved_at IS NULL AND deleted_at IS NULL AND id = thread_id;
 CREATE INDEX comments_purge ON comments(deleted_at) WHERE deleted_at IS NOT NULL;
 
 -- Ordered feed agents can poll, and the outbox webhooks are sent from.

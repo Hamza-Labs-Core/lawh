@@ -3,9 +3,14 @@ import { readBridgeMessage, readViewerMessage, viewerKey } from '../../src/ui/br
 
 const frame = {};
 const read = (data: unknown, source: unknown = frame, of: unknown = frame) => readBridgeMessage({ source, data }, of);
-const item = (change: object = {}) => ({ id: 'a', title: 'A', level: 1, ...change });
+const item = (change: object = {}) => ({ id: 'a', title: 'A', level: 1, quote: 'Q', ...change });
 
 describe('messages from a page', () => {
+  it('takes how a section begins as text of at most 300 characters, or nothing', () => {
+    const quote = (value: unknown) => (read({ type: 'lawh:outline', items: [item({ quote: value })] }) as { items: { quote: string }[] }).items[0]!.quote;
+    expect(['x', 'x'.repeat(300), 'x'.repeat(301), undefined, 5, {}].map(quote)).toEqual(['x', 'x'.repeat(300), '', '', '', '']);
+  });
+
   it('takes the three kinds, copying only known fields', () => {
     expect(read({ type: 'lawh:outline', items: [item({ html: '<b>' })], answer: 'x' })).toEqual({ type: 'outline', items: [item()] });
     expect(read({ type: 'lawh:open-link', url: 'https://example.com/a' })).toEqual({ type: 'open-link', url: 'https://example.com/a' });

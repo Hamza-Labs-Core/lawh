@@ -111,6 +111,30 @@ const TEXT = {
   noOpen: ['Nothing waits for an answer.', 'لا شيء بانتظار إجابة.'],
   noWaiting: ['Nothing waits for others.', 'لا شيء بانتظار آخرين.'],
   noAnswered: ['No answers yet.', 'لا توجد إجابات بعد.'],
+  panel: ['Decisions and comments', 'القرارات والتعليقات'],
+  decisionsN: ['Decisions {n}', 'القرارات {n}'],
+  comments: ['Comments', 'التعليقات'],
+  commentsN: ['Comments {n}', 'التعليقات {n}'],
+  newComment: ['Comment', 'تعليق'],
+  addComment: ['Add comment', 'إضافة تعليق'],
+  reply: ['Reply', 'رد'],
+  resolve: ['Mark resolved', 'إنهاء النقاش'],
+  reopen: ['Open again', 'إعادة فتح النقاش'],
+  resolvedN: ['Resolved: {n}', 'نقاشات منتهية: {n}'],
+  section: ['Section', 'القسم'],
+  inSection: ['Section: {title}', 'القسم: {title}'],
+  wholePage: ['Whole page', 'الصفحة كلها'],
+  earlierSections: ['Earlier sections', 'أقسام سابقة'],
+  earlierReplies: ['Show earlier replies', 'عرض ردود أقدم'],
+  noComments: ['No comments yet.', 'لا توجد تعليقات بعد.'],
+  noOpenThreads: ['No open comments.', 'لا توجد تعليقات مفتوحة.'],
+  agent: ['Agent', 'وكيل'],
+  delete: ['Delete', 'حذف'],
+  deleteIt: ['Delete this reply', 'حذف هذا الرد'],
+  deleteThread: ['Delete with its replies', 'حذف التعليق مع ردوده'],
+  commentNot: ['Your level here is to read only.', 'مستواك هنا للقراءة فقط.'],
+  commentGone: ['This was deleted meanwhile, or you can’t see it anymore.', 'تم الحذف في هذه الأثناء، أو لم يعد متاحًا لك.'],
+  secretComment: ['The text looks like it has a key or password in it.', 'يبدو أن النص يحتوي على مفتاح أو كلمة مرور.'],
   open: ['Open', 'فتح'],
   cancel: ['Cancel', 'إلغاء'],
   close: ['Close', 'إغلاق'],
@@ -133,6 +157,9 @@ export type Key = keyof typeof TEXT;
 
 /** A day, in the language's own calendar words and digits. */
 export const day = (lang: Lang, at: number): string => new Intl.DateTimeFormat(lang === 'ar' ? 'ar-u-ca-gregory-nu-arab' : 'en-US', { dateStyle: 'medium' }).format(at);
+
+/** A day and time. */
+export const moment = (lang: Lang, at: number): string => new Intl.DateTimeFormat(lang === 'ar' ? 'ar-u-ca-gregory-nu-arab' : 'en-US', { dateStyle: 'medium', timeStyle: 'short' }).format(at);
 
 /** The text cut at its places: plain parts, and `{ value }` for what fills one. */
 export function parts(lang: Lang, key: Key, values: Record<string, string> = {}): (string | { value: string })[] {
