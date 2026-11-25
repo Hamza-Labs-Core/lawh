@@ -3,10 +3,13 @@
  * none can do more than move the app's own view: no message answers a decision, writes a comment or calls the API.
  */
 export type BridgeMessage =
-  | { type: 'outline'; items: { id: string; title: string; level: number }[] }
+  | { type: 'outline'; items: Section[] }
   | { type: 'open-link'; url: string }
   | { type: 'scroll-state'; top: number; height: number; view: number }
   | Media;
+
+/** A heading of the page, and how its section begins. */
+export interface Section { id: string; title: string; level: number; quote: string }
 
 export type Picture = { kind: 'image'; path: string } | { kind: 'svg'; text: string; width: number; height: number } | { kind: 'bitmap'; bitmap: ImageBitmap } | { kind: 'none' };
 /** asked: an answer to the viewer's arrows, not something that was pressed in the page. */
@@ -34,13 +37,13 @@ function read(data: Record<string, unknown>): BridgeMessage | null {
   switch (data.type) {
     case 'lawh:outline': {
       if (!Array.isArray(data.items) || data.items.length > 200) return null;
-      const items: { id: string; title: string; level: number }[] = [];
+      const items: Section[] = [];
       // By index: a list can come with holes, which map() skips.
       for (let i = 0; i < data.items.length; i++) {
         const item: unknown = data.items[i];
         if (!isObject(item) || typeof item.id !== 'string' || item.id.length < 1 || item.id.length > 200 || typeof item.title !== 'string' || item.title.length < 1
           || item.title.length > 200 || typeof item.level !== 'number' || ![1, 2, 3, 4].includes(item.level)) return null;
-        items.push({ id: item.id, title: item.title, level: item.level });
+        items.push({ id: item.id, title: item.title, level: item.level, quote: typeof item.quote === 'string' && item.quote.length <= 300 ? item.quote : '' });
       }
       return { type: 'outline', items };
     }

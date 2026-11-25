@@ -22,6 +22,18 @@ export const BRIDGE = `(function () {
     var plain = title.normalize('NFD').replace(/\\p{M}+/gu, '').normalize('NFC').toLowerCase().replace(/[^\\p{L}\\p{N}]+/gu, '-');
     return Array.from(plain).slice(0, 60).join('').replace(/^-+|-+$/g, '') || 'section';
   };
+  // How a section begins: the first text after its heading, also when the heading is in a box of its own.
+  var quote = function (h) {
+    for (var at = h, up = 0; at && at !== document.body && up < 3; at = at.parentElement, up++) {
+      for (var n = at.nextElementSibling; n; n = n.nextElementSibling) {
+        if (n.matches('script,style,template')) continue;
+        if (n.matches('h1,h2,h3,h4') || n.querySelector('h1,h2,h3,h4')) return '';
+        var text = Array.from((n.textContent || '').slice(0, 2000).trim().replace(/\\s+/g, ' ')).slice(0, 140).join('');
+        if (text) return text;
+      }
+    }
+    return '';
+  };
   var outline = function () {
     var items = [], seen = Object.create(null), all = document.querySelectorAll('h1,h2,h3,h4');
     for (var i = 0; i < all.length && items.length < 200; i++) {
@@ -34,7 +46,7 @@ export const BRIDGE = `(function () {
       }
       if (h.id.length > 200) continue;
       seen[h.id] = true;
-      items.push({ id: h.id, title: title, level: Number(h.tagName[1]) });
+      items.push({ id: h.id, title: title, level: Number(h.tagName[1]), quote: quote(h) });
     }
     send('outline', { items: items });
   };
@@ -203,6 +215,7 @@ export const BRIDGE = `(function () {
   });
   addEventListener('message', function (event) {
     if (event.source !== parent || event.origin !== app || !event.data) return;
+    if (event.data.type === 'lawh:go-to') { var there = document.getElementById(String(event.data.id)); if (there) there.scrollIntoView(); }
     if (event.data.type === 'lawh:show-media') openMedia(Number(event.data.index), media(), true);
     if (event.data.type === 'lawh:focus-media') { var el = media()[Number(event.data.index)]; if (el) el.focus(); }
   });

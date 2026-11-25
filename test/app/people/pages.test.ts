@@ -56,7 +56,9 @@ describe('what a person sees', () => {
     // Each route is either tested here or about nothing in a project: a new one must be put in one of the lists.
     const without = ['/me', '/sessions/current', `/sessions/${'0'.repeat(64)}`, '/switches/instance', '/sessions', '/passkeys', '/passkeys/options', '/passkeys/a', '/projects', '/device/look', '/device/approve',
       // In decisions.test.ts, at every level.
-      '/decisions', '/decisions/count', `/decisions/dec_${'0'.repeat(26)}`, `/decisions/dec_${'0'.repeat(26)}/answers`, '/projects/one/pages/a/decisions'];
+      '/decisions', '/decisions/count', `/decisions/dec_${'0'.repeat(26)}`, `/decisions/dec_${'0'.repeat(26)}/answers`, '/projects/one/pages/a/decisions',
+      // In comments.test.ts, at every level.
+      '/comments', '/projects/one/pages/a/comments', `/comments/cmt_${'0'.repeat(26)}`, `/comments/cmt_${'0'.repeat(26)}/replies`, `/comments/cmt_${'0'.repeat(26)}/resolved`];
     for (const route of peopleRoutes.filter((r) => r.who === 'person')) {
       expect([...paths, ...without].some((p) => route.path.test(`/app-api${p.split('?')[0]!}`)), route.path.source).toBe(true);
     }

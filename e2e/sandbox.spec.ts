@@ -91,8 +91,8 @@ test('the bridge tells the outline, scrolling and outside links, and takes the t
   await harness.open('good');
   await harness.result();
   const of = async (type: string) => (await harness.messages()).filter((m) => m.type === type);
-  expect((await of('lawh:outline'))[0]!.items).toEqual([{ id: 's-first-section', title: 'First section', level: 1 }, { id: 's-first-section-2', title: 'First section', level: 2 }, { id: 'own', title: 'Own id', level: 3 },
-    { id: 's-مرحبا-بكم', title: 'مَرْحَباً بِكُمْ', level: 2 }, { id: 'constructor', title: 'Built in', level: 2 }]);
+  expect((await of('lawh:outline'))[0]!.items).toEqual([{ id: 's-first-section', title: 'First section', level: 1, quote: 'text' }, { id: 's-first-section-2', title: 'First section', level: 2, quote: '' }, { id: 'own', title: 'Own id', level: 3, quote: 'out' },
+    { id: 's-مرحبا-بكم', title: 'مَرْحَباً بِكُمْ', level: 2, quote: '' }, { id: 'constructor', title: 'Built in', level: 2, quote: 'next' }]);
   const frame = page.frame('page')!;
   await frame.evaluate(() => scrollTo(0, 500));
   await expect.poll(async () => (await of('lawh:scroll-state')).some((m) => m.top === 500)).toBe(true);

@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
-import { call, CallError, type Decision, type Listed, type Me, problemOf, type Reading, type Version } from '../api';
+import { call, CallError, type Decision, type Listed, type Me, problemOf, type Reading, type Thread, type Version } from '../api';
 import { Failure, Fill, go, Heading, Link, useBusy, useSettings, useText, wasInside } from '../app';
-import { discard, type Media, readBridgeMessage } from '../bridgeHost';
+import { discard, type Media, readBridgeMessage, type Section } from '../bridgeHost';
 import { day, digits, translate } from '../i18n';
+import { CommentList, type Threads } from './Comments';
 import { DecisionList, left } from './Decisions';
 import { StatusMark } from './Library';
 import { taken, Viewer } from './Viewer';
@@ -14,6 +15,7 @@ export function PageView({ project, slug, search, me }: { project: string; slug:
   const t = useText(), { lang, mode } = useSettings(), asked = new URLSearchParams(search).get('v'), path = `/projects/${project}/pages/${slug}`;
   const [page, setPage] = useState<Reading | 'gone' | 'offline' | 'wait' | 'failed' | null>(null), [tries, setTries] = useState(0), [slow, setSlow] = useState(false), [versions, setVersions] = useState<HTMLElement | null>(null), [link, setLink] = useState<string | null>(null), [media, setMedia] = useState<Media | null>(null);
   const [asks, setAsks] = useState<{ items: Decision[]; answerers: number | null } | null>(null), [asksProblem, setAsksProblem] = useState<'offline' | 'wait' | 'failed' | null>(null), [asksTries, setAsksTries] = useState(0), [sheet, setSheet] = useState<HTMLElement | null>(null), wide = useWide();
+  const [threads, setThreads] = useState<Threads | null>(null), [outline, setOutline] = useState<Section[] | null>(null), outlined = useRef(0), [tab, setTab] = useState<'decisions' | 'comments' | null>(null);
   const frame = useRef<HTMLIFrameElement>(null), ready = useRef(false), theme = useRef({ mode, lang });
   theme.current = { mode, lang };
   // A page can send messages whenever it likes, so what it wants to open is shown only while the browser counts the
@@ -66,21 +68,28 @@ export function PageView({ project, slug, search, me }: { project: string; slug:
 
   useEffect(() => {
     const stop = new AbortController();
-    setPage(null); setSlow(false); setVersions(null); setLink(null); showMedia(null); wanted.current = null; clearTimeout(refocus.current); ready.current = false; opening.current = { ...CALM }; setBlocked(false); setPushy(false);
+    setPage(null); setSlow(false); setVersions(null); setLink(null); showMedia(null); wanted.current = null; clearTimeout(refocus.current); clearTimeout(outlined.current); outlined.current = 0; setOutline(null); ready.current = false; opening.current = { ...CALM }; setBlocked(false); setPushy(false);
     // The theme and language are in the address only for the first paint; changes are sent to the page.
     call<Reading>('GET', `${path}?${new URLSearchParams({ mode, lang, ...(asked && { v: asked }) })}`, undefined, stop.signal)
       .then(setPage, (error: unknown) => { if (!stop.signal.aborted) setPage(error instanceof CallError && error.status === 404 ? 'gone' : problemOf(error)); });
     return () => stop.abort();
   }, [path, asked, tries]);
 
-  // The page's questions, whichever version is shown.
+  // The page's questions and comments, whichever version is shown.
   useEffect(() => {
-    const stop = new AbortController();
+    const stop = new AbortController(), failed = (error: unknown) => { if (!stop.signal.aborted && !(error instanceof CallError && error.status === 404)) setAsksProblem(problemOf(error)); };
     setAsksProblem(null);
-    call<{ items: Decision[]; answerers: number | null }>('GET', `${path}/decisions`, undefined, stop.signal)
-      .then(setAsks, (error: unknown) => { if (!stop.signal.aborted && !(error instanceof CallError && error.status === 404)) setAsksProblem(problemOf(error)); });
+    call<{ items: Decision[]; answerers: number | null }>('GET', `${path}/decisions`, undefined, stop.signal).then(setAsks, failed);
+    call<Threads>('GET', `${path}/comments`, undefined, stop.signal).then(setThreads, failed);
     return () => stop.abort();
   }, [path, tries, asksTries]);
+  const changeThread = (next: Thread) => setThreads((now) => now && { ...now, items: now.items.map((c) => (c.id === next.id ? next : c)) });
+  const removeThread = (id: string) => setThreads((now) => now && { ...now, items: now.items.filter((c) => c.id !== id) });
+  const addThread = (next: Thread) => setThreads((now) => now && { ...now, items: [next, ...now.items.filter((c) => c.id !== next.id)] });
+  const moreThreads = async () => {
+    const next = await call<Threads>('GET', `${path}/comments?cursor=${threads!.next!}`);
+    setThreads((now) => now && { ...now, items: [...now.items, ...next.items.filter((c) => !now.items.some((o) => o.id === c.id))], next: next.next });
+  };
   const answeredOne = (next: Decision) => {
     setAsks((now) => now && { ...now, items: now.items.map((d) => (d.id === next.id ? next : d)) });
     // The last answer can decide the page.
@@ -96,6 +105,7 @@ export function PageView({ project, slug, search, me }: { project: string; slug:
 
   // From the start: a page in the cache can speak before an effect that waits for its address has run.
   useEffect(() => {
+    let latest: Section[] = [];
     const onMessage = (event: MessageEvent) => {
       const message = readBridgeMessage(event, frame.current?.contentWindow);
       if (message?.type === 'open-media' && shown.current !== null) {
@@ -109,7 +119,12 @@ export function PageView({ project, slug, search, me }: { project: string; slug:
         if (!message.asked && mayOpen()) showMedia(message); else discard(message.picture);
       } else if (message?.type === 'open-link' && mayOpen()) setLink(message.url);
       // The bridge listens now: what changed while the page loaded is sent again.
-      if (message?.type === 'outline') { ready.current = true; setSlow(false); sendTheme(); }
+      if (message?.type === 'outline') {
+        ready.current = true; setSlow(false); sendTheme();
+        // A page can send it without end: the newest is taken, a few times a second at most.
+        latest = message.items;
+        if (!outlined.current) outlined.current = setTimeout(() => { outlined.current = 0; setOutline(latest); }, 200) as unknown as number;
+      }
     };
     const onPress = () => { pressed.current = Date.now(); };
     addEventListener('message', onMessage);
@@ -117,7 +132,7 @@ export function PageView({ project, slug, search, me }: { project: string; slug:
     return () => {
       removeEventListener('message', onMessage);
       for (const type of ['pointerdown', 'pointerup', 'keydown', 'keyup']) removeEventListener(type, onPress, true);
-      clearTimeout(refocus.current);
+      clearTimeout(refocus.current); clearTimeout(outlined.current);
       if (held.current && !taken.has(held.current)) discard(held.current.picture);
     };
   }, []);
@@ -149,7 +164,24 @@ export function PageView({ project, slug, search, me }: { project: string; slug:
   if (page === null) return <p class="muted" role="status">{t('loading')}</p>;
   if (page === 'gone') return <section class="card narrow"><Heading>{t('app')}</Heading><p role="status">{t('pageGone')}</p><Link class="plain as-button" to="/">{t('pages')}</Link></section>;
   if (typeof page === 'string') return <section class="card narrow"><Failure>{t(page)}</Failure><button class="plain wide" onClick={() => setTries(tries + 1)}>{t('retry')}</button></section>;
-  const old = page.version.n !== page.currentVersion;
+  const old = page.version.n !== page.currentVersion, questions = asks?.items ?? [], some = questions.length > 0, toMake = left(questions, me), now = some ? tab ?? 'decisions' : 'comments';
+  const unresolved = threads === null ? 0 : threads.items.filter((c) => c.resolvedAt === null).length, count = threads === null ? '' : digits(lang, unresolved) + (threads.next ? '+' : '');
+  // Beside the page when there are questions or when it was opened; the sheet of a phone closes first, so the page is seen.
+  const beside = wide && (sheet !== null || (some && tab === null));
+  const goTo = (id: string) => { if (!wide) closeSheet(); frame.current?.contentWindow?.postMessage({ type: 'lawh:go-to', id }, '*'); };
+  const panel = (
+    <>
+      {some && threads !== null && (
+        <div class="chips tabs" role="group" aria-label={t('panel')}>
+          <button class="chip" aria-pressed={now === 'decisions'} onClick={() => setTab('decisions')}>{toMake > 0 ? <Fill text="decisionsN" n={digits(lang, toMake)} /> : t('decisions')}</button>
+          <button class="chip" aria-pressed={now === 'comments'} onClick={() => setTab('comments')}><Fill text="commentsN" n={count} /></button>
+        </div>
+      )}
+      {now === 'decisions' && some && <DecisionList items={questions} answerers={asks?.answerers ?? null} me={me} onChange={answeredOne} />}
+      {now === 'comments' && threads !== null && <CommentList threads={threads} outline={outline} versionN={page.version.n} path={path} me={me} onAdd={addThread} onMore={moreThreads} onGoTo={goTo} change={changeThread} remove={removeThread} />}
+    </>
+  );
+  const openPanel = (which: 'decisions' | 'comments', from: HTMLElement) => { setTab(which); setSheet(from); };
   return (
     <div class="reader">
       <div class="reader-bar">
@@ -159,6 +191,8 @@ export function PageView({ project, slug, search, me }: { project: string; slug:
           <p class="muted"><bdi>{page.project.name[lang]}</bdi>{lang === 'ar' ? '، ' : ', '}<Fill text="by" agent={page.version.publishedBy} date={day(lang, page.version.createdAt)} /></p>
         </div>
         <StatusMark status={page.status} />
+        <button class="plain" disabled={threads === null} aria-haspopup={wide ? undefined : 'dialog'} aria-expanded={wide ? beside && now === 'comments' : undefined}
+          onClick={(event) => { if (beside && now === 'comments') { setSheet(null); setTab('comments'); } else openPanel('comments', event.currentTarget); }}><Fill text="commentsN" n={count} /></button>
         <button class="plain" aria-haspopup="dialog" onClick={(event) => setVersions(event.currentTarget)}><Fill text="version" n={digits(lang, page.version.n)} /></button>
       </div>
       {old && <p class="notice" role="status"><Fill text="oldVersion" n={digits(lang, page.version.n)} current={digits(lang, page.currentVersion)} /> <Link to={`/p/${project}/${slug}`}>{t('toCurrent')}</Link></p>}
@@ -166,14 +200,14 @@ export function PageView({ project, slug, search, me }: { project: string; slug:
       {asksProblem && <div class="notice"><Failure>{t(asksProblem)}</Failure><button class="text" onClick={() => setAsksTries(asksTries + 1)}>{t('retry')}</button></div>}
       <div class="reader-body">
         <iframe key={page.frame} ref={frame} class="page-frame" title={translate(lang, 'pageFrame', { title: page.title })} sandbox="allow-scripts" referrerpolicy="no-referrer" src={page.frame} onLoad={sendTheme} />
-        {asks !== null && asks.items.length > 0 && wide && <aside class="reader-side" aria-label={t('decisions')} tabIndex={0}><h2>{t('decisions')}</h2><DecisionList {...asks} me={me} onChange={answeredOne} /></aside>}
+        {beside && <aside class="reader-side" aria-label={t('panel')} tabIndex={0}><h2>{t(now)}</h2>{panel}</aside>}
       </div>
-      {asks !== null && asks.items.length > 0 && !wide && (
-        <div class="to-panel"><button class="primary" aria-haspopup="dialog" onClick={(event) => setSheet(event.currentTarget)}>{left(asks.items, me) > 0 ? <Fill text="toMake" n={digits(lang, left(asks.items, me))} /> : t('decisions')}</button></div>
+      {some && !wide && (
+        <div class="to-panel"><button class="primary" aria-haspopup="dialog" onClick={(event) => openPanel('decisions', event.currentTarget)}>{toMake > 0 ? <Fill text="toMake" n={digits(lang, toMake)} /> : t('decisions')}</button></div>
       )}
-      {asks !== null && sheet !== null && !wide && (
-        <Dialog class="sheet" title={t('decisions')} returnTo={sheet} onClose={closeSheet} closer={t('close')}>
-          <DecisionList {...asks} me={me} onChange={answeredOne} />
+      {sheet !== null && !wide && (
+        <Dialog class="sheet" title={t(now)} returnTo={sheet} onClose={closeSheet} closer={t('close')}>
+          {panel}
         </Dialog>
       )}
       {versions && <Versions path={path} project={project} slug={slug} shown={page.version.n} current={page.currentVersion} returnTo={versions} onClose={closeVersions} />}

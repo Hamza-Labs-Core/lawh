@@ -21,7 +21,7 @@ Lawh (لوح, a writing tablet) is a private, self-hosted place where agents pub
 
 ## 2. What exists today
 
-S1: both Workers (closed by the `instance` switch), the D1 schema as migration 0001, and CI. S2: agent keys and the publish API (search in it comes with S9). S3: the content Worker, its tokens, sandbox and bridge (images and charts open full size with S6). S4: passkeys, sessions, device approval, `pnpm lawh owner setup`, and the first screens (invites and resets are made with S18). S5: the pages list, reading a page and its versions, and levels on every route. S6: the full-size viewer. S7: decisions, beside the page (a sheet on a phone) and on a screen of their own. There is no earlier code to reuse or migrate.
+S1: both Workers (closed by the `instance` switch), the D1 schema (migrations), and CI. S2: agent keys and the publish API (search in it comes with S9). S3: the content Worker, its tokens, sandbox and bridge (images and charts open full size with S6). S4: passkeys, sessions, device approval, `pnpm lawh owner setup`, and the first screens (invites and resets are made with S18). S5: the pages list, reading a page and its versions, and levels on every route. S6: the full-size viewer. S7: decisions, beside the page (a sheet on a phone) and on a screen of their own. S8: comments on a page or a section, and agents' replies. There is no earlier code to reuse or migrate.
 
 ## 3. How it works
 
@@ -77,7 +77,7 @@ An answer that decides a page's last `open` or `stale` decision moves the page f
 
 The wording is the question, its context, and the options with their order, details and costs. What a person chose or wrote before recording is kept in memory while they move around the app, for that wording only (notes carry over to the next one), and never sent or stored.
 
-**Comments** belong to the page or to a section (heading id, title and a short quote, so a comment survives a republish; if the section is gone, the comment shows under "Earlier sections"). Commenters and above start threads; deciders resolve any, and people resolve their own. Agents reply.
+**Comments** belong to the page or to a section (heading id, title and a short quote, so a comment survives a republish; if the section is gone, the comment shows under "Earlier sections"). Commenters and above start threads; deciders resolve any, and people resolve their own, and can open a thread again. Agents reply. A comment isn't edited; people delete their own, and a manager any, after a second press. The browser makes a comment's id, so one sent again after a lost reply is written once.
 
 **How agents learn of changes.** When a person answers, comments, resolves a thread or changes a page's status, agents can be told at once:
 

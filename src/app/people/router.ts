@@ -3,6 +3,7 @@ import { ApiError, notFound } from '../../shared/errors';
 import { isOn } from '../../shared/switches';
 import { endSession, listSessions, setInstance, whoAmI } from './account';
 import { listMyPages, listMyProjects, listMyTags, listMyVersions, readPage } from './pages';
+import { addComment, deleteComment, listMyThreads, listReplies, listThreads, reply, setResolved } from './comments';
 import { answerDecision, countMyDecisions, listMyDecisions, listPageDecisions, readDecision } from './decisions';
 import { approveDevice, claimDevice, lookAtDevice, startDevice } from './devices';
 import { addPasskey, addPasskeyOptions, linkOptions, linkRegister, listPasskeys, removePasskey, signIn, signInOptions } from './passkeys';
@@ -23,6 +24,7 @@ interface PeopleRoute { method: string; path: RegExp; who: 'anyone' | 'person'; 
 const open = (method: string, path: string, off: boolean, handler: (ctx: AppContext) => Promise<Response>): PeopleRoute => ({ method, path: new RegExp(`^/app-api${path}$`), who: 'anyone', off, handler });
 const person = (method: string, path: string, off: boolean, handler: (ctx: SignedIn) => Promise<Response>): PeopleRoute => ({ method, path: new RegExp(`^/app-api${path}$`), who: 'person', off, handler });
 
+const COMMENT = '(cmt_[0-9A-Z]{26})';
 const DECISION = '(dec_[0-9A-Z]{26})';
 const SLUG = '([a-z0-9][a-z0-9-]{0,79})';
 
@@ -48,6 +50,13 @@ export const peopleRoutes: PeopleRoute[] = [
   person('GET', `/projects/${SLUG}/pages/${SLUG}`, false, readPage),
   person('GET', `/projects/${SLUG}/pages/${SLUG}/versions`, false, listMyVersions),
   person('GET', `/projects/${SLUG}/pages/${SLUG}/decisions`, false, listPageDecisions),
+  person('GET', `/projects/${SLUG}/pages/${SLUG}/comments`, false, listThreads),
+  person('POST', `/projects/${SLUG}/pages/${SLUG}/comments`, false, addComment),
+  person('GET', '/comments', false, listMyThreads),
+  person('DELETE', `/comments/${COMMENT}`, false, deleteComment),
+  person('GET', `/comments/${COMMENT}/replies`, false, listReplies),
+  person('POST', `/comments/${COMMENT}/replies`, false, reply),
+  person('PUT', `/comments/${COMMENT}/resolved`, false, setResolved),
   person('GET', '/decisions', false, listMyDecisions),
   person('GET', '/decisions/count', false, countMyDecisions),
   person('GET', `/decisions/${DECISION}`, false, readDecision),

@@ -89,6 +89,10 @@ Q = {
  "last open decision": "SELECT 1 FROM decisions d WHERE d.page_id=? AND d.status IN ('open','stale')",
  "comments on page": "SELECT * FROM comments WHERE page_id=? AND deleted_at IS NULL ORDER BY created_at,id LIMIT 100",
  "thread": "SELECT * FROM comments WHERE thread_id=? ORDER BY created_at,id",
+ "replies": "SELECT * FROM comments WHERE thread_id=? AND id<>thread_id AND deleted_at IS NULL AND (created_at,id)<(?,?) ORDER BY created_at DESC,id DESC LIMIT 51",
+ "threads on page": "SELECT id FROM comments WHERE page_id=? AND id=thread_id AND deleted_at IS NULL AND (created_at,id)<(?,?) ORDER BY created_at DESC,id DESC LIMIT 31",
+ "open threads, newest": "SELECT c.id,c.created_at FROM comments c CROSS JOIN pages p ON p.id=c.page_id AND p.deleted_at IS NULL WHERE c.project_id=? AND c.resolved_at IS NULL AND c.deleted_at IS NULL AND c.id=c.thread_id AND (c.created_at,c.id)<(?,?) ORDER BY c.created_at DESC,c.id DESC LIMIT 31",
+ "open threads anywhere": "SELECT c.id,c.created_at FROM comments c CROSS JOIN pages p ON p.id=c.page_id AND p.deleted_at IS NULL WHERE c.resolved_at IS NULL AND c.deleted_at IS NULL AND c.id=c.thread_id AND (c.created_at,c.id)<(?,?) ORDER BY c.created_at DESC,c.id DESC LIMIT 31",
  # The Worker reads the newest number first (0 when none). Without `after`, or with no read scope, it stops there and
  # skips the second query, because IN () would scan. A full page continues at its last item, any other at the newest number.
  "newest event": "SELECT MAX(seq) FROM events WHERE project_id=?",
