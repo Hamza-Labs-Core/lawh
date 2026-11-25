@@ -85,7 +85,7 @@ describe('answering', () => {
     const cookie = await member(3), before = await count('decision_answers');
     const DB = new Proxy(env.DB, { get: (target, key) => {
       if (key !== 'batch') { const value = Reflect.get(target, key) as unknown; return typeof value === 'function' ? (value as () => void).bind(target) : value; }
-      return async (statements: D1PreparedStatement[]) => { if (statements.length === 4) await sql(change); return target.batch(statements); };
+      return async (statements: D1PreparedStatement[]) => { if (statements.length === 6) await sql(change); return target.batch(statements); };
     } });
     expect(await code(await api('POST', `/decisions/${ID(1)}/answers`, { cookie, body: { revision: 1, seq: 0, optionId: 'a' } }, { DB }))).toEqual(expected);
     expect([await count('decision_answers', "member_id='m'"), await count('events')]).toEqual([before, 0]);

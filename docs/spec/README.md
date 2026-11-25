@@ -21,7 +21,7 @@ Lawh (لوح, a writing tablet) is a private, self-hosted place where agents pub
 
 ## 2. What exists today
 
-S1: both Workers (closed by the `instance` switch), the D1 schema (migrations), and CI. S2: agent keys and the publish API (search in it comes with S9). S3: the content Worker, its tokens, sandbox and bridge (images and charts open full size with S6). S4: passkeys, sessions, device approval, `pnpm lawh owner setup`, and the first screens (invites and resets are made with S18). S5: the pages list, reading a page and its versions, and levels on every route. S6: the full-size viewer. S7: decisions, beside the page (a sheet on a phone) and on a screen of their own. S8: comments on a page or a section, and agents' replies. There is no earlier code to reuse or migrate.
+S1: both Workers (closed by the `instance` switch), the D1 schema (migrations), and CI. S2: agent keys and the publish API. S3: the content Worker, its tokens, sandbox and bridge (images and charts open full size with S6). S4: passkeys, sessions, device approval, `pnpm lawh owner setup`, and the first screens (invites and resets are made with S18). S5: the pages list, reading a page and its versions, and levels on every route. S6: the full-size viewer. S7: decisions, beside the page (a sheet on a phone) and on a screen of their own. S8: comments on a page or a section, and agents' replies. S9: search. There is no earlier code to reuse or migrate.
 
 ## 3. How it works
 
@@ -103,7 +103,7 @@ The first two keep one outgoing connection to Lawh for each project, so they wor
 - **A comment or decision can't leave its page's project:** a composite foreign key, because access is checked by project.
 - **Every query is indexed.** [query_plans.py](checks/query_plans.py) builds the schema and fails on a table scan or a sort without an index. [integrity.py](checks/integrity.py) tests the races: answer against republish, purge, pruning, cleanup, first publish and search filters, plus sign-in, levels and removal. Both become CI checks in S1.
 - **Lists use keyset pages** (30 by default, 100 at most), never `OFFSET` or `COUNT(*)`.
-- **Search** is FTS5 over title, summary, tags and the page's visible text (first 200 KB). Arabic is normalized the same way on write and on search: no diacritics, one form of alef, ya and ta marbuta, and Western digits inside the index. Project, status and tag filters apply inside the index, before the limit of 100 matches, newest first. A soft-deleted page leaves the index. Each change gives the page a new, higher search rowid.
+- **Search** is FTS5 over title, summary, tags and the page's visible text (first 200 KB). Arabic is normalized the same way on write and on search: no diacritics, one form of alef, ya and ta marbuta, and Western digits inside the index. Project, status and tag filters apply inside the index, before the limit of 100 matches, newest first. A soft-deleted page leaves the index. Each change gives the page a new, higher search rowid. The text is that of the page's first HTML file, read at commit from its first 3 MB, without scripts, styles and templates. Each word typed matches the start of a word; all must match.
 - **Publishing doesn't hit D1's 100-parameter limit:** file rows go in as one JSON parameter through `json_each`.
 
 ## 5. API
@@ -187,7 +187,7 @@ Gross list prices per month, before the free allowances, read 2026-11-24 ([Worke
 | **Total** | **$0.22** | **$2.20** | **$21.68** |
 
 - **Unit costs:** about $0.00002 a page view and $0.00048 a published version, plus $0.015 per GB stored a month.
-- **Assumptions:** 26 requests a view, 20 of them files; 20 requests and 15 new blobs a version; 10 ms CPU a request; 400 rows written a version (D1 bills each index and search-index row; S9 measures it); 120 rows read a view. D1 holds 0.05, 0.5 and 5 GB.
+- **Assumptions:** 26 requests a view, 20 of them files; 20 requests and 15 new blobs a version; 10 ms CPU a request; 400 rows written a version (D1 bills each index and search-index row; local D1 reports 44 for a first publish of one 4,000-word file); 120 rows read a view. D1 holds 0.05, 0.5 and 5 GB.
 - **Live pings:** 2, 10 and 50 listeners that reconnect every hour, and 400, 4,000 and 40,000 events a month. Each listener makes about 10,800 requests a month for each project it watches: 8,640 reads every 5 minutes, and a ticket, a connection and a read every hour; reading the events adds one request each. An idle connection that can hibernate costs nothing. Polling with `live` off costs 86,400 requests a month for each project a listener watches, about $0.04.
 - **Workers Paid is required** ($5 a month for the account if it isn't on it already). The free plan caps a request at 10 ms of CPU, which search indexing and uploads exceed, and keeps D1 Time Travel for less time.
 - People cost nothing by themselves. With teams, a request reads at most 5 more rows to find the person's level. A list for a person with 50 projects reads up to 1,500 rows ($0.0000015), a few cents a month at the Large size.

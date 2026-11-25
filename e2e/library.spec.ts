@@ -337,7 +337,8 @@ for (const lang of ['en', 'ar'] as const) for (const mode of ['dark', 'light'] a
       if (shots && browserName === 'chromium') await page.screenshot({ path: `${shots}/${name}-${lang}-${mode}-${width}.png` });
     };
     await open(page, member); await expect(page.locator('.grid li').first()).toBeVisible(); await check('library');
-    await page.locator('input[role=combobox]').click(); await expect(page.locator('.options [role=option]').first()).toBeVisible(); await check('library-tags');
+    await page.locator('input[role=combobox]').last().click(); await expect(page.locator('.options [role=option]').first()).toBeVisible(); await check('library-tags');
+    await page.locator('input[role=combobox]').first().fill(lang === 'ar' ? 'مقارنه' : 'photo'); await expect(page.locator('.search .options [role=option]').first()).toBeVisible(); await check('library-search');
     await page.goto(`${APP}/?status=decided`); await expect(page.locator('.empty')).toBeVisible(); await check('library-empty');
     await page.goto(`${APP}/p/one/good`); await expect(frame(page).getByRole('heading', { level: 1 })).toBeVisible(); await check('page');
     await frame(page).locator('#out').click(); await expect(page.getByRole('dialog')).toBeVisible(); await check('leave');

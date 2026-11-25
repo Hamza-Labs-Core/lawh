@@ -3,6 +3,8 @@ import type { AppEnv } from '../../shared/env';
 import { ApiError, conflict, invalid, notFound } from '../../shared/errors';
 import { newId } from '../../shared/ids';
 import { type Declared, declareStatements, readDeclared } from '../decisions/declare';
+import { indexStatements } from '../search';
+import { visibleText } from '../search/text';
 import { type Project, projectById, projectBySlug } from './auth';
 import { integer, isObject, onlyKeys, readJson, text } from './body';
 import { idempotent, type Idempotent, mustChange, replay, type Stored, writeOnce } from './idempotency';
@@ -201,9 +203,10 @@ async function commitNew(ctx: Context, idem: Idempotent): Promise<Stored> {
   const missing = [...new Set(manifest.files.map((f) => f.sha256))].filter((h) => !have.has(h));
   if (missing.length > 0) throw invalid('Some files were not sent.', { missing });
 
+  const text = await entryText(ctx.env, manifest);
   for (let attempt = 1; ; attempt++) {
     try {
-      return await commitOnce(ctx, upload, project, manifest, idem);
+      return await commitOnce(ctx, upload, project, manifest, text, idem);
     } catch (error) {
       if (isConflict(error)) throw conflict('Someone published a newer version.');
       if (!String(error).includes('malformed JSON')) throw error;
@@ -214,7 +217,15 @@ async function commitNew(ctx: Context, idem: Idempotent): Promise<Stored> {
   }
 }
 
-async function commitOnce(ctx: Context, upload: UploadRow, project: Project, manifest: Manifest, idem: Idempotent): Promise<Stored> {
+/** The text of the page's first file, for the search index. Other HTML files of the page aren't searched. */
+async function entryText(env: AppEnv, manifest: Manifest): Promise<string> {
+  const entry = manifest.files.find((f) => f.path === manifest.entry)!;
+  const blob = await env.DB.prepare('SELECT r2_key FROM blobs WHERE sha256 = ?').bind(entry.sha256).first<{ r2_key: string }>();
+  const object = blob && await env.FILES.get(blob.r2_key);
+  return object ? visibleText(object.body) : '';
+}
+
+async function commitOnce(ctx: Context, upload: UploadRow, project: Project, manifest: Manifest, text: string, idem: Idempotent): Promise<Stored> {
   const { env, caller } = ctx;
   const current = await env.DB.prepare('SELECT * FROM pages WHERE project_id = ? AND slug = ?').bind(project.id, upload.slug).first<PageRow>();
   if (current?.deleted_at != null || (current?.current_version ?? 0) !== upload.base_version) throw conflict('Someone published a newer version.', { currentVersion: current?.current_version ?? 0 });
@@ -247,6 +258,7 @@ async function commitOnce(ctx: Context, upload: UploadRow, project: Project, man
       SELECT ?, j.value ->> 'path', j.value ->> 'sha256', j.value ->> 'type', j.value ->> 'bytes' FROM json_each(?) j`).bind(versionId, JSON.stringify(manifest.files)),
     ...(meta.tags ? tagStatements(env, page.id, project.id, tags, now) : []),
     ...(manifest.decisions ? declareStatements(env, manifest.decisions, { pageId: page.id, projectId: project.id, versionId, n, agentId: caller.agentId, now }) : []),
+    ...indexStatements(env, page.id, { title: page.title, summary: page.summary, tags }, text),
     eventStatement(env, project.id, page.id, 'page.published', page.id, caller.agentId, now),
     ...(current && current.status !== page.status ? [eventStatement(env, project.id, page.id, 'page.status', page.id, caller.agentId, now)] : []),
   ]);
