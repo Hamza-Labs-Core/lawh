@@ -81,6 +81,8 @@ Q = {
  "answer history": "SELECT * FROM decision_answers WHERE decision_id=? ORDER BY seq",
  "comments on page": "SELECT * FROM comments WHERE page_id=? AND deleted_at IS NULL ORDER BY created_at,id LIMIT 100",
  "thread": "SELECT * FROM comments WHERE thread_id=? ORDER BY created_at,id",
+ # The Worker reads the newest number first (0 when none). Without `after`, or with no read scope, it stops there and
+ # skips the second query, because IN () would scan. A full page continues at its last item, any other at the newest number.
  "newest event": "SELECT MAX(seq) FROM events WHERE project_id=?",
  "events": "SELECT * FROM events WHERE project_id=? AND seq>? AND seq<=? AND type IN (?,?,?) ORDER BY seq LIMIT 100",
  "outbox": "SELECT seq FROM events WHERE enqueued_at IS NULL ORDER BY seq LIMIT 100",

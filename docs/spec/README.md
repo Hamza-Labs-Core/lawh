@@ -88,7 +88,7 @@ An answer that decides a page's last `open` or `stale` decision moves the page f
 
 The first two keep one outgoing connection to Lawh for each project, so they work behind a home router. A Durable Object for each project holds the connections and sleeps between pings. After an event is stored, Lawh sends only its number; the client then reads the event with its key. **A ping is only a hint:** the client also reads on connecting and every 5 minutes, so a lost ping delays an event and never loses it. An agent's own events don't wake it. Other agents' events do only with `--agents`, so two agents don't wake each other by default.
 
-**Cursors.** `GET /v1/events` returns `next`, also when the key may read none of the events it passed, and without `after` it returns only the newest number. A first `wait` or `listen` starts there, so it doesn't replay the past. The client saves a cursor for each agent, project, command and filter (or `--cursor <name>`), writes it with a rename, and moves it only after the event was printed or the command ended with success; `--after <seq>` overrides it, and every event printed has its `seq`. `wait` and `listen` never share a cursor, and two runs with the same one are refused by a lock file.
+**Cursors.** `GET /v1/events` returns `next`, also when the key may read none of the events it passed, and without `after` it returns only the newest number. A first `wait` or `listen` starts there, so it doesn't replay the past. The client saves a cursor for each agent, project, command and filter (`--cursor <name>` replaces only the filter), writes it with a rename, and moves it only after the event was printed or the command ended with success. It moves to that event's `seq`, and to `next` only when no matching event of that page is left; `--after <seq>` overrides it, and every event printed has its `seq`. `wait` and `listen` never share a cursor, and a second run with the same one is refused by a lock file, which holds the process id and is replaced when that process has ended.
 
 ## 4. Data model
 
@@ -186,7 +186,7 @@ Gross list prices per month, before the free allowances, read 2026-11-24 ([Worke
 
 - **Unit costs:** about $0.00002 a page view and $0.00048 a published version, plus $0.015 per GB stored a month.
 - **Assumptions:** 26 requests a view, 20 of them files; 20 requests and 15 new blobs a version; 10 ms CPU a request; 400 rows written a version (D1 bills each index and search-index row; S9 measures it); 120 rows read a view. D1 holds 0.05, 0.5 and 5 GB.
-- **Live pings:** 2, 10 and 50 listeners that reconnect every hour, and 400, 4,000 and 40,000 events a month. Each listener makes about 11,600 requests a month for each project it watches: 8,640 reads every 5 minutes, and a ticket, a connection and a read every hour; reading the events adds one request each. An idle connection that can hibernate costs nothing. Polling with `live` off costs 86,400 requests a month for each project a listener watches, about $0.04.
+- **Live pings:** 2, 10 and 50 listeners that reconnect every hour, and 400, 4,000 and 40,000 events a month. Each listener makes about 10,800 requests a month for each project it watches: 8,640 reads every 5 minutes, and a ticket, a connection and a read every hour; reading the events adds one request each. An idle connection that can hibernate costs nothing. Polling with `live` off costs 86,400 requests a month for each project a listener watches, about $0.04.
 - **Workers Paid is required** ($5 a month for the account if it isn't on it already). The free plan caps a request at 10 ms of CPU, which search indexing and uploads exceed, and keeps D1 Time Travel for less time.
 - People cost nothing by themselves. With teams, a request reads at most 5 more rows to find the person's level. A list for a person with 50 projects reads up to 1,500 rows ($0.0000015), a few cents a month at the Large size.
 - `workers.dev` hosts and custom domains include their certificates, so no certificate add-on is needed.
@@ -218,7 +218,7 @@ Asked one at a time. Answers are recorded here. These are choices for the produc
 | # | Story | Needs |
 |---|---|---|
 | S1 | Workspace, CI, migrations from schema.sql, the (still empty) Durable Object class, query-plan check, `instance` switch off, both Workers answering 404 | – |
-| S2 | Agent keys (checked with their person, level and the `teams` switch), projects, publish API (start, blob, commit), list, read, versions | D2 |
+| S2 | Agent keys (checked with their person, level and the `teams` switch), projects, publish API (start, blob, commit), list, read, versions | S1, D2 |
 | S3 | Content Worker: tokens, sandbox, headers, bridge, hostile-page tests | S2, D3 |
 | S4 | Passkey sign-in, sessions, device approval, owner setup and recovery | S1 |
 | S5 | Pages list with project, status and tag filters, page view, versions, theme, en and ar; `levelOn` on every route; lists take a set of projects | S3, S4 |
@@ -230,7 +230,7 @@ Asked one at a time. Answers are recorded here. These are choices for the produc
 | S11 | Connect an agent: API, code and name pages. The skill and the client, with a publishing guide | S7, S8, S13 |
 | S13 | Events feed with who acted (always on); webhooks and queue, behind `webhooks` | S7, S8 |
 | S14 | PWA: manifest, icons, service worker | S5 |
-| S15 | `lawh init`, `upgrade`, `rollback`, `destroy`, fork-safe CI, the check that no instance details are committed | S4, S10 |
+| S15 | `lawh init`, `upgrade`, `rollback`, `destroy`, fork-safe CI, the check that no instance details are committed | S4, S10, S13 |
 | S16 | First real use: five design documents with charts and decisions, published to the author's private copy (not in this repository) | S7, S11, S15 |
 | S17 | Teams: levels, projects, managers' agents and keys, every route × level test with seeded members, behind `teams` | S7, S8, S9, S10, S11, S13 |
 | S18 | People: invite, join, reset, remove, transfer; the `teams` switch can be turned on | S17 |

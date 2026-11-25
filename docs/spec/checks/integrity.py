@@ -520,6 +520,7 @@ settle(2); check("removing the setting does the same", sql("DELETE FROM settings
 settle(2); check("saving the switch on again changes nothing", sql("INSERT OR REPLACE INTO settings VALUES('teams','true',2)") and rows('projects', "id='p1' AND answers_needed=2"))
 check("renaming the setting turns it off", sql("UPDATE settings SET key='other' WHERE key='teams'") and not rows('projects', "answers_needed>1"))
 settle(2); sql("INSERT INTO settings VALUES('other','true',1)"); check("another setting's rename changes nothing", sql("UPDATE settings SET key='third' WHERE key='other'") and rows('projects', "answers_needed=2"))
+settle(2); sql("INSERT INTO settings VALUES('other','false',1)"); check("nor can another setting replace it", sql("UPDATE OR REPLACE settings SET key='teams' WHERE key='other'") and not rows('projects', "answers_needed>1"))
 EV = "INSERT INTO events(project_id,type,subject_id,created_at,actor_type,actor_id) VALUES('p1','t','s',1,"
 for v in ("'member','m')", "NULL,'m')", "NULL,NULL)", "'agent',NULL)", "'person',NULL)", "'system','m')"): refused(f"an event says who acted ({v}", EV + v)
 check("by a person, an agent or the system", all(sql(EV + v) for v in ("'person','m')", "'agent','am')", "'system',NULL)")))
