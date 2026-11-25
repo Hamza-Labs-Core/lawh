@@ -5,4 +5,6 @@ gateTests({
   'X-Robots-Tag': /^noindex, nofollow$/,
   'X-Content-Type-Options': /^nosniff$/,
   'Referrer-Policy': /^no-referrer$/,
+  'Permissions-Policy': /^camera=\(\), microphone=\(\), geolocation=\(\), usb=\(\), payment=\(\)$/,
+  'X-DNS-Prefetch-Control': /^off$/,
 });
