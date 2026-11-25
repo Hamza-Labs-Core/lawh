@@ -82,6 +82,17 @@ for (const slug of readdirSync(join(root, 'e2e/pages'))) {
   for (const [i, { data }] of files.entries()) if (upload.missing.includes(list[i].sha256)) await api(`/uploads/${upload.uploadId}/blobs/${list[i].sha256}`, { method: 'PUT', body: data });
   await api(`/uploads/${upload.uploadId}/commit`, { method: 'POST' });
 }
-const [versions] = await db('SELECT p.slug, v.id FROM pages p JOIN page_versions v ON v.page_id = p.id');
+// More of `good`: an old version, tags, a status. And many pages, for the list.
+for (const [method, path, body] of [['PATCH', '/projects/one/pages/good', { title: 'Photo storage options', summary: 'Three ways to keep photos, compared by monthly cost and effort.', tags: ['storage', 'صور'], status: 'in_review' }],
+  ['PATCH', '/projects/one/pages/forge', { title: 'مقارنة مزوّدي الطقس', lang: 'ar', tags: ['weather'], status: 'draft' }]]) await api(path, { method, body: JSON.stringify(body) });
+for (let i = 0; i < 40; i++) await db(`INSERT INTO pages(id,project_id,slug,title,created_by,created_at,updated_at) VALUES('fill${i}','p1','fill-${i}','Filler ${i}','a',1,${i + 1})`);
+{
+  const data = Buffer.from('<!doctype html><html><head><meta charset="utf-8"><title>Second</title></head><body><h1>Second version</h1></body></html>');
+  const file = { path: 'index.html', sha256: createHash('sha256').update(data).digest('hex'), bytes: data.length };
+  const upload = await api('/projects/one/pages/versions/versions', { method: 'POST', body: JSON.stringify({ baseVersion: 1, note: 'Second thoughts', page: {}, files: [file] }) });
+  await api(`/uploads/${upload.uploadId}/blobs/${file.sha256}`, { method: 'PUT', body: data });
+  await api(`/uploads/${upload.uploadId}/commit`, { method: 'POST' });
+}
+const [versions] = await db('SELECT p.slug, v.id FROM pages p JOIN page_versions v ON v.page_id = p.id AND v.n = p.current_version');
 for (const { slug, id } of versions) pages[slug] = id;
 ready = { pages, contentKey: CONTENT_KEY };

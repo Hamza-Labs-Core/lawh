@@ -2,7 +2,8 @@ import type { AppEnv } from '../../shared/env';
 import { conflict, invalid, notFound } from '../../shared/errors';
 import { matchesEtag } from '../../shared/etag';
 import { newId } from '../../shared/ids';
-import { type Project, projectBySlug, projectJson, projectsById, usableProjects } from './auth';
+import { encodeCursor, listPageRows, pageLimit, readCursor, tagsOf } from '../pages/list';
+import { type Project, projectBySlug, projectJson, usableProjects } from './auth';
 import { onlyKeys, oneOf, readJson, text } from './body';
 import { idempotent, mustChange, replay, writeOnce } from './idempotency';
 import type { Context } from './router';
@@ -42,15 +43,6 @@ export async function findPage(env: AppEnv, project: Project, slug: string): Pro
   return page;
 }
 
-async function tagsOf(env: AppEnv, pageIds: string[]): Promise<Map<string, string[]>> {
-  const tags = new Map<string, string[]>(pageIds.map((id) => [id, []]));
-  if (pageIds.length === 0) return tags;
-  const { results } = await env.DB.prepare('SELECT page_id, tag FROM page_tags WHERE page_id IN (SELECT value FROM json_each(?)) ORDER BY page_id, tag')
-    .bind(JSON.stringify(pageIds)).all<{ page_id: string; tag: string }>();
-  for (const row of results) tags.get(row.page_id)?.push(row.tag);
-  return tags;
-}
-
 export async function filesOf(env: AppEnv, pageId: string, n: number) {
   const { results } = await env.DB.prepare(
     'SELECT f.path, f.sha256, f.bytes FROM page_versions v JOIN version_files f ON f.version_id = v.id WHERE v.page_id = ? AND v.n = ? ORDER BY f.path')
@@ -70,45 +62,6 @@ export function eventStatement(env: AppEnv, projectId: string, pageId: string, t
     .bind(projectId, pageId, type, subjectId, at, agentId);
 }
 
-// ---- Cursors: [updated_at, id] of the last row.
-const encode = (value: unknown): string => btoa(JSON.stringify(value)).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
-
-export function pageLimit(url: URL): number {
-  const raw = url.searchParams.get('limit') ?? '30';
-  const limit = /^\d{1,3}$/.test(raw) ? Number(raw) : 0;
-  if (limit < 1 || limit > 100) throw invalid('limit must be from 1 to 100.');
-  return limit;
-}
-
-export function readCursor(url: URL, kinds: readonly ('number' | 'string')[]): (number | string)[] | null {
-  const raw = url.searchParams.get('cursor');
-  if (raw === null) return null;
-  try {
-    const value: unknown = JSON.parse(atob(raw.replaceAll('-', '+').replaceAll('_', '/')));
-    if (Array.isArray(value) && value.length === kinds.length && kinds.every((kind, i) => typeof value[i] === kind)) return value as (number | string)[];
-  } catch { /* below */ }
-  throw invalid('The cursor is not valid.');
-}
-
-function listIn(env: AppEnv, project: Project | null, status: string | null, tag: string | null, after: [number, string], limit: number): D1PreparedStatement {
-  const where: string[] = [], values: unknown[] = [];
-  const add = (sql: string, ...v: unknown[]) => { where.push(sql); values.push(...v); };
-  let from: string, order: string;
-  if (tag === null) {
-    from = 'pages p'; order = 'p.updated_at DESC, p.id DESC';
-    if (project) add('p.project_id = ?', project.id);
-    if (status) add('p.status = ?', status);
-    add('(p.updated_at, p.id) < (?, ?)', ...after);
-  } else {
-    from = 'page_tags t CROSS JOIN pages p ON p.id = t.page_id'; order = 't.sort_at DESC, t.page_id DESC';
-    if (project) add('t.project_id = ?', project.id);
-    add('t.tag = ?', tag);
-    add('(t.sort_at, t.page_id) < (?, ?)', ...after);
-    if (status) add('p.status = ?', status);
-  }
-  return env.DB.prepare(`SELECT p.* FROM ${from} WHERE ${where.join(' AND ')} AND p.deleted_at IS NULL ORDER BY ${order} LIMIT ?`).bind(...values, limit);
-}
-
 export async function listProjects(ctx: Context): Promise<Response> {
   const projects = await usableProjects(ctx.env, ctx.caller);
   return Response.json({ items: projects.map(projectJson) });
@@ -123,29 +76,12 @@ export async function me(ctx: Context): Promise<Response> {
 }
 
 export async function listPages(ctx: Context): Promise<Response> {
-  const { env, url, caller } = ctx, query = url.searchParams;
-  if (query.has('q')) throw invalid('Search is not available yet.');
-  const limit = pageLimit(url);
-  const status = query.get('status');
-  if (status !== null) oneOf(status, 'status', ['draft', 'in_review', 'decided', 'archived'] as const);
-  const tag = query.get('tag')?.trim().normalize('NFC') ?? null;
-  const cursor = readCursor(url, ['number', 'string']);
-  const after = (cursor ?? [Number.MAX_SAFE_INTEGER, '']) as [number, string];
-  const slug = query.get('project');
-
+  const { env, url, caller } = ctx;
+  if (url.searchParams.has('q')) throw invalid('Search is not available yet.');
+  const slug = url.searchParams.get('project');
   const projects = slug !== null ? [await projectBySlug(env, caller, slug)] : caller.allProjects ? null : await usableProjects(env, caller);
-  const queries = (projects ?? [null]).map((project) => listIn(env, project, status, tag, after, limit + 1));
-  let rows = queries.length === 0 ? [] : (await env.DB.batch<PageRow>(queries)).flatMap((r) => r.results);
-  if (queries.length > 1) rows.sort((a, b) => b.updated_at - a.updated_at || (a.id < b.id ? 1 : -1));
-  const more = rows.length > limit;
-  rows = rows.slice(0, limit);
-  const byId = new Map((projects ?? await projectsById(env, rows.map((row) => row.project_id))).map((p) => [p.id, p]));
-  const tags = await tagsOf(env, rows.map((row) => row.id));
-  const last = rows.at(-1);
-  return Response.json({
-    items: rows.map((row) => pageJson(ctx, byId.get(row.project_id)!, row, tags.get(row.id) ?? [])),
-    next: more && last ? encode([last.updated_at, last.id]) : null,
-  });
+  const { items, next } = await listPageRows(env, url, projects);
+  return Response.json({ items: items.map(({ page, project, tags }) => pageJson(ctx, project, page, tags)), next });
 }
 
 export async function getPage(ctx: Context): Promise<Response> {
@@ -190,18 +126,20 @@ export async function updatePage(ctx: Context): Promise<Response> {
   }
 }
 
-interface VersionRow { id: string; n: number; note: string; bytes: number; file_count: number; agent: string; created_at: number }
-const versionJson = (v: VersionRow) => ({ n: v.n, note: v.note, bytes: v.bytes, fileCount: v.file_count, publishedBy: v.agent, createdAt: v.created_at });
-const VERSION = 'SELECT v.id, v.n, v.note, v.bytes, v.file_count, a.name agent, v.created_at FROM page_versions v JOIN agents a ON a.id = v.published_by';
+export interface VersionRow { id: string; n: number; note: string; bytes: number; file_count: number; agent: string; created_at: number }
+export const versionJson = (v: VersionRow) => ({ n: v.n, note: v.note, bytes: v.bytes, fileCount: v.file_count, publishedBy: v.agent, createdAt: v.created_at });
+export const VERSION = 'SELECT v.id, v.n, v.note, v.bytes, v.file_count, a.name agent, v.created_at FROM page_versions v JOIN agents a ON a.id = v.published_by';
+
+export async function versionList(env: AppEnv, url: URL, page: PageRow): Promise<{ items: ReturnType<typeof versionJson>[]; next: string | null }> {
+  const limit = pageLimit(url), before = readCursor(url, ['number'])?.[0] ?? Number.MAX_SAFE_INTEGER;
+  const { results } = await env.DB.prepare(`${VERSION} WHERE v.page_id = ? AND v.n < ? ORDER BY v.n DESC LIMIT ?`).bind(page.id, before, limit + 1).all<VersionRow>();
+  const items = results.slice(0, limit);
+  return { items: items.map(versionJson), next: results.length > limit ? encodeCursor([items.at(-1)!.n]) : null };
+}
 
 export async function listVersions(ctx: Context): Promise<Response> {
   const project = await projectBySlug(ctx.env, ctx.caller, ctx.params[0]!);
-  const page = await findPage(ctx.env, project, ctx.params[1]!);
-  const limit = pageLimit(ctx.url);
-  const before = readCursor(ctx.url, ['number'])?.[0] ?? Number.MAX_SAFE_INTEGER;
-  const { results } = await ctx.env.DB.prepare(`${VERSION} WHERE v.page_id = ? AND v.n < ? ORDER BY v.n DESC LIMIT ?`).bind(page.id, before, limit + 1).all<VersionRow>();
-  const items = results.slice(0, limit);
-  return Response.json({ items: items.map(versionJson), next: results.length > limit ? encode([items.at(-1)!.n]) : null });
+  return Response.json(await versionList(ctx.env, ctx.url, await findPage(ctx.env, project, ctx.params[1]!)));
 }
 
 async function findVersion(ctx: Context): Promise<{ page: PageRow; version: VersionRow }> {

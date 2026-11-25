@@ -2,6 +2,7 @@ import type { AppEnv } from '../../shared/env';
 import { ApiError, notFound } from '../../shared/errors';
 import { isOn } from '../../shared/switches';
 import { endSession, listSessions, setInstance, whoAmI } from './account';
+import { listMyPages, listMyProjects, listMyTags, listMyVersions, readPage } from './pages';
 import { approveDevice, claimDevice, lookAtDevice, startDevice } from './devices';
 import { addPasskey, addPasskeyOptions, linkOptions, linkRegister, listPasskeys, removePasskey, signIn, signInOptions } from './passkeys';
 import { checkSameOrigin, findPerson, type Person } from './session';
@@ -21,6 +22,8 @@ interface PeopleRoute { method: string; path: RegExp; who: 'anyone' | 'person'; 
 const open = (method: string, path: string, off: boolean, handler: (ctx: AppContext) => Promise<Response>): PeopleRoute => ({ method, path: new RegExp(`^/app-api${path}$`), who: 'anyone', off, handler });
 const person = (method: string, path: string, off: boolean, handler: (ctx: SignedIn) => Promise<Response>): PeopleRoute => ({ method, path: new RegExp(`^/app-api${path}$`), who: 'person', off, handler });
 
+const SLUG = '([a-z0-9][a-z0-9-]{0,79})';
+
 export const peopleRoutes: PeopleRoute[] = [
   open('POST', '/sign-in/options', true, signInOptions),
   open('POST', '/sign-in', true, signIn),
@@ -37,6 +40,11 @@ export const peopleRoutes: PeopleRoute[] = [
   person('POST', '/passkeys/options', false, addPasskeyOptions),
   person('POST', '/passkeys', false, addPasskey),
   person('DELETE', '/passkeys/([A-Za-z0-9_-]{1,1364})', false, removePasskey),
+  person('GET', '/projects', false, listMyProjects),
+  person('GET', '/pages', false, listMyPages),
+  person('GET', '/tags', false, listMyTags),
+  person('GET', `/projects/${SLUG}/pages/${SLUG}`, false, readPage),
+  person('GET', `/projects/${SLUG}/pages/${SLUG}/versions`, false, listMyVersions),
   person('POST', '/device/look', false, lookAtDevice),
   person('POST', '/device/approve', false, approveDevice),
 ];

@@ -26,12 +26,14 @@ test('another device signs in with a code', async ({ page, browser, member }) =>
     if (process.env.LAWH_SHOTS) await page.screenshot({ path: `${process.env.LAWH_SHOTS}/approve-2-en-dark-${test.info().project.name}.png` });
     await page.getByRole('button', { name: 'Approve' }).click();
     await expect(page.getByRole('status')).toHaveText('Approved. The other device is signing in.');
-    await expect(device.getByRole('heading', { name: 'Signed in as Mona' })).toBeVisible();
+    await expect(device.getByRole('heading', { name: 'Pages' })).toBeVisible();
     await page.getByRole('button', { name: 'Back' }).click();
+    await page.getByRole('link', { name: 'Account' }).click();
+    await expect(page.getByRole('heading', { name: 'Signed in as Mona' })).toBeFocused();
     await page.getByRole('button', { name: 'Sign out' }).click();
     await expect(page.getByRole('button', { name: 'Approve from another device' })).toBeVisible();
     await device.reload();
-    await expect(device.getByRole('heading', { name: 'Signed in as Mona' })).toBeVisible();
+    await expect(device.getByRole('heading', { name: 'Pages' })).toBeVisible();
   } finally { await other.close(); }
 });
 
@@ -134,7 +136,7 @@ for (const lang of ['en', 'ar'] as const) for (const mode of ['dark', 'light'] a
     await page.goto(`${APP}/link#${await makeLink(member)}`); await expect(page.locator('main .primary')).toBeVisible(); await check('link');
     const fresh = await makeMember();
     await enter(page.context(), fresh);
-    await page.goto(APP); await expect(page.locator('main h1')).toBeVisible(); await check('home');
+    await page.goto(`${APP}/account`); await expect(page.locator('main h1')).toBeVisible(); await check('home');
     await page.goto(`${APP}/approve`); await expect(page.locator('#code')).toBeVisible(); await check('approve');
     await leave(fresh);
   });

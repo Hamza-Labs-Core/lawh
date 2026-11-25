@@ -15,11 +15,12 @@ test('a link registers a passkey, which then signs in', async ({ page, member })
   await expect(page.getByRole('heading', { name: 'Welcome, Mona' })).toBeVisible();
   expect(page.url(), 'the token is taken out of the address').toBe(`${APP}/link`);
   await page.getByRole('button', { name: 'Create a passkey' }).click();
-  await expect(page.getByRole('heading', { name: 'Signed in as Mona' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Pages' })).toBeVisible();
   expect(page.url()).toBe(`${APP}/`);
   await page.goBack();
   expect(page.url(), 'Back does not return to the used link').not.toContain('/link');
   await page.goto(APP);
+  await page.getByRole('link', { name: 'Account' }).click();
   await page.getByRole('button', { name: 'Sign out' }).click();
   await page.getByRole('button', { name: 'Sign in with a passkey' }).click();
   await expect(page.getByRole('heading', { name: 'Signed in as Mona' })).toBeVisible();
@@ -32,7 +33,7 @@ test('a link works once', async ({ page, member }) => {
   const token = await makeLink(member);
   await page.goto(`${APP}/link#${token}`);
   await page.getByRole('button', { name: 'Create a passkey' }).click();
-  await expect(page.getByRole('heading', { name: 'Signed in as Mona' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Pages' })).toBeVisible();
   await page.goto('about:blank');
   await page.goto(`${APP}/link#${token}`);
   await expect(page.getByText('This link doesn’t work.')).toBeVisible();

@@ -13,7 +13,7 @@ export function useText(): (key: Key) => string {
 /** A text with its places filled. Each is isolated, so a name or an address in the other direction doesn't disturb the text around it. */
 export function Fill({ text, dir, ...values }: { text: Key; dir?: 'ltr'; [value: string]: string | undefined }) {
   const { lang } = useSettings();
-  return <>{parts(lang, text, values as Record<string, string>).map((part) => (typeof part === 'string' ? part : <bdi dir={dir}>{part.value}</bdi>))}</>;
+  return <>{parts(lang, text, values as Record<string, string>).map((part, i) => (typeof part === 'string' ? part : part.value ? <bdi key={i} dir={dir}>{part.value}</bdi> : null))}</>;
 }
 
 const keep = (key: string, value: string) => { try { localStorage.setItem(key, value); } catch { /* private window */ } };
@@ -31,11 +31,20 @@ export function SettingsProvider({ children }: { children: ComponentChildren }) 
   );
 }
 
+/** A link inside the app: a real address, opened without loading the app again. */
+export function Link({ to, class: className, children, current }: { to: string; class?: string; children: ComponentChildren; current?: boolean }) {
+  return <a href={to} class={className} aria-current={current ? 'page' : undefined} onClick={(event) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    go(to);
+  }}>{children}</a>;
+}
+
 export function TopBar({ children }: { children?: ComponentChildren }) {
   const t = useText(), { lang, mode, setLang, setMode } = useSettings();
   return (
     <header class="top">
-      <span class="logo">{t('app')}</span>
+      <Link class="logo" to="/">{t('app')}</Link>
       <span class="space" />
       {children}
       <button class="plain" onClick={() => setMode(mode === 'dark' ? 'light' : 'dark')}>{t(mode === 'dark' ? 'light' : 'dark')}</button>
@@ -68,8 +77,12 @@ export function Heading({ children, class: className }: { children: ComponentChi
   return <h1 ref={heading} tabIndex={-1} class={className}>{children}</h1>;
 }
 
+/** Whether the page before this one is the app's own. */
+export const wasInside = (): boolean => (history.state as { inside?: boolean } | null)?.inside === true;
+
 /** `replace`: Back doesn't return to a page whose work is done. */
 export function go(path: string, replace = false): void {
-  if (replace) history.replaceState(null, '', path); else history.pushState(null, '', path);
+  const state = { inside: replace ? wasInside() : true };
+  if (replace) history.replaceState(state, '', path); else history.pushState(state, '', path);
   dispatchEvent(new PopStateEvent('popstate'));
 }

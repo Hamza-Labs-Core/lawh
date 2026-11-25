@@ -33,7 +33,41 @@ const TEXT = {
   isOff: ['This copy is off. Nobody else can reach it.', 'هذه النسخة متوقفة، ولا يصل إليها أحد سواك.'],
   isOn: ['This copy is on.', 'هذه النسخة تعمل.'],
   turnOn: ['Turn on', 'تشغيل'],
-  soon: ['Pages come here next.', 'ستظهر الصفحات هنا لاحقًا.'],
+  account: ['Account', 'الحساب'],
+  pages: ['Pages', 'الصفحات'],
+  allProjects: ['All projects', 'كل المشاريع'],
+  anyStatus: ['Any status', 'كل الحالات'],
+  draft: ['Draft', 'مسودة'],
+  in_review: ['In review', 'قيد المراجعة'],
+  decided: ['Decided', 'حُسم'],
+  archived: ['Archived', 'مؤرشف'],
+  project: ['Project', 'المشروع'],
+  status: ['Status', 'الحالة'],
+  tag: ['Tag', 'الوسم'],
+  tagHint: ['Type a tag', 'كتابة وسم'],
+  clearTag: ['Remove the tag filter', 'إزالة تصفية الوسم'],
+  noTags: ['No tags', 'لا توجد وسوم'],
+  version: ['Version {n}', 'الإصدار {n}'],
+  versions: ['Versions', 'الإصدارات'],
+  more: ['Show more', 'عرض المزيد'],
+  noPages: ['No pages here yet.', 'لا توجد صفحات هنا بعد.'],
+  noMatches: ['No pages match these filters.', 'لا توجد صفحات تطابق هذه التصفية.'],
+  clear: ['Clear filters', 'مسح التصفية'],
+  noProjects: ['You’re in no project yet.', 'لم تتم إضافتك إلى أي مشروع بعد.'],
+  pageGone: ['This page isn’t here, or you can’t see it.', 'هذه الصفحة غير موجودة، أو لا تتوفر لك.'],
+  oldVersion: ['You’re reading version {n}. The current one is {current}.', 'المعروض هو الإصدار {n}. الإصدار الحالي هو {current}.'],
+  toCurrent: ['Go to the current version', 'الانتقال إلى الإصدار الحالي'],
+  current: ['Current', 'الحالي'],
+  by: ['by {agent}, {date}', 'من {agent}، {date}'],
+  updated: ['Updated {date}', 'آخر تحديث {date}'],
+  pageFrame: ['Page: {title}', 'صفحة: {title}'],
+  slow: ['The page is taking long to load.', 'يستغرق تحميل الصفحة وقتًا طويلًا.'],
+  reload: ['Load again', 'إعادة التحميل'],
+  leaveTitle: ['Open another site?', 'فتح موقع آخر؟'],
+  leaveHelp: ['The page wants to open this address. It is not part of Lawh.', 'تريد الصفحة فتح هذا العنوان. وهو ليس من لوح.'],
+  open: ['Open', 'فتح'],
+  cancel: ['Cancel', 'إلغاء'],
+  close: ['Close', 'إغلاق'],
   codeHere: ['On a device that is signed in, open {url} and type this code.', 'على جهاز سبق الدخول منه، يُفتح {url} ويُكتب هذا الرمز.'],
   codeEnds: ['It works for 5 minutes.', 'يعمل لمدة {five} دقائق.'],
   codeOver: ['The code is too old.', 'انتهت مدة الرمز.'],
@@ -50,6 +84,9 @@ const TEXT = {
 } as const;
 
 export type Key = keyof typeof TEXT;
+
+/** A day, in the language's own calendar words and digits. */
+export const day = (lang: Lang, at: number): string => new Intl.DateTimeFormat(lang === 'ar' ? 'ar-u-ca-gregory-nu-arab' : 'en-US', { dateStyle: 'medium' }).format(at);
 
 /** The text cut at its places: plain parts, and `{ value }` for what fills one. */
 export function parts(lang: Lang, key: Key, values: Record<string, string> = {}): (string | { value: string })[] {
