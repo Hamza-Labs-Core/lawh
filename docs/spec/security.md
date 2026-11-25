@@ -16,7 +16,8 @@ The two hosts are two exact names, on `workers.dev` or the owner's domain. Worke
 The app shows a page in `<iframe sandbox="allow-scripts" referrerpolicy="no-referrer">`. `allow-same-origin`, `allow-top-navigation`, `allow-popups`, `allow-forms`, `allow-modals` and `allow-downloads` are left out.
 
 - **Opaque origin.** The page gets a unique origin. It can't read the app's DOM, cookies or storage, another page's content, or its own `localStorage` (it throws, so pages must handle that).
-- **The same sandbox comes in a response header.** Every content response has `Content-Security-Policy: sandbox allow-scripts`, so opening a content URL directly is sandboxed too.
+- **The same sandbox comes in a response header.** Every content response has `Content-Security-Policy: sandbox allow-scripts`, so a content URL is sandboxed however it is opened.
+- **A page opens only in the app's frame.** The content host answers 404 to `Sec-Fetch-Dest: document`, because in its own tab a page has no parent whose `frame-src` keeps it from navigating away. `Vary: Sec-Fetch-Dest` keeps a copy cached for the frame from being used for a tab.
 - **The page can't navigate its frame elsewhere.** The app's `frame-src` lists only the content host, and the browser applies it to every navigation of that frame, so `location = 'https://…?data'` is blocked.
 
 ### Leftover ways out
@@ -25,9 +26,8 @@ CSP doesn't close every channel. These remain:
 
 - **WebRTC.** No fetch directive covers it. `webrtc 'block'` is sent, but browsers don't reliably enforce it. Patching `RTCPeerConnection` in the bridge isn't a boundary, because a page can make a `srcdoc` frame with a fresh copy.
 - **DNS prefetch.** `X-DNS-Prefetch-Control: off` is sent; not every browser honors it.
-- **A content URL opened in its own tab** has no parent `frame-src`, so it can navigate itself away.
 
-What could leave is only what the page already has: its own files, which its agent wrote, and its own URL token (one version, at most 4 hours). It can't reach the session, the API, decisions, comments or other pages. The S3 tests record these three per browser; they aren't expected to fail.
+What could leave is only what the page already has: its own files, which its agent wrote, and its own URL token (one version, at most 4 hours). It can't reach the session, the API, decisions, comments or other pages. The S3 tests record these two per browser; they aren't expected to fail.
 
 ### Content host headers
 
@@ -44,6 +44,7 @@ Access-Control-Allow-Origin: *
 Cross-Origin-Resource-Policy: cross-origin
 X-Robots-Tag: noindex, nofollow
 X-DNS-Prefetch-Control: off
+Vary: Sec-Fetch-Dest
 Cache-Control: private, max-age=3600, immutable
 ```
 
@@ -158,4 +159,4 @@ Every comment has `authorType` (`person` or `agent`), and a person's comment has
 
 ## 10. Security tests (S3, S4 and S18, Chromium, Firefox and WebKit)
 
-Fixtures try to: read `parent.document`; read cookies and storage; fetch the API; navigate `top` and the frame; open a popup; submit a form; load an outside image, script, font and WebSocket; forge each bridge message; read another page's file; use an expired, changed or deleted version's token. Each must fail, and the test proves the fixture ran. WebRTC, DNS prefetch and a content URL in its own tab are measured and recorded per browser instead (section 2).
+Fixtures try to: read `parent.document`; read cookies and storage; fetch the API; navigate `top` and the frame; open a popup; submit a form; load an outside image, script, font and WebSocket; forge each bridge message; read another page's file; use an expired, changed or deleted version's token. Each must fail, and the test proves the fixture ran. WebRTC and DNS prefetch are measured and recorded per browser instead (section 2).

@@ -6,5 +6,5 @@
     "noUnusedLocals": true, "noUnusedParameters": true, "verbatimModuleSyntax": true,
     "isolatedModules": true, "skipLibCheck": true, "noEmit": true
   },
-  "include": ["src"]
+  "include": ["src/app", "src/content", "src/shared"]
 }

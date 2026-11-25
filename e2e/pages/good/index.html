@@ -1,0 +1,12 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Good</title><link rel="stylesheet" href="style.css"></head>
+<body><h1>First section</h1><p id="p">text</p><h2>First section</h2><h3 id="own">Own id</h3><img src="dot.svg" alt="dot" id="img">
+<a id="out" href="https://example.com/a?b=c">out</a> <a id="in" href="#own">in</a> <a id="bad" href="javascript:document.title='ran'">bad</a><div style="height:3000px"></div>
+<script type="module">
+import { answer } from './module.js';
+const result = { module: answer, style: getComputedStyle(document.getElementById('p')).color, mode: document.documentElement.dataset.lawhMode, lang: document.documentElement.dataset.lawhLang, origin: self.origin };
+result.fetched = await fetch('data.json').then((r) => r.json()).then((d) => d.ok, String);
+const img = document.getElementById('img');
+await (img.complete ? null : new Promise((done) => { img.onload = img.onerror = done; }));
+result.image = img.naturalWidth;
+parent.postMessage({ type: 'result', result }, '*');
+</script></body></html>

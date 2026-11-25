@@ -1,8 +1,11 @@
-/** Security model, section 4. `frame-src` gets the content host with S3, when there is something to frame. */
-export const appHeaders = (): Record<string, string> => ({
+import type { AppEnv } from '../shared/env';
+import { checkedOrigin } from '../shared/origin';
+
+/** Security model, section 4. */
+export const appHeaders = (env: AppEnv): Record<string, string> => ({
   'Content-Security-Policy': [
     "default-src 'none'", "script-src 'self'", "style-src 'self'", "img-src 'self'", "connect-src 'self'",
-    "frame-src 'none'", "manifest-src 'self'", "worker-src 'self'", "font-src 'self'", "base-uri 'none'",
+    `frame-src ${checkedOrigin(env.CONTENT_ORIGIN)}`, "manifest-src 'self'", "worker-src 'self'", "font-src 'self'", "base-uri 'none'",
     "form-action 'self'", "frame-ancestors 'none'",
   ].join('; '),
   'X-Robots-Tag': 'noindex, nofollow',

@@ -6,8 +6,13 @@
   "compatibility_date": "2026-11-10",
   "d1_databases": [{ "binding": "DB", "database_name": "lawh", "database_id": "local", "migrations_dir": "migrations" }],
   "r2_buckets": [{ "binding": "FILES", "bucket_name": "lawh-files" }],
-  // Not a real secret: a copy's own is in the Secrets Store.
-  "vars": { "PEPPER": "local-development-pepper-not-a-secret" },
+  // Not real secrets: a copy's own are in the Secrets Store.
+  "vars": {
+    "APP_ORIGIN": "http://localhost:8787",
+    "CONTENT_ORIGIN": "http://localhost:8788",
+    "PEPPER": "local-development-pepper-not-a-secret",
+    "CONTENT_KEY": "local-development-content-key-not-a-secret"
+  },
   "ratelimits": [
     { "name": "KEY_LIMIT", "namespace_id": "1001", "simple": { "limit": 1200, "period": 60 } },
     { "name": "AUTH_LIMIT", "namespace_id": "1002", "simple": { "limit": 30, "period": 60 } }

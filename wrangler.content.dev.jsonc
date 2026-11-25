@@ -4,6 +4,14 @@
   "main": "src/content/index.ts",
   "send_metrics": false,
   "compatibility_date": "2026-11-10",
+  // Not real secrets: a copy's own are in the Secrets Store.
+  "vars": {
+    "APP_ORIGIN": "http://localhost:8787",
+    "CONTENT_ORIGIN": "http://localhost:8788",
+    "CONTENT_KEY": "local-development-content-key-not-a-secret"
+  },
+  // Request logs hold the address, and the address holds the token.
+  "observability": { "enabled": true, "logs": { "invocation_logs": false } },
   "d1_databases": [{ "binding": "DB", "database_name": "lawh", "database_id": "local", "migrations_dir": "migrations" }],
   "r2_buckets": [{ "binding": "FILES", "bucket_name": "lawh-files" }]
 }
