@@ -24,7 +24,11 @@ export function PageView({ project, slug, search }: { project: string; slug: str
   };
   const cancelLink = () => { pause(); setLink(null); };
   const openedLink = () => { quiet.current = { ...CALM }; setLink(null); };
-  const closeVersions = () => { pause(); setVersions(null); };
+  const closeVersions = () => {
+    // Never shortens a pause the page has earned.
+    if (quiet.current.pushy) pause(); else quiet.current.until = Math.max(quiet.current.until, Date.now() + CALM.wait);
+    setVersions(null);
+  };
   // The frame's origin is opaque, so there is no name to send to; nothing in the message is secret.
   const sendTheme = () => frame.current?.contentWindow?.postMessage({ type: 'lawh:theme', ...theme.current }, '*');
 

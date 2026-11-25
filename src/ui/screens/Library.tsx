@@ -62,7 +62,7 @@ export function Library({ search }: { search: string }) {
       <div aria-live="polite">
         {list === null && !problem && <p class="muted">{t('loading')}</p>}
         {problem === 'filter' && <div class="card empty"><p>{t('badFilter')}</p><button class="plain" onClick={() => go('/')}>{t('clear')}</button></div>}
-        {list?.items.length === 0 && (query || projects !== null || projectsProblem) && (
+        {list?.items.length === 0 && (query || projects !== null) && (
           <div class="card empty">
             <p>{t(query ? 'noMatches' : projects?.length === 0 ? 'noProjects' : 'noPages')}</p>
             {query && <button class="plain" onClick={() => go('/')}>{t('clear')}</button>}
@@ -104,7 +104,11 @@ function Choice({ label, value, options, onChange }: { label: string; value: str
 
 /** A live list of the tags in use, narrowed while typing. */
 function TagFilter({ project, value, onChange }: { project: string; value: string; onChange: (value: string) => void }) {
-  const t = useText(), id = useId(), [text, setText] = useState(''), [items, setItems] = useState<string[] | null>(null), [open, setOpen] = useState(false), [at, setAt] = useState(-1);
+  const t = useText(), id = useId(), [text, setText] = useState(''), [found, setItems] = useState<string[] | null>(null), [open, setOpen] = useState(false), [at, setAt] = useState(-1);
+  // What was found for an earlier text is narrowed at once, before the answer for this one.
+  const now = text.trim().normalize('NFC'), narrowed = found?.filter((tag) => tag.startsWith(now)) ?? [];
+  // Nothing left of an earlier answer isn't "no tags": the answer is still to come.
+  const items = found === null || (narrowed.length === 0 && found.length > 0) ? null : narrowed;
   const box = useRef<HTMLDivElement>(null), refocus = useRef(false);
   // Another project has other tags.
   const forget = () => { setItems(null); setAt(-1); };
@@ -143,7 +147,7 @@ function TagFilter({ project, value, onChange }: { project: string; value: strin
           const n = items?.length ?? 0;
           if (event.key === 'Escape') setOpen(false);
           else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setOpen(true); if (n > 0) setAt((at + (event.key === 'ArrowDown' ? 1 : n + (at < 0 ? 0 : -1))) % n); }
-          else if (event.key === 'Enter' && open) { event.preventDefault(); const now = text.trim().normalize('NFC'), tag = items?.[at] ?? items?.find((i) => i === now); if (tag?.startsWith(now)) choose(tag); }
+          else if (event.key === 'Enter' && open) { event.preventDefault(); const tag = items?.[at] ?? items?.find((i) => i === now); if (tag) choose(tag); }
         }} />
       <ul id={`${id}-list`} class="options" role="listbox" aria-label={t('tag')} hidden={!open || items === null}>
         {items?.map((tag, i) => <li key={tag} id={`${id}-${i}`} role="option" aria-selected={i === at} onMouseDown={(event) => event.preventDefault()} onClick={() => choose(tag)}><bdi>{tag}</bdi></li>)}
