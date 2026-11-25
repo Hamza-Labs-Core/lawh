@@ -47,13 +47,14 @@ const TEXT = {
   approve: ['Approve', 'موافقة'],
   approved: ['Approved. The other device is signing in.', 'تمت الموافقة. يجري دخول الجهاز الآخر.'],
   badCode: ['That code doesn’t work.', 'هذا الرمز لا يعمل.'],
-  notFound: ['Nothing here.', 'لا شيء هنا.'],
+  noPasskeysHere: ['This browser can’t use passkeys. Open the link in another browser or on another device.', 'لا يدعم هذا المتصفح مفاتيح المرور. يمكن فتح الرابط في متصفح أو جهاز آخر.'],
 } as const;
 
 export type Key = keyof typeof TEXT;
 
 export function translate(lang: Lang, key: Key, values: Record<string, string> = {}): string {
-  return TEXT[key][lang === 'ar' ? 1 : 0].replace(/\{(\w+)\}/g, (_, name: string) => values[name] ?? (name === 'five' ? digits(lang, 5) : ''));
+  // Isolated (U+2068 … U+2069), so a name or an address in the other direction doesn't disturb the text around it.
+  return TEXT[key][lang === 'ar' ? 1 : 0].replace(/\{(\w+)\}/g, (_, name: string) => (name === 'five' ? digits(lang, 5) : values[name] ? `\u2068${values[name]}\u2069` : ''));
 }
 
 /** Numbers as the language writes them: ٠–٩ in Arabic. */

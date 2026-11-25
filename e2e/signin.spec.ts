@@ -22,15 +22,53 @@ test('another device signs in with a code', async ({ page, browser, member }) =>
     await page.getByLabel('Type the code the other device shows.').fill(code.toLowerCase());
     await page.getByRole('button', { name: 'Continue' }).click();
     await expect(page.getByRole('heading', { name: /^Sign in .+ as you\?$/ })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /^Sign in/ }), 'the new step takes the focus').toBeFocused();
+    if (process.env.LAWH_SHOTS) await page.screenshot({ path: `${process.env.LAWH_SHOTS}/approve-2-en-dark-${test.info().project.name}.png` });
     await page.getByRole('button', { name: 'Approve' }).click();
     await expect(page.getByRole('status')).toHaveText('Approved. The other device is signing in.');
-    await expect(device.getByRole('heading', { name: 'Signed in as Mona' })).toBeVisible();
+    await expect(device.getByRole('heading', { name: /^Signed in as \W?Mona\W?$/ })).toBeVisible();
     await page.getByRole('button', { name: 'Back' }).click();
     await page.getByRole('button', { name: 'Sign out' }).click();
     await expect(page.getByRole('button', { name: 'Approve from another device' })).toBeVisible();
     await device.reload();
-    await expect(device.getByRole('heading', { name: 'Signed in as Mona' })).toBeVisible();
+    await expect(device.getByRole('heading', { name: /^Signed in as \W?Mona\W?$/ })).toBeVisible();
   } finally { await other.close(); }
+});
+
+test('a code that runs out says so, also without a connection', async ({ page }) => {
+  await page.clock.install();
+  await page.goto(`${APP}/device`);
+  await expect(page.locator('p.code')).toBeVisible();
+  await page.route('**/app-api/device/claim', (route) => route.abort());
+  for (let i = 0; i < 12; i++) { await page.clock.runFor(30_000); await page.waitForTimeout(50); }
+  await expect(page.getByText('The code is too old.')).toBeVisible();
+  await page.unroute('**/app-api/device/claim');
+  await page.getByRole('button', { name: 'New code' }).click();
+  await expect(page.locator('p.code')).toBeVisible();
+});
+
+test('an approval that fails for a moment can be tried again, and one without a session goes to sign-in', async ({ page, member }) => {
+  await enter(page.context(), member);
+  await page.goto(`${APP}/approve`);
+  await page.route('**/app-api/device/look', (route) => route.fulfill({ contentType: 'application/json', body: '{"id":"dev_x","label":"Firefox","createdAt":1}' }));
+  await page.getByLabel('Type the code the other device shows.').fill('BBBB-BBBB');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.route('**/app-api/device/approve', (route) => route.fulfill({ status: 500, body: '{}' }));
+  await page.getByRole('button', { name: 'Approve' }).click();
+  await expect(page.getByRole('alert')).toHaveText('That did not work. Try again.');
+  await expect(page.getByRole('button', { name: 'Approve' })).toBeVisible();
+  await page.unroute('**/app-api/device/approve');
+  await page.context().clearCookies();
+  await page.getByRole('button', { name: 'Approve' }).click();
+  await expect(page.getByRole('button', { name: 'Approve from another device' })).toBeVisible();
+});
+
+test('a screen change takes the focus to its heading, and Back works', async ({ page }) => {
+  await page.goto(APP);
+  await page.getByRole('button', { name: 'Approve from another device' }).click();
+  await expect(page.getByRole('heading', { name: 'Approve from another device' })).toBeFocused();
+  await page.goBack();
+  await expect(page.getByRole('heading', { name: 'Lawh' })).toBeFocused();
 });
 
 test('language and theme are kept, and Arabic is right to left', async ({ page }) => {
@@ -57,10 +95,13 @@ test('says so when there is no connection', async ({ page }) => {
 
 test('a link that cannot be checked right now is not called bad', async ({ page }) => {
   for (const [status, text] of [[429, 'Too many tries. Wait a minute.'], [500, 'That did not work. Try again.']] as const) {
-    await page.route('**/app-api/link/options', (route) => route.fulfill({ status, contentType: 'application/json', body: '{"code":"x"}' }));
+    let asked = 0;
+    await page.route('**/app-api/link/options', (route) => { asked++; return route.fulfill({ status, contentType: 'application/json', body: '{"code":"x"}' }); });
     await page.goto('about:blank');
     await page.goto(`${APP}/link#nope`);
     await expect(page.getByRole('alert')).toHaveText(text);
+    await page.waitForLoadState('networkidle');
+    expect(asked, 'asked once').toBe(1);
     await page.unroute('**/app-api/link/options');
   }
   await page.getByRole('button', { name: 'Try again' }).click();
@@ -87,7 +128,7 @@ for (const lang of ['en', 'ar'] as const) for (const mode of ['dark', 'light'] a
     await page.locator('button.wide').click(); await expect(page.locator('p.code')).toBeVisible(); await check('device');
     await page.goto(`${APP}/link#nope`); await expect(page.locator('main p')).toBeVisible(); await check('bad-link');
     await page.goto('about:blank');
-    await page.goto(`${APP}/link#${await makeLink(member)}`); await expect(page.locator('main h2')).toBeVisible(); await check('link');
+    await page.goto(`${APP}/link#${await makeLink(member)}`); await expect(page.locator('main .primary')).toBeVisible(); await check('link');
     const fresh = await makeMember();
     await enter(page.context(), fresh);
     await page.goto(APP); await expect(page.locator('main h1')).toBeVisible(); await check('home');

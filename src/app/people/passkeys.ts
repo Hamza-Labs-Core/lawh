@@ -1,5 +1,5 @@
 import { type AuthenticationResponseJSON, generateAuthenticationOptions, generateRegistrationOptions, type RegistrationResponseJSON, verifyAuthenticationResponse, verifyRegistrationResponse } from '@simplewebauthn/server';
-import { sha256Hex } from '../../shared/crypto';
+import { base64url, sha256Hex } from '../../shared/crypto';
 import type { AppEnv } from '../../shared/env';
 import { ApiError, invalid, notFound } from '../../shared/errors';
 import { newId } from '../../shared/ids';
@@ -47,6 +47,9 @@ export async function signIn(ctx: AppContext): Promise<Response> {
      WHERE k.credential_id = ? AND m.joined_at IS NOT NULL AND m.removed_at IS NULL`,
   ).bind(body.response.id).first<{ credential_id: string; member_id: string; public_key: number[]; sign_count: number; role: string }>();
   if (!key) throw unauthorized();
+  // The authenticator says whose passkey it is; it must be the same person.
+  const handle = isObject(body.response.response) ? body.response.response.userHandle : undefined;
+  if (typeof handle === 'string' && handle !== '' && handle !== base64url(new TextEncoder().encode(key.member_id))) throw unauthorized();
   const result = await verifyAuthenticationResponse({
     response: body.response as unknown as AuthenticationResponseJSON, expectedChallenge: challenge, expectedOrigin: rp(env).origin, expectedRPID: rp(env).id, requireUserVerification: true,
     credential: { id: key.credential_id, publicKey: new Uint8Array(key.public_key), counter: key.sign_count },
@@ -55,10 +58,14 @@ export async function signIn(ctx: AppContext): Promise<Response> {
   if (key.role !== 'owner' && !(await membersAllowed(env.DB))) throw new ApiError('feature_off', 'This feature is off.');
   const session = await newSession(env, ctx.request, key.member_id, { passkeyId: key.credential_id });
   await env.DB.batch([
-    env.DB.prepare('UPDATE passkeys SET sign_count = ?, last_used_at = ? WHERE credential_id = ?').bind(result.authenticationInfo.newCounter, Date.now(), key.credential_id),
+    // Two sign-ins at once must not take the counter back.
+    env.DB.prepare('UPDATE passkeys SET sign_count = MAX(sign_count, ?), last_used_at = ? WHERE credential_id = ?').bind(result.authenticationInfo.newCounter, Date.now(), key.credential_id),
     session.statement,
     auditStatement(env, key.member_id, 'session.start', null),
-  ]);
+  ]).catch((error: unknown) => {
+    // Removed, or the passkey replaced, at this moment.
+    throw /not allowed|FOREIGN KEY/.test(String(error)) ? unauthorized() : error;
+  });
   return new Response(null, { status: 204, headers: { 'Set-Cookie': sessionCookie(env, session.token) } });
 }
 
@@ -128,6 +135,7 @@ async function verifyRegistration(ctx: AppContext, body: Record<string, unknown>
     response: body.response as unknown as RegistrationResponseJSON, expectedChallenge: challenge, expectedOrigin: rp(ctx.env).origin, expectedRPID: rp(ctx.env).id, requireUserVerification: true,
   }).catch(() => null);
   if (!result?.verified) throw unauthorized();
+  if (result.registrationInfo.credential.id.length > 1364) throw unauthorized();
   return result.registrationInfo.credential;
 }
 

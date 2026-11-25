@@ -8,7 +8,7 @@
   "engines": { "node": ">=22.12.0" },
   "scripts": {
     "check": "pnpm typecheck && pnpm check:schema && pnpm check:api && pnpm build && pnpm test",
-    "typecheck": "tsc -p tsconfig.json && tsc -p test/app/tsconfig.json && tsc -p test/content/tsconfig.json && tsc -p src/ui/tsconfig.json && tsc -p test/ui/tsconfig.json && tsc -p scripts/local/tsconfig.json && tsc -p tsconfig.node.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p test/app/tsconfig.json && tsc -p test/content/tsconfig.json && tsc -p src/ui/tsconfig.json && tsc -p test/ui/tsconfig.json && tsc -p test/scripts/tsconfig.json && tsc -p scripts/local/tsconfig.json && tsc -p tsconfig.node.json",
     "check:schema": "python3 docs/spec/checks/query_plans.py && python3 docs/spec/checks/integrity.py && python3 scripts/check_migrations.py",
     "check:api": "REDOCLY_TELEMETRY=off REDOCLY_SUPPRESS_UPDATE_NOTICE=true redocly lint --extends=minimal docs/spec/openapi.yaml",
     "build:ui": "node scripts/build-ui.mjs",
