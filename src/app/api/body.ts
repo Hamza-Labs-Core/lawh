@@ -1,5 +1,5 @@
 import { ApiError, invalid } from '../../shared/errors';
-import { findSecret } from './scan';
+import { hasSecret } from './scan';
 
 const MAX_JSON = 1_500_000; // A D1 row holds at most 2 MB.
 
@@ -20,8 +20,8 @@ export async function readJson(request: Request): Promise<{ body: Record<string,
     throw invalid('The body must be JSON.');
   }
   if (typeof body !== 'object' || body === null || Array.isArray(body)) throw invalid('The body must be a JSON object.');
-  const at = findSecret(text);
-  if (at !== -1) throw new ApiError('secret_found', 'The text looks like it has a key or password in it.', { position: at });
+  // The parsed value, not the text: an escaped character would hide a key.
+  if (hasSecret(JSON.stringify(body))) throw new ApiError('secret_found', 'The text looks like it has a key or password in it.');
   return { body: body as Record<string, unknown>, text };
 }
 

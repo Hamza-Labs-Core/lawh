@@ -4,7 +4,7 @@ import { ApiError, conflict, invalid, notFound } from '../../shared/errors';
 import { newId } from '../../shared/ids';
 import { type Project, projectById, projectBySlug } from './auth';
 import { integer, isObject, onlyKeys, readJson, text } from './body';
-import { idempotent, replay, writeOnce } from './idempotency';
+import { idempotent, type Idempotent, mustChange, replay, type Stored, writeOnce } from './idempotency';
 import { eventStatement, type Meta, newPageId, pageJson, type PageRow, readMeta, tagStatements } from './pages';
 import { checkPath, isHtml, mediaType } from './paths';
 import type { Context } from './router';
@@ -24,7 +24,7 @@ function readManifest(body: Record<string, unknown>): { baseVersion: number; man
   if (!isObject(body.page)) throw invalid('page must be an object.');
   const page = readMeta(body.page);
   if (baseVersion === 0 && page.title === undefined) throw invalid('A new page needs page.title.');
-  if (body.decisions !== undefined && (!Array.isArray(body.decisions) || body.decisions.length > 0)) throw invalid('Decisions are not available yet.');
+  if (body.decisions !== undefined) throw invalid('Decisions are not available yet.');
   if (!Array.isArray(body.files) || body.files.length < 1 || body.files.length > MAX_FILES) throw invalid(`files must list 1 to ${MAX_FILES} files.`);
   const paths = new Set<string>(), sizes = new Map<string, number>();
   let total = 0;
@@ -71,13 +71,17 @@ export async function startPublish(ctx: Context): Promise<Response> {
   const reused = JSON.stringify(held.map((b) => b.sha256)), have = new Set(held.map((b) => b.sha256));
 
   const now = Date.now(), uploadId = newId('upl', now), expiresAt = now + UPLOAD_LIFE;
-  const stored = await writeOnce(env, caller, idem, { status: 201, json: { uploadId, missing: hashes.filter((h) => !have.has(h)), expiresAt } }, [
+  const reply = { status: 201, json: { uploadId, missing: hashes.filter((h) => !have.has(h)), expiresAt } };
+  const stored = await writeOnce(env, caller, idem, reply, [
     env.DB.prepare('INSERT INTO uploads(id, project_id, slug, key_id, base_version, manifest_json, created_at, expires_at) VALUES(?,?,?,?,?,?,?,?)')
       .bind(uploadId, project.id, slug, caller.keyId, baseVersion, JSON.stringify(manifest), now, expiresAt),
     // A blob cleaned up since the read above fails its foreign key, and with it the whole start.
     env.DB.prepare('INSERT INTO upload_blobs(upload_id, sha256) SELECT ?, value FROM json_each(?)').bind(uploadId, reused),
     env.DB.prepare('UPDATE blobs SET unreferenced_at = NULL WHERE sha256 IN (SELECT value FROM json_each(?)) AND unreferenced_at IS NOT NULL').bind(reused),
-  ]);
+  ]).catch((error: unknown) => {
+    if (String(error).includes('FOREIGN KEY')) throw conflict('A file was cleaned up meanwhile. Start again.');
+    throw error;
+  });
   return Response.json(stored.json, { status: stored.status });
 }
 
@@ -86,6 +90,11 @@ async function findUpload(ctx: Context): Promise<{ upload: UploadRow; project: P
   const upload = await ctx.env.DB.prepare('SELECT * FROM uploads WHERE id = ?').bind(ctx.params[0]!).first<UploadRow>();
   if (!upload || upload.key_id !== ctx.caller.keyId || upload.expires_at <= Date.now()) throw notFound();
   return { upload, project: await projectById(ctx.env, ctx.caller, upload.project_id), manifest: JSON.parse(upload.manifest_json) as Manifest };
+}
+
+/** Best effort: the weekly job removes objects without a row. */
+function dropObject(ctx: Context, key: string): void {
+  ctx.ctx.waitUntil(ctx.env.FILES.delete(key).catch(() => undefined));
 }
 
 export async function putBlob(ctx: Context): Promise<Response> {
@@ -122,14 +131,15 @@ export async function putBlob(ctx: Context): Promise<Response> {
     await checked.pipeTo(new WritableStream());
   } else {
     // R2 needs the length, and checks the hash again. A stream that fails stores nothing.
-    const fixed = new FixedLengthStream(file.bytes);
+    const fixed = new FixedLengthStream(file.bytes), stop = new AbortController();
     const results = await Promise.allSettled([
-      checked.pipeTo(fixed.writable),
-      env.FILES.put(r2Key, fixed.readable, { sha256 }).then(() => { stored = true; }),
+      checked.pipeTo(fixed.writable, { signal: stop.signal }),
+      // When R2 fails nobody reads the stream, so the pipe is ended too.
+      env.FILES.put(r2Key, fixed.readable, { sha256 }).then(() => { stored = true; }, (error: unknown) => { stop.abort(error); throw error; }),
     ]);
     const failures = results.flatMap((r) => (r.status === 'rejected' ? [r.reason as unknown] : []));
     if (failures.length > 0) {
-      if (stored) ctx.ctx.waitUntil(env.FILES.delete(r2Key));
+      if (stored) dropObject(ctx, r2Key);
       throw failures.find((reason) => reason instanceof ApiError) ?? failures[0];
     }
   }
@@ -150,7 +160,7 @@ export async function putBlob(ctx: Context): Promise<Response> {
     throw error;
   } finally {
     // Another upload of the same file won, or nothing was recorded: this object isn't the blob's.
-    if (stored && winner !== r2Key) ctx.ctx.waitUntil(env.FILES.delete(r2Key));
+    if (stored && winner !== r2Key) dropObject(ctx, r2Key);
   }
   return new Response(null, { status: 204 });
 }
@@ -170,6 +180,22 @@ export async function commitPublish(ctx: Context): Promise<Response> {
   const missing = [...new Set(manifest.files.map((f) => f.sha256))].filter((h) => !have.has(h));
   if (missing.length > 0) throw invalid('Some files were not sent.', { missing });
 
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const stored = await commitOnce(ctx, upload, project, manifest, idem);
+      return Response.json(stored.json, { status: stored.status });
+    } catch (error) {
+      if (isConflict(error)) throw conflict('Someone published a newer version.');
+      if (!String(error).includes('malformed JSON')) throw error;
+      // The page's details changed, or the upload was cleaned up, between the read and the write. Read both again.
+      await findUpload(ctx);
+      if (attempt === 5) throw conflict('The page keeps changing. Try again.');
+    }
+  }
+}
+
+async function commitOnce(ctx: Context, upload: UploadRow, project: Project, manifest: Manifest, idem: Idempotent): Promise<Stored> {
+  const { env, caller } = ctx;
   const current = await env.DB.prepare('SELECT * FROM pages WHERE project_id = ? AND slug = ?').bind(project.id, upload.slug).first<PageRow>();
   if (current?.deleted_at != null || (current?.current_version ?? 0) !== upload.base_version) throw conflict('Someone published a newer version.', { currentVersion: current?.current_version ?? 0 });
 
@@ -179,14 +205,22 @@ export async function commitPublish(ctx: Context): Promise<Response> {
     summary: meta.summary ?? current?.summary ?? '', lang: meta.lang ?? current?.lang ?? 'en', status: meta.status ?? current?.status ?? 'draft',
     current_version: n, created_at: current?.created_at ?? now, updated_at: now, deleted_at: null,
   };
+  // Tags only change together with updated_at, which the guard below checks.
   const oldTags = current ? (await env.DB.prepare('SELECT tag FROM page_tags WHERE page_id = ? ORDER BY tag').bind(current.id).all<{ tag: string }>()).results.map((t) => t.tag) : [];
   const tags = [...(meta.tags ?? oldTags)].sort();
   const versionId = newId('ver', now);
-  const statements: D1PreparedStatement[] = [
-    current
-      ? env.DB.prepare('UPDATE pages SET title=?, summary=?, lang=?, status=? WHERE id=?').bind(page.title, page.summary, page.lang, page.status, page.id)
-      : env.DB.prepare('INSERT INTO pages(id, project_id, slug, title, summary, lang, status, created_by, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)')
-        .bind(page.id, project.id, page.slug, page.title, page.summary, page.lang, page.status, caller.agentId, now, now),
+  return writeOnce(env, caller, idem, { status: 200, json: pageJson(ctx, project, page, tags) }, [
+    env.DB.prepare('DELETE FROM upload_blobs WHERE upload_id = ?').bind(upload.id),
+    env.DB.prepare('DELETE FROM uploads WHERE id = ? AND expires_at > ?').bind(upload.id, Date.now()),
+    mustChange(env),
+    ...(current
+      ? [
+        env.DB.prepare('UPDATE pages SET title=?, summary=?, lang=?, status=?, updated_at=? WHERE id=? AND updated_at=? AND deleted_at IS NULL')
+          .bind(page.title, page.summary, page.lang, page.status, now, page.id, current.updated_at),
+        mustChange(env),
+      ]
+      : [env.DB.prepare('INSERT INTO pages(id, project_id, slug, title, summary, lang, status, created_by, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)')
+        .bind(page.id, project.id, page.slug, page.title, page.summary, page.lang, page.status, caller.agentId, now, now)]),
     env.DB.prepare('INSERT INTO page_versions(id, page_id, n, entry_path, note, bytes, file_count, published_by, key_id, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)')
       .bind(versionId, page.id, n, manifest.entry, manifest.note, manifest.files.reduce((sum, f) => sum + f.bytes, 0), manifest.files.length, caller.agentId, caller.keyId, now),
     env.DB.prepare(`INSERT INTO version_files(version_id, path, sha256, media_type, bytes)
@@ -194,39 +228,35 @@ export async function commitPublish(ctx: Context): Promise<Response> {
     ...(meta.tags ? tagStatements(env, page.id, project.id, tags, now) : []),
     eventStatement(env, project.id, page.id, 'page.published', page.id, caller.agentId, now),
     ...(current && current.status !== page.status ? [eventStatement(env, project.id, page.id, 'page.status', page.id, caller.agentId, now)] : []),
-    env.DB.prepare('DELETE FROM upload_blobs WHERE upload_id = ?').bind(upload.id),
-    env.DB.prepare('DELETE FROM uploads WHERE id = ?').bind(upload.id),
-  ];
-  try {
-    const stored = await writeOnce(env, caller, idem, { status: 200, json: pageJson(ctx, project, page, tags) }, statements);
-    return Response.json(stored.json, { status: stored.status });
-  } catch (error) {
-    if (isConflict(error)) throw conflict('Someone published a newer version.');
-    throw error;
-  }
+  ]);
 }
 
 const DAY = 86_400_000, BATCH = 100;
 
 /** Hourly: old idempotency rows, expired uploads, and files nothing has used for a day. */
 export async function cleanUp(env: AppEnv, now = Date.now()): Promise<void> {
-  await env.DB.prepare('DELETE FROM idempotency WHERE expires_at < ?').bind(now).run();
+  await env.DB.prepare('DELETE FROM idempotency WHERE (key_id, idem_key) IN (SELECT key_id, idem_key FROM idempotency WHERE expires_at < ? LIMIT 5000)').bind(now).run();
   const { results: uploads } = await env.DB.prepare('SELECT id FROM uploads WHERE expires_at < ? LIMIT ?').bind(now, BATCH).all<{ id: string }>();
   for (const { id } of uploads) {
-    const { results: blobs } = await env.DB.prepare('SELECT sha256 FROM upload_blobs WHERE upload_id = ?').bind(id).all<{ sha256: string }>();
+    // Marked from the rows as they are in this transaction, so a file sent at this moment is marked too.
     await env.DB.batch([
+      env.DB.prepare(`UPDATE blobs SET unreferenced_at = ? WHERE sha256 IN (SELECT sha256 FROM upload_blobs WHERE upload_id = ?) AND unreferenced_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM version_files f WHERE f.sha256 = blobs.sha256)
+        AND NOT EXISTS (SELECT 1 FROM upload_blobs u WHERE u.sha256 = blobs.sha256 AND u.upload_id <> ?)`).bind(now, id, id),
       env.DB.prepare('DELETE FROM upload_blobs WHERE upload_id = ?').bind(id),
       env.DB.prepare('DELETE FROM uploads WHERE id = ?').bind(id),
-      env.DB.prepare(`UPDATE blobs SET unreferenced_at = ? WHERE sha256 IN (SELECT value FROM json_each(?)) AND unreferenced_at IS NULL
-        AND NOT EXISTS (SELECT 1 FROM version_files f WHERE f.sha256 = blobs.sha256) AND NOT EXISTS (SELECT 1 FROM upload_blobs u WHERE u.sha256 = blobs.sha256)`)
-        .bind(now, JSON.stringify(blobs.map((b) => b.sha256))),
     ]);
   }
   const { results: old } = await env.DB.prepare('SELECT sha256 FROM blobs WHERE unreferenced_at < ? AND unreferenced_at IS NOT NULL LIMIT ?').bind(now - DAY, BATCH).all<{ sha256: string }>();
   for (const { sha256 } of old) {
     // The row goes first, and only while nothing uses it; then the object, whose key is never used again.
-    const gone = await env.DB.prepare(`DELETE FROM blobs WHERE sha256 = ? AND unreferenced_at < ? AND NOT EXISTS (SELECT 1 FROM version_files f WHERE f.sha256 = blobs.sha256)
-      AND NOT EXISTS (SELECT 1 FROM upload_blobs u WHERE u.sha256 = blobs.sha256) RETURNING r2_key`).bind(sha256, now - DAY).first<{ r2_key: string }>();
-    if (gone) await env.FILES.delete(gone.r2_key);
+    const [gone] = await env.DB.batch<{ r2_key: string }>([
+      env.DB.prepare(`DELETE FROM blobs WHERE sha256 = ? AND unreferenced_at < ? AND NOT EXISTS (SELECT 1 FROM version_files f WHERE f.sha256 = blobs.sha256)
+        AND NOT EXISTS (SELECT 1 FROM upload_blobs u WHERE u.sha256 = blobs.sha256) RETURNING r2_key`).bind(sha256, now - DAY),
+      // Still there means it is used: out of this queue.
+      env.DB.prepare('UPDATE blobs SET unreferenced_at = NULL WHERE sha256 = ?').bind(sha256),
+    ]);
+    const key = gone?.results[0]?.r2_key;
+    if (key) await env.FILES.delete(key);
   }
 }

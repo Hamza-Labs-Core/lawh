@@ -208,10 +208,134 @@ describe('files', () => {
     }
   });
 
+  it('finds a key at the very end, and an escaped one in JSON', async () => {
+    const content = `x ${fake.aws}`;
+    const { uploadId } = await json(await start(token, await manifest({ 'index.html': content })));
+    expect(await code(await put(token, uploadId, content))).toEqual([422, 'secret_found']);
+    const body = JSON.stringify(await manifest({ 'index.html': 'x' }, { page: { title: fake.aws } })).replace('AKIA', '\\u0041KIA');
+    expect(body).not.toContain('AKIA');
+    expect(await code(await call('/v1/projects/one/pages/page/versions', { method: 'POST', token, body, idem: 'x' }))).toEqual([422, 'secret_found']);
+  });
+
+  it('takes longer words that only begin or end like a key, wherever the chunks are cut', async () => {
+    const bytes = new TextEncoder().encode(`${'y'.repeat(300)} ${fake.aws}BCDE zz${fake.aws} ${'y'.repeat(300)}`);
+    const { uploadId } = await json(await start(token, await manifest({ 'index.html': bytes })));
+    const hash = await sha(bytes);
+    for (let cut = 1; cut < bytes.length; cut += 1) {
+      const body = new ReadableStream({ start(c) { c.enqueue(bytes.slice(0, cut)); c.enqueue(bytes.slice(cut, cut + 1)); c.enqueue(bytes.slice(cut + 1)); c.close(); } });
+      expect((await call(`/v1/uploads/${uploadId}/blobs/${hash}`, { method: 'PUT', token, body })).status, String(cut)).toBe(204);
+    }
+  });
+
   it('refuses a key in the page details, also for a file it already holds', async () => {
     expect(await code(await start(token, await manifest({ 'index.html': 'x' }, { page: { title: `T ${fake.github}` } })))).toEqual([422, 'secret_found']);
     await publish(token, { 'index.html': 'x' });
     expect(await code(await call('/v1/projects/one/pages/page', { method: 'PATCH', token, json: { summary: fake.aws }, idem: 'x' }))).toEqual([422, 'secret_found']);
+  });
+});
+
+describe('at the same moment', () => {
+  /** Runs `between` just before the nth batch that writes, as another request would. */
+  const before = (between: () => Promise<unknown>, matching: (sql: string) => boolean) => {
+    let done = false;
+    const seen = new WeakMap<object, string>();
+    const wrap = (statement: D1PreparedStatement, query: string): D1PreparedStatement => {
+      seen.set(statement, query);
+      const bind = statement.bind.bind(statement);
+      statement.bind = (...values: unknown[]) => wrap(bind(...values), query);
+      return statement;
+    };
+    return new Proxy(env.DB, {
+      get(target, name) {
+        if (name === 'prepare') return (query: string) => wrap(target.prepare(query), query);
+        if (name === 'batch') return async (statements: D1PreparedStatement[]) => {
+          if (!done && statements.some((s) => matching(seen.get(s) ?? ''))) { done = true; await between(); }
+          return target.batch(statements);
+        };
+        const value = Reflect.get(target, name) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  };
+  const isCommit = (q: string) => q.includes('INSERT INTO page_versions');
+  const commitWith = (DB: D1Database, uploadId: string) => call(`/v1/uploads/${uploadId}/commit`, { method: 'POST', token, idem: 'com' }, { DB });
+
+  it("keeps what another request changed in the page's details", async () => {
+    await publish(token, { 'index.html': 'x' }, { page: { title: 'Old', tags: ['a'], status: 'in_review' } });
+    const { uploadId } = await json(await start(token, await manifest({ 'index.html': 'x' }, { baseVersion: 1, page: {} })));
+    const DB = before(async () => {
+      await call('/v1/projects/one/pages/page', { method: 'PATCH', token, json: { title: 'Patched', tags: ['b'] }, idem: 'p' });
+      await sql("UPDATE pages SET status='decided', updated_at=updated_at+100000");
+    }, isCommit);
+    const response = await commitWith(DB, uploadId);
+    expect(response.status).toBe(200);
+    const page = await json(response);
+    expect(page).toMatchObject({ title: 'Patched', tags: ['b'], status: 'decided', currentVersion: 2 });
+    expect(await json(await call('/v1/projects/one/pages/page', { token }))).toMatchObject(page);
+    expect(await one("SELECT COUNT(*) n FROM events WHERE type='page.status'")).toEqual({ n: 0 });
+  });
+
+  it('refuses when the page is deleted, or the upload cleaned up, just before the write', async () => {
+    await publish(token, { 'index.html': 'x' });
+    for (const [change, status] of [['UPDATE uploads SET expires_at=1', 404], ['UPDATE pages SET deleted_at=1', 409]] as const) {
+      const { uploadId } = await json(await start(token, await manifest({ 'index.html': 'x' }, { baseVersion: 1 })));
+      const old = await stateOf();
+      expect((await commitWith(before(() => sql(change), isCommit), uploadId)).status).toBe(status);
+      expect(await stateOf()).toEqual(old);
+    }
+  });
+
+  it('gives up with 409 when the page keeps changing', async () => {
+    await publish(token, { 'index.html': 'x' });
+    const { uploadId } = await json(await start(token, await manifest({ 'index.html': 'x' }, { baseVersion: 1 })));
+    const DB = new Proxy(env.DB, {
+      get(target, name) {
+        if (name === 'batch') return async (statements: D1PreparedStatement[]) => { await sql('UPDATE pages SET updated_at = updated_at + 1'); return target.batch(statements); };
+        const value = Reflect.get(target, name) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    expect(await code(await commitWith(DB, uploadId))).toEqual([409, 'conflict']);
+    expect(await rows('page_versions')).toBe(1);
+  });
+
+  it('marks a file that arrives while its upload is cleaned up, so it is removed later', async () => {
+    const { uploadId } = await json(await start(token, await manifest({ 'index.html': 'x', 'b.css': 'y' })));
+    await put(token, uploadId, 'x');
+    await sql('UPDATE uploads SET expires_at=?1'.replace('?1', String(Date.now() + 60_000)));
+    const later = Date.now() + 120_000;
+    await cleanUp({ ...env, DB: before(() => put(token, uploadId, 'y'), (q) => q.includes('DELETE FROM uploads')) }, later);
+    expect(await rows('blobs')).toBe(2);
+    await cleanUp(env, later + 90_000_000);
+    expect([await rows('blobs'), await objects()]).toEqual([0, []]);
+  });
+
+  it('takes a used file out of the queue of files to remove', async () => {
+    await publish(token, { 'index.html': 'x' });
+    await sql('UPDATE blobs SET unreferenced_at=1');
+    await cleanUp(env);
+    expect(await one('SELECT unreferenced_at u FROM blobs')).toEqual({ u: null });
+    expect(await objects()).toHaveLength(1);
+  });
+
+  it('answers 409 when a file to reuse is removed while the publish starts', async () => {
+    await publish(token, { 'index.html': 'x' });
+    const body = await manifest({ 'index.html': 'x' });
+    const DB = before(() => sql('DELETE FROM version_files', 'DELETE FROM blobs'), (q) => q.includes('INSERT INTO uploads'));
+    expect(await code(await call('/v1/projects/one/pages/other/versions', { method: 'POST', token, json: body, idem: 'x' }, { DB }))).toEqual([409, 'conflict']);
+    expect(await rows('uploads')).toBe(0);
+  });
+
+  it('stores nothing when R2 fails, and the file can be sent again', async () => {
+    const large = new Uint8Array(2_000_000).fill(97);
+    const { uploadId } = await json(await start(token, await manifest({ 'index.html': large })));
+    const FILES = new Proxy(env.FILES, { get: (target, name) => (name === 'put' ? async () => { throw new Error('R2 is down'); } : Reflect.get(target, name)) });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect((await call(`/v1/uploads/${uploadId}/blobs/${await sha(large)}`, { method: 'PUT', token, body: large }, { FILES })).status).toBe(500);
+    } finally { log.mockRestore(); }
+    expect(await rows('blobs')).toBe(0);
+    expect((await put(token, uploadId, large)).status).toBe(204);
   });
 });
 
@@ -236,6 +360,7 @@ describe('what a publish may hold', () => {
     ['a page field it does not know', (m) => { m.page = { title: 'x', id: 'y' } as never; }],
     ['a base that is not a number', (m) => { m.baseVersion = '0' as never; }],
     ['decisions, for now', (m) => { m.decisions = [{ key: 'k' }]; }],
+    ['an empty list of decisions, for now', (m) => { m.decisions = []; }],
     ...['/a.html', 'a//b.html', './a.html', 'a/../b.html', 'a\\b.html', '_lawh/a.html', '_LAWH/a.html', '', 'a\u0000.html', 'é.html', 'x/', '.', '..', `${'a'.repeat(508)}.html`]
       .map((path): [string, (m: Awaited<ReturnType<typeof manifest>>) => void] => [`the path ${JSON.stringify(path.slice(0, 20))}`, (m) => { m.files.push({ path, sha256: 'b'.repeat(64), bytes: 1 }); }]),
     ...['a.pdf', 'a.exe', 'a', 'a.html.php', 'a.sh', 'a.zip'].map((path): [string, (m: Awaited<ReturnType<typeof manifest>>) => void] =>

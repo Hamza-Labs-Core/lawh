@@ -49,6 +49,16 @@ describe('lists', () => {
     }
   });
 
+  it('finds a tag written in another normal form', async () => {
+    await publish(token, { 'index.html': 'x' }, { page: { title: 'x', tags: [' caf\u00e9 '] } }, 'one/pages/cafe');
+    expect(await list(`?tag=${encodeURIComponent('cafe\u0301')}`)).toEqual(['cafe']);
+  });
+
+  it('shows pages of every project, also past the first thousand', async () => {
+    await env.DB.prepare("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<1005) INSERT INTO projects(id,slug,name_en,name_ar,created_at) SELECT 'x'||i, 'aa'||printf('%04d',i), 'X', 'X', 1 FROM n").run();
+    expect(await list('?limit=1')).toEqual(['f']);
+  });
+
   it('holds only the projects of the key', async () => {
     expect(await list('', (await makeKey({ projects: ['p2'] })).token)).toEqual(['f', 'd', 'b']);
     expect(await list('', (await makeKey({ agent: 'am', projects: ['p1'] })).token)).toEqual(['e', 'c', 'a']);
@@ -133,8 +143,9 @@ describe('changing a page', () => {
     const etag = (await call('/v1/projects/one/pages/page', { token })).headers.get('ETag')!;
     const same = await call('/v1/projects/one/pages/page', { token, headers: { 'If-None-Match': etag } });
     expect([same.status, await same.text(), same.headers.get('ETag')]).toEqual([304, '', etag]);
+    for (const header of [`W/${etag}`, `"x", ${etag}`, '*']) expect((await call('/v1/projects/one/pages/page', { token, headers: { 'If-None-Match': header } })).status, header).toBe(304);
     await patch({ title: 'New' }, '1');
-    expect((await call('/v1/projects/one/pages/page', { token, headers: { 'If-None-Match': etag } })).status).toBe(200);
+    for (const header of [etag, `W/${etag}`, '"x"', '']) expect((await call('/v1/projects/one/pages/page', { token, headers: { 'If-None-Match': header } })).status, header).toBe(200);
   });
 
   it('answers 404 for a page, version or file that is not there', async () => {

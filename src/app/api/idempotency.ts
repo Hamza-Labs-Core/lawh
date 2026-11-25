@@ -29,6 +29,11 @@ export async function replay(env: AppEnv, caller: Caller, { key, requestHash }: 
 }
 
 /**
+ * Fails the batch, with "malformed JSON", unless the statement before it changed exactly one row.
+ */
+export const mustChange = (env: AppEnv): D1PreparedStatement => env.DB.prepare("SELECT CASE WHEN changes() = 1 THEN 1 ELSE json('nothing changed') END");
+
+/**
  * Runs a write and records its reply in one transaction, so a request sent twice, even at once, happens once.
  * If the write fails because its twin won, the twin's reply is given.
  */

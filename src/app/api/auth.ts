@@ -65,6 +65,7 @@ export async function authenticate(request: Request, env: AppEnv, ctx: Execution
       };
     }
   }
+  // Only failures count, and after the lookup, so agents behind one address can't lock each other out.
   const address = request.headers.get('CF-Connecting-IP') ?? 'unknown';
   if (!(await env.AUTH_LIMIT.limit({ key: address })).success) throw new ApiError('rate_limited', 'Too many requests.');
   throw new ApiError('unauthorized', 'A valid agent key is needed.');
@@ -109,7 +110,11 @@ export async function usableProjects(env: AppEnv, caller: Caller): Promise<Proje
         `SELECT ${columns} FROM agent_key_projects kp JOIN projects p ON p.id = kp.project_id
          WHERE kp.key_id = ? AND EXISTS (SELECT 1 FROM project_access x WHERE x.member_id = ? AND x.project_id = kp.project_id AND x.level = 4)`)
         .bind(caller.keyId, caller.memberId);
-  return (await query.all<Project>()).results;
+  return (await query.all<Project>()).results.sort((a, b) => (a.slug < b.slug ? -1 : 1));
+}
+
+export async function projectsById(env: AppEnv, ids: string[]): Promise<Project[]> {
+  return (await env.DB.prepare('SELECT id, slug, name_en, name_ar FROM projects WHERE id IN (SELECT value FROM json_each(?))').bind(JSON.stringify([...new Set(ids)])).all<Project>()).results;
 }
 
 export const projectJson = (p: Project) => ({ slug: p.slug, name: { en: p.name_en, ar: p.name_ar } });

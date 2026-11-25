@@ -27,8 +27,8 @@ textarea{width:100%;min-height:84px;border-radius:12px;border:1px solid var(--li
 .sign{max-width:420px;margin:14vh auto;text-align:center}
 @media(max-width:760px){.split{grid-template-columns:1fr}.top nav{display:none}.bot{display:flex;position:fixed;bottom:0;inset-inline:0;background:var(--s1);border-top:1px solid var(--line);justify-content:space-around;padding:4px 2px 12px}.bot a{display:grid;place-items:center;min-height:44px;min-width:44px;padding:4px;color:var(--mut);font-size:13px;text-align:center}.bot a.on{color:var(--ac)}main{padding-bottom:96px}.frame{min-height:300px}.hm{display:none}.sheet{display:grid;place-items:center;position:fixed;bottom:74px;inset-inline:16px;width:auto;box-shadow:0 4px 20px #0006}.view .mid{padding:0}.view .mid .ic{position:absolute;bottom:64px;background:#0a0c0e}.view .mid .ic:first-child{inset-inline-start:16px}.view .mid .ic:last-child{inset-inline-end:16px}.split aside{display:none}}
 </style></head><body><script>
-const q=new URLSearchParams(location.search),L=q.get('lang')||'en',S=q.get('screen')||'library',ar=L=='ar';
-const R=document.documentElement;R.lang=L;R.dir=ar?'rtl':'ltr';R.dataset.mode=q.get('mode')||'dark';
+const q=new URLSearchParams(location.search),L=q.get('lang')=='ar'?'ar':'en',S=(q.get('screen')||'').replace(/[^a-z]/g,'')||'library',ar=L=='ar';
+const R=document.documentElement;R.lang=L;R.dir=ar?'rtl':'ltr';R.dataset.mode=q.get('mode')=='light'?'light':'dark';
 const n=x=>ar?String(x).replace(/\d/g,d=>'٠١٢٣٤٥٦٧٨٩'[d]):String(x);
 const T=(e,a)=>ar?a:e;
 const nav=[['library',T('Pages','الصفحات')],['inbox',T('Decisions','القرارات')+` <span class="b">${n(3)}</span>`],['comments',T('Comments','التعليقات')],['team',T('Teams','الفرق')],['keys',T('Settings','الإعدادات')]];
