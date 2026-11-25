@@ -54,7 +54,9 @@ describe('what a person sees', () => {
   it('every route with a project answers 404 without a level, and works from viewer up', async () => {
     const paths = ['/projects/one/pages/a', '/projects/one/pages/a/versions', '/pages?project=one', '/tags?project=one'];
     // Each route is either tested here or about nothing in a project: a new one must be put in one of the lists.
-    const without = ['/me', '/sessions/current', `/sessions/${'0'.repeat(64)}`, '/switches/instance', '/sessions', '/passkeys', '/passkeys/options', '/passkeys/a', '/projects', '/device/look', '/device/approve'];
+    const without = ['/me', '/sessions/current', `/sessions/${'0'.repeat(64)}`, '/switches/instance', '/sessions', '/passkeys', '/passkeys/options', '/passkeys/a', '/projects', '/device/look', '/device/approve',
+      // In decisions.test.ts, at every level.
+      '/decisions', '/decisions/count', `/decisions/dec_${'0'.repeat(26)}`, `/decisions/dec_${'0'.repeat(26)}/answers`, '/projects/one/pages/a/decisions'];
     for (const route of peopleRoutes.filter((r) => r.who === 'person')) {
       expect([...paths, ...without].some((p) => route.path.test(`/app-api${p.split('?')[0]!}`)), route.path.source).toBe(true);
     }

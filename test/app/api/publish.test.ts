@@ -391,7 +391,6 @@ describe('what a publish may hold', () => {
     ['a page field it does not know', (m) => { m.page = { title: 'x', id: 'y' } as never; }],
     ['a base that is not a number', (m) => { m.baseVersion = '0' as never; }],
     ['decisions, for now', (m) => { m.decisions = [{ key: 'k' }]; }],
-    ['an empty list of decisions, for now', (m) => { m.decisions = []; }],
     ...['/a.html', 'a//b.html', './a.html', 'a/../b.html', 'a\\b.html', '_lawh/a.html', '_LAWH/a.html', '', 'a\u0000.html', 'é.html', 'x/', '.', '..', `${'a'.repeat(508)}.html`]
       .map((path): [string, (m: Awaited<ReturnType<typeof manifest>>) => void] => [`the path ${JSON.stringify(path.slice(0, 20))}`, (m) => { m.files.push({ path, sha256: 'b'.repeat(64), bytes: 1 }); }]),
     ...['a.pdf', 'a.exe', 'a', 'a.html.php', 'a.sh', 'a.zip'].map((path): [string, (m: Awaited<ReturnType<typeof manifest>>) => void] =>

@@ -1,9 +1,11 @@
 import { render } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import { call, CallError, type Me } from './api';
-import { Failure, go, Link, SettingsProvider, TopBar, useText } from './app';
+import { Failure, go, Link, SettingsProvider, TopBar, useSettings, useText } from './app';
+import { digits } from './i18n';
 import { ApproveDevice, AskDevice } from './screens/Device';
 import { Account } from './screens/Account';
+import { Decisions } from './screens/Decisions';
 import { Library } from './screens/Library';
 import { LinkPage } from './screens/LinkPage';
 import { PageView } from './screens/PageView';
@@ -12,6 +14,25 @@ import { SignIn } from './screens/SignIn';
 // Taken out of the address at once, so it stays out of the history and of anything that copies the address.
 let linkToken = location.pathname === '/link' ? location.hash.slice(1) : '';
 if (linkToken) history.replaceState(null, '', '/link');
+
+/** Where to go. On a phone it is at the bottom, in reach of a thumb. */
+function Nav({ path }: { path: string }) {
+  const t = useText(), { lang } = useSettings(), [waiting, setWaiting] = useState<{ count: number; more: boolean } | null>(null);
+  useEffect(() => {
+    const load = () => { call<{ count: number; more: boolean }>('GET', '/decisions/count').then(setWaiting, () => undefined); };
+    load();
+    addEventListener('lawh:decisions', load);
+    return () => removeEventListener('lawh:decisions', load);
+  }, [path]);
+  const n = waiting ? digits(lang, waiting.count) + (waiting.more ? '+' : '') : '';
+  return (
+    <nav class="places" aria-label={t('app')}>
+      <Link to="/" current={path === '/' || path.startsWith('/p/')}>{t('pages')}</Link>
+      <Link to="/decisions" current={path === '/decisions'}>{t('decisions')}{waiting !== null && waiting.count > 0 && <> <span class="badge">{n}</span></>}</Link>
+      <Link to="/account" current={path === '/account'}>{t('account')}</Link>
+    </nav>
+  );
+}
 
 function App() {
   const t = useText(), [place, setPlace] = useState({ path: location.pathname, search: location.search }), [me, setMe] = useState<Me | 'nobody' | 'failed' | null>(null);
@@ -37,9 +58,10 @@ function App() {
   else if (me === 'nobody') screen = path === '/device' ? <AskDevice onDone={arrive} /> : <SignIn onDone={() => { setMe(null); void load(); }} />;
   else if (path === '/approve') screen = <ApproveDevice onSignedOut={() => { setMe(null); void load(); }} />;
   else if (path === '/account' || !me.instance) screen = <Account me={me} onChange={() => void load()} />;
-  else if (reading) screen = <PageView project={reading[1]!} slug={reading[2]!} search={search} />;
+  else if (reading) screen = <PageView project={reading[1]!} slug={reading[2]!} search={search} me={me} />;
+  else if (path === '/decisions') screen = <Decisions search={search} me={me} />;
   else screen = <Library search={search} />;
-  return <><TopBar>{typeof me === 'object' && me !== null && me.instance && <Link class="plain as-button" to="/account" current={path === '/account'}>{t('account')}</Link>}</TopBar>{/* A new screen starts over; the link page doesn't depend on who is signed in. */}<main key={path === '/link' ? path : `${path} ${typeof me === 'object' && me ? me.id : me}`}>{screen}</main></>;
+  return <><TopBar>{typeof me === 'object' && me !== null && me.instance && <Nav path={path} />}</TopBar>{/* A new screen starts over; the link page doesn't depend on who is signed in. */}<main key={path === '/link' ? path : `${path} ${typeof me === 'object' && me ? me.id : me}`}>{screen}</main></>;
 }
 
 render(<SettingsProvider><App /></SettingsProvider>, document.getElementById('app')!);

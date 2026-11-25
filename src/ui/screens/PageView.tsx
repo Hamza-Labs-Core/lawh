@@ -1,17 +1,19 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
-import { call, CallError, type Listed, problemOf, type Reading, type Version } from '../api';
+import { call, CallError, type Decision, type Listed, type Me, problemOf, type Reading, type Version } from '../api';
 import { Failure, Fill, go, Heading, Link, useBusy, useSettings, useText, wasInside } from '../app';
 import { discard, type Media, readBridgeMessage } from '../bridgeHost';
 import { day, digits, translate } from '../i18n';
+import { DecisionList, left } from './Decisions';
 import { StatusMark } from './Library';
 import { taken, Viewer } from './Viewer';
 
 const CALM = { closedAt: 0, again: 0 };
 
 /** One version of a page, in its sandboxed frame, with the app's own bar around it. */
-export function PageView({ project, slug, search }: { project: string; slug: string; search: string }) {
+export function PageView({ project, slug, search, me }: { project: string; slug: string; search: string; me: Me }) {
   const t = useText(), { lang, mode } = useSettings(), asked = new URLSearchParams(search).get('v'), path = `/projects/${project}/pages/${slug}`;
   const [page, setPage] = useState<Reading | 'gone' | 'offline' | 'wait' | 'failed' | null>(null), [tries, setTries] = useState(0), [slow, setSlow] = useState(false), [versions, setVersions] = useState<HTMLElement | null>(null), [link, setLink] = useState<string | null>(null), [media, setMedia] = useState<Media | null>(null);
+  const [asks, setAsks] = useState<{ items: Decision[]; answerers: number | null } | null>(null), [asksProblem, setAsksProblem] = useState<'offline' | 'wait' | 'failed' | null>(null), [asksTries, setAsksTries] = useState(0), [sheet, setSheet] = useState<HTMLElement | null>(null), wide = useWide();
   const frame = useRef<HTMLIFrameElement>(null), ready = useRef(false), theme = useRef({ mode, lang });
   theme.current = { mode, lang };
   // A page can send messages whenever it likes, so what it wants to open is shown only while the browser counts the
@@ -21,7 +23,7 @@ export function PageView({ project, slug, search }: { project: string; slug: str
   const opening = useRef({ ...CALM }), dialogOpen = useRef(false), [blocked, setBlocked] = useState(false), [pushy, setPushy] = useState(false);
   const blockedNow = useRef(false), shown = useRef<number | null>(null), pressed = useRef(0), refocus = useRef(0);
   blockedNow.current = blocked;
-  const open = link !== null || versions !== null || media !== null;
+  const open = link !== null || versions !== null || media !== null || (sheet !== null && !wide);
   dialogOpen.current = open;
   shown.current = media?.index ?? null;
   // A picture that is replaced before the viewer took it over is freed here.
@@ -56,6 +58,7 @@ export function PageView({ project, slug, search }: { project: string; slug: str
   };
   const cancelLink = () => { closed(); setLink(null); };
   const openedLink = () => { opening.current = { ...CALM }; setLink(null); };
+  const closeSheet = () => { closed(); setSheet(null); };
   const closeVersions = () => { closed(); setVersions(null); };
   const block = pushy ? () => { setBlocked(true); setPushy(false); clearTimeout(refocus.current); showMedia(null); setLink(null); wanted.current = null; } : null;
   // The frame's origin is opaque, so there is no name to send to; nothing in the message is secret.
@@ -69,6 +72,20 @@ export function PageView({ project, slug, search }: { project: string; slug: str
       .then(setPage, (error: unknown) => { if (!stop.signal.aborted) setPage(error instanceof CallError && error.status === 404 ? 'gone' : problemOf(error)); });
     return () => stop.abort();
   }, [path, asked, tries]);
+
+  // The page's questions, whichever version is shown.
+  useEffect(() => {
+    const stop = new AbortController();
+    setAsksProblem(null);
+    call<{ items: Decision[]; answerers: number | null }>('GET', `${path}/decisions`, undefined, stop.signal)
+      .then(setAsks, (error: unknown) => { if (!stop.signal.aborted && !(error instanceof CallError && error.status === 404)) setAsksProblem(problemOf(error)); });
+    return () => stop.abort();
+  }, [path, tries, asksTries]);
+  const answeredOne = (next: Decision) => {
+    setAsks((now) => now && { ...now, items: now.items.map((d) => (d.id === next.id ? next : d)) });
+    // The last answer can decide the page.
+    setPage((now) => (now !== null && typeof now === 'object' ? { ...now, status: next.page.status } : now));
+  };
 
   const url = page !== null && typeof page === 'object' ? page.frame : null;
   useEffect(() => {
@@ -111,7 +128,8 @@ export function PageView({ project, slug, search }: { project: string; slug: str
     // The window loses the focus to a frame, sometimes while a button of the dialog still counts as focused.
     let away = false;
     const keep = () => {
-      const dialog = document.querySelector<HTMLElement>('dialog[open]'), at = document.activeElement;
+      // The one on top.
+      const dialog = [...document.querySelectorAll<HTMLElement>('dialog[open]')].at(-1), at = document.activeElement;
       if (!dialog || !document.hasFocus() || (dialog.contains(at) && (!away || at?.tagName === 'IFRAME'))) return;
       away = false;
       if (at instanceof HTMLElement) at.blur();
@@ -145,7 +163,20 @@ export function PageView({ project, slug, search }: { project: string; slug: str
       </div>
       {old && <p class="notice" role="status"><Fill text="oldVersion" n={digits(lang, page.version.n)} current={digits(lang, page.currentVersion)} /> <Link to={`/p/${project}/${slug}`}>{t('toCurrent')}</Link></p>}
       {slow && <p class="notice" role="status">{t('slow')} <button class="text" onClick={() => setTries(tries + 1)}>{t('reload')}</button></p>}
-      <iframe key={page.frame} ref={frame} class="page-frame" title={translate(lang, 'pageFrame', { title: page.title })} sandbox="allow-scripts" referrerpolicy="no-referrer" src={page.frame} onLoad={sendTheme} />
+      {asksProblem && <div class="notice"><Failure>{t(asksProblem)}</Failure><button class="text" onClick={() => setAsksTries(asksTries + 1)}>{t('retry')}</button></div>}
+      <div class="reader-body">
+        <iframe key={page.frame} ref={frame} class="page-frame" title={translate(lang, 'pageFrame', { title: page.title })} sandbox="allow-scripts" referrerpolicy="no-referrer" src={page.frame} onLoad={sendTheme} />
+        {asks !== null && asks.items.length > 0 && wide && <aside class="reader-side" aria-label={t('decisions')} tabIndex={0}><h2>{t('decisions')}</h2><DecisionList {...asks} me={me} onChange={answeredOne} /></aside>}
+      </div>
+      {asks !== null && asks.items.length > 0 && !wide && (
+        <div class="to-panel"><button class="primary" aria-haspopup="dialog" onClick={(event) => setSheet(event.currentTarget)}>{left(asks.items, me) > 0 ? <Fill text="toMake" n={digits(lang, left(asks.items, me))} /> : t('decisions')}</button></div>
+      )}
+      {asks !== null && sheet !== null && !wide && (
+        <Dialog class="sheet" title={t('decisions')} returnTo={sheet} onClose={closeSheet}>
+          <button class="plain sheet-close" onClick={closeSheet}>{t('close')}</button>
+          <DecisionList {...asks} me={me} onChange={answeredOne} />
+        </Dialog>
+      )}
       {versions && <Versions path={path} project={project} slug={slug} shown={page.version.n} current={page.currentVersion} returnTo={versions} onClose={closeVersions} />}
       {media !== null && <Viewer media={media} frameUrl={page.viewer} onMove={moveTo} onClose={closeMedia} onBlock={block} />}
       {link !== null && <LeaveDialog url={link} returnTo={frame.current} onClose={cancelLink} onOpened={openedLink} onBlock={block} />}
@@ -153,15 +184,26 @@ export function PageView({ project, slug, search }: { project: string; slug: str
   );
 }
 
+/** Whether there is room for the questions beside the page. */
+function useWide(): boolean {
+  const [wide, setWide] = useState(() => matchMedia('(min-width: 961px)').matches);
+  useEffect(() => {
+    const query = matchMedia('(min-width: 961px)'), onChange = () => setWide(query.matches);
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
+  }, []);
+  return wide;
+}
+
 /** An in-app dialog. Escape and the area around it close it, and the focus returns to what opened it (Safari doesn't focus a clicked button). */
-function Dialog({ title, returnTo, onClose, children }: { title: string; returnTo: HTMLElement | null; onClose: () => void; children: preact.ComponentChildren }) {
+function Dialog({ title, class: className, returnTo, onClose, children }: { title: string; class?: string; returnTo: HTMLElement | null; onClose: () => void; children: preact.ComponentChildren }) {
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     dialog.current?.showModal();
     return () => { if (returnTo?.isConnected) returnTo.focus(); };
   }, []);
   return (
-    <dialog ref={dialog} aria-label={title} onClose={onClose} onClick={(event) => { if (event.target === dialog.current) dialog.current?.close(); }}>
+    <dialog ref={dialog} class={className} aria-label={title} onClose={onClose} onClick={(event) => { if (event.target === dialog.current) dialog.current?.close(); }}>
       <div class="dialog"><h2>{title}</h2>{children}</div>
     </dialog>
   );

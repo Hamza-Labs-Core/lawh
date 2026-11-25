@@ -80,7 +80,13 @@ Q = {
  # The Worker drops repeated ids (a person in two teams) and adds 1 for the owner.
  "people who may answer": "SELECT tm.member_id FROM team_projects tp CROSS JOIN team_members tm ON tm.team_id=tp.team_id AND tm.level>=3 WHERE tp.project_id=?",
  "projects that need agreement": "UPDATE projects SET answers_needed=1 WHERE answers_needed>1",
- "answer history": "SELECT * FROM decision_answers WHERE decision_id=? ORDER BY seq",
+ "answer history": "SELECT * FROM decision_answers WHERE decision_id=? ORDER BY seq DESC LIMIT 500",
+ "decisions of page by key": "SELECT id,key FROM decisions WHERE page_id=? AND key>? ORDER BY key LIMIT 31",
+ "waiting in project": "SELECT d.id FROM decisions d INDEXED BY decisions_project_inbox CROSS JOIN pages p ON p.id=d.page_id AND p.deleted_at IS NULL WHERE d.project_id=? AND d.status IN ('open','stale') AND (d.updated_at,d.id)>(?,?) AND (EXISTS (SELECT 1 FROM projects n WHERE n.id=d.project_id AND n.answers_needed>1) AND EXISTS (SELECT 1 FROM decision_answers a WHERE a.decision_id=d.id AND a.member_id=? AND a.revision=d.revision)) ORDER BY d.updated_at,d.id LIMIT 50",
+ "to answer anywhere": "SELECT d.id FROM decisions d INDEXED BY decisions_inbox CROSS JOIN pages p ON p.id=d.page_id AND p.deleted_at IS NULL WHERE d.status IN ('open','stale') AND (d.updated_at,d.id)>(?,?) AND NOT (EXISTS (SELECT 1 FROM projects n WHERE n.id=d.project_id AND n.answers_needed>1) AND EXISTS (SELECT 1 FROM decision_answers a WHERE a.decision_id=d.id AND a.member_id=? AND a.revision=d.revision)) ORDER BY d.updated_at,d.id LIMIT 50",
+ "answered": "SELECT d.id FROM decisions d CROSS JOIN pages p ON p.id=d.page_id AND p.deleted_at IS NULL WHERE d.status='answered' AND (d.updated_at,d.id)<(?,?) ORDER BY d.updated_at DESC,d.id DESC LIMIT 50",
+ "answered in project": "SELECT d.id FROM decisions d CROSS JOIN pages p ON p.id=d.page_id AND p.deleted_at IS NULL WHERE d.project_id=? AND d.status='answered' AND (d.updated_at,d.id)<(?,?) ORDER BY d.updated_at DESC,d.id DESC LIMIT 50",
+ "last open decision": "SELECT 1 FROM decisions d WHERE d.page_id=? AND d.status IN ('open','stale')",
  "comments on page": "SELECT * FROM comments WHERE page_id=? AND deleted_at IS NULL ORDER BY created_at,id LIMIT 100",
  "thread": "SELECT * FROM comments WHERE thread_id=? ORDER BY created_at,id",
  # The Worker reads the newest number first (0 when none). Without `after`, or with no read scope, it stops there and

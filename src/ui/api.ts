@@ -26,4 +26,10 @@ export interface Version { n: number; note: string; publishedBy: string; created
 export interface Reading extends PageItem { level: number; version: Version; frame: string; viewer: string }
 export interface Listed<T> { items: T[]; next: string | null }
 
+export interface Answer { seq: number; revision: number; question: string; optionId: string | null; optionLabel: string | null; notes: string; answeredAt: number; answeredBy: { id: string; name: string | null }; needed: number; decides: boolean }
+export interface Decision {
+  id: string; project: string; projectName: { en: string; ar: string }; page: { slug: string; title: string; lang: 'en' | 'ar'; status: Status }; revision: number; status: 'open' | 'answered' | 'stale' | 'withdrawn';
+  question: string; context: string; options: { id: string; label: string; detail?: string; cost?: string }[]; answer: Answer | null; answersNeeded: number; agreement: Answer[]; answerSeq: number; mayAnswer: boolean; history?: Answer[];
+}
+
 export interface Me { id: string; name: string; isOwner: boolean; instance: boolean }

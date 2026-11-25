@@ -45,8 +45,8 @@ export function TopBar({ children }: { children?: ComponentChildren }) {
   return (
     <header class="top">
       <Link class="logo" to="/">{t('app')}</Link>
-      <span class="space" />
       {children}
+      <span class="space" />
       <button class="plain" onClick={() => setMode(mode === 'dark' ? 'light' : 'dark')}>{t(mode === 'dark' ? 'light' : 'dark')}</button>
       <button class="plain" lang={lang === 'ar' ? 'en' : 'ar'} onClick={() => setLang(lang === 'ar' ? 'en' : 'ar')}>{t('otherLang')}</button>
     </header>
