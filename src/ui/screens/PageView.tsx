@@ -116,7 +116,7 @@ export function PageView({ project, slug, search }: { project: string; slug: str
       away = false;
       if (at instanceof HTMLElement) at.blur();
       focus();
-      (dialog.contains(at) && at instanceof HTMLElement ? at : dialog.querySelector('button'))?.focus();
+      (at !== dialog && dialog.contains(at) && at instanceof HTMLElement ? at : dialog.querySelector('button'))?.focus();
     };
     // Not at once: WebKit hands the keyboard over only after this.
     const onBlur = () => { away = true; }, onFocus = () => { away = false; };

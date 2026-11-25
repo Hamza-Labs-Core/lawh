@@ -79,10 +79,10 @@ export const BRIDGE = `(function () {
     return box.width >= 24 && box.height >= 24 && getComputedStyle(el).visibility !== 'hidden';
   };
   var media = function () { return Array.prototype.filter.call(document.querySelectorAll('img,svg,canvas'), isMedia).slice(0, 500); };
-  // The weakest rule there is: any cursor the page chooses wins, also later.
+  // The weakest rule there is, in the first layer: any cursor the page chooses wins, also later and in a layer of its own.
   var sheet = document.createElement('style');
-  sheet.textContent = ':where([data-lawh-zoom]){cursor:zoom-in}';
-  (document.head || root).appendChild(sheet);
+  sheet.textContent = '@layer lawh{:where([data-lawh-zoom]){cursor:zoom-in}}';
+  (document.head || root).prepend(sheet);
   var mark = function () {
     media().forEach(function (el) {
       if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '0');
@@ -151,9 +151,9 @@ export const BRIDGE = `(function () {
         if (copy.querySelector('#' + CSS.escape(id))) continue;
         var target = document.getElementById(id);
         if (!target || svg.contains(target) || !(target instanceof SVGElement) || target.contains(svg)) continue;
-        var other = target.cloneNode(true);
         budget -= 1 + target.querySelectorAll('*').length;
         if (budget < 0) break;
+        var other = target.cloneNode(true);
         inline(target, other, true); defs.appendChild(other); added = true;
       }
       if (!added) break;

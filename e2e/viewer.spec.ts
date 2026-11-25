@@ -206,7 +206,9 @@ test('a person who looks at many pictures is not asked to stop the page, also wh
   await open(page, member);
   await inside(page).locator('#photo').click();
   await color(page);
-  for (let i = 0; i < 6; i++) await page.keyboard.press('ArrowRight');
+  // At once, so the answers come when a later one is wanted.
+  await viewer(page).evaluate((dialog) => { for (let i = 0; i < 6; i++) dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); });
+  await expect(counter(page)).toHaveText('7 of 7');
   await page.keyboard.press('Escape');
   await expect(viewer(page)).toHaveCount(0);
   await page.waitForTimeout(800);
@@ -260,6 +262,7 @@ test('pictures keep the page’s own cursor, hidden ones are left alone, and one
   await open(page, member, 'media-more');
   expect(await inside(page).locator('#pan').evaluate((el) => [getComputedStyle(el).cursor, el.getAttribute('tabindex')])).toEqual(['move', '0']);
   expect(await inside(page).locator('#plain').evaluate((el) => getComputedStyle(el).cursor)).toBe('zoom-in');
+  expect(await inside(page).locator('#layered').evaluate((el) => [getComputedStyle(el).cursor, el.getAttribute('tabindex')])).toEqual(['help', '0']);
   expect(await inside(page).locator('#hidden-icon').getAttribute('tabindex')).toBeNull();
   await inside(page).locator('#hidden-icon').click();
   await page.waitForTimeout(300);
