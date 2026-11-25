@@ -26,12 +26,12 @@ test('another device signs in with a code', async ({ page, browser, member }) =>
     if (process.env.LAWH_SHOTS) await page.screenshot({ path: `${process.env.LAWH_SHOTS}/approve-2-en-dark-${test.info().project.name}.png` });
     await page.getByRole('button', { name: 'Approve' }).click();
     await expect(page.getByRole('status')).toHaveText('Approved. The other device is signing in.');
-    await expect(device.getByRole('heading', { name: /^Signed in as \W?Mona\W?$/ })).toBeVisible();
+    await expect(device.getByRole('heading', { name: 'Signed in as Mona' })).toBeVisible();
     await page.getByRole('button', { name: 'Back' }).click();
     await page.getByRole('button', { name: 'Sign out' }).click();
     await expect(page.getByRole('button', { name: 'Approve from another device' })).toBeVisible();
     await device.reload();
-    await expect(device.getByRole('heading', { name: /^Signed in as \W?Mona\W?$/ })).toBeVisible();
+    await expect(device.getByRole('heading', { name: 'Signed in as Mona' })).toBeVisible();
   } finally { await other.close(); }
 });
 
@@ -81,6 +81,9 @@ test('language and theme are kept, and Arabic is right to left', async ({ page }
   await expect(page.locator('html')).toHaveAttribute('data-mode', 'light');
   await page.getByRole('button', { name: 'الموافقة من جهاز آخر' }).click();
   await expect(page.getByText('يعمل لمدة ٥ دقائق.')).toBeVisible();
+  // The address can be copied as it is.
+  expect(await page.locator('main bdi').first().evaluate((e) => [e.textContent, e.getAttribute('dir')])).toEqual([`${APP}/approve`, 'ltr']);
+  expect(await page.locator('main').innerText()).not.toMatch(/[\u2066-\u2069]/);
   await expect(page).toHaveTitle('لوح');
 });
 

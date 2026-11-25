@@ -1,13 +1,19 @@
 import { type ComponentChildren, createContext } from 'preact';
 import { useCallback, useContext, useEffect, useRef, useState } from 'preact/hooks';
-import { type Key, type Lang, translate } from './i18n';
+import { type Key, type Lang, parts, translate } from './i18n';
 
 interface Settings { lang: Lang; mode: 'dark' | 'light'; setLang: (lang: Lang) => void; setMode: (mode: 'dark' | 'light') => void }
 const SettingsContext = createContext<Settings>(null as unknown as Settings);
 export const useSettings = () => useContext(SettingsContext);
-export function useText(): (key: Key, values?: Record<string, string>) => string {
+export function useText(): (key: Key) => string {
   const { lang } = useSettings();
-  return useCallback((key: Key, values?: Record<string, string>) => translate(lang, key, values), [lang]);
+  return useCallback((key: Key) => translate(lang, key), [lang]);
+}
+
+/** A text with its places filled. Each is isolated, so a name or an address in the other direction doesn't disturb the text around it. */
+export function Fill({ text, dir, ...values }: { text: Key; dir?: 'ltr'; [value: string]: string | undefined }) {
+  const { lang } = useSettings();
+  return <>{parts(lang, text, values as Record<string, string>).map((part) => (typeof part === 'string' ? part : <bdi dir={dir}>{part.value}</bdi>))}</>;
 }
 
 const keep = (key: string, value: string) => { try { localStorage.setItem(key, value); } catch { /* private window */ } };

@@ -41,7 +41,6 @@ const TEXT = {
   approveTitle: ['Sign in another device', 'إدخال جهاز آخر'],
   approveHelp: ['Type the code the other device shows.', 'يلزم إدخال الرمز الذي يعرضه الجهاز الآخر.'],
   approveWarn: ['Continue only if you started this. If someone sent you a code, don’t type it.', 'المتابعة فقط إن كان هذا الطلب منك. أي رمز يصلك من شخص آخر يجب ألا يُكتب هنا.'],
-  code: ['Code', 'الرمز'],
   next: ['Continue', 'متابعة'],
   approveAsk: ['Sign in {label} as you?', 'إدخال {label} باسمك؟'],
   approve: ['Approve', 'موافقة'],
@@ -52,10 +51,16 @@ const TEXT = {
 
 export type Key = keyof typeof TEXT;
 
-export function translate(lang: Lang, key: Key, values: Record<string, string> = {}): string {
-  // Isolated (U+2068 … U+2069), so a name or an address in the other direction doesn't disturb the text around it.
-  return TEXT[key][lang === 'ar' ? 1 : 0].replace(/\{(\w+)\}/g, (_, name: string) => (name === 'five' ? digits(lang, 5) : values[name] ? `\u2068${values[name]}\u2069` : ''));
+/** The text cut at its places: plain parts, and `{ value }` for what fills one. */
+export function parts(lang: Lang, key: Key, values: Record<string, string> = {}): (string | { value: string })[] {
+  return TEXT[key][lang === 'ar' ? 1 : 0].split(/(\{\w+\})/).filter((part) => part !== '').map((part) => {
+    const name = /^\{(\w+)\}$/.exec(part)?.[1];
+    return name === undefined ? part : name === 'five' ? digits(lang, 5) : { value: values[name] ?? '' };
+  });
 }
+
+/** As one string, for a title or an attribute. On a screen, places are filled by `Fill`, which isolates them. */
+export const translate = (lang: Lang, key: Key, values?: Record<string, string>): string => parts(lang, key, values).map((part) => (typeof part === 'string' ? part : part.value)).join('');
 
 /** Numbers as the language writes them: ٠–٩ in Arabic. */
 export const digits = (lang: Lang, value: number | string): string => (lang === 'ar' ? String(value).replace(/\d/g, (d) => '٠١٢٣٤٥٦٧٨٩'[Number(d)]!) : String(value));
