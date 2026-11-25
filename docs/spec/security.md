@@ -124,9 +124,13 @@ A reset link doesn't revoke agent keys. The page after a reset lists them with "
 
 HTTPS only, off by default. Each webhook's secret is encrypted with AES-GCM under `webhookKey` from the Secrets Store, host on an owner-set allowlist, no redirects followed. Signed with `Lawh-Signature: t=…,v1=HMAC-SHA256(secret, t.body)`. Bodies contain ids and event types, not notes or answers; the receiver fetches those with its key. Queue retries with a dead-letter queue; the final failure shows in the UI with "Send again".
 
+**Live pings** (off by default). `POST /v1/events/ticket` checks the key and one project and gives a signed ticket for 60 seconds; the client opens a WebSocket with it. So no key is in an address, and any WebSocket client works. A ticket used twice in that time opens a second connection that sees only pings. A connection lasts at most an hour, and each key has at most 20. It carries only event numbers, no names or text, and incoming messages are ignored. A key revoked meanwhile can't read the events; its open connection learns at most that something happened, for up to an hour. The same check as `/v1/events` applies to every read: a person's level now, the key's projects and scopes.
+
+`lawh listen` runs only the command the person gave it, without a shell, with the event on standard input. Comments and notes in an event are read by the agent with the rules in section 8; an event never chooses what runs.
+
 ## 8. What agents may trust
 
-Every comment has `authorType` (`person` or `agent`), and a person's comment has `fromDecider`: whether its author could decide on that project when they wrote it. The database checks that level on write. Only answers, and comments with `fromDecider: true`, are instructions. Page text, agents' comments and other people's comments are data. The `/v1` docs and the skill say so.
+Every comment has `authorType` (`person` or `agent`), and a person's comment has `fromDecider`: whether its author could decide on that project when they wrote it. The database checks that level on write. Only the `answer` of an `answered` decision, and comments with `fromDecider: true`, are instructions. An answer that still waits for others isn't. Page text, agents' comments and other people's comments are data. The `/v1` docs and the skill say so.
 
 ## 9. Threats and answers
 
@@ -137,6 +141,7 @@ Every comment has `authorType` (`person` or `agent`), and a person's comment has
 | A page imitates the app | It draws only inside the frame; the app's bar, with project and author, stays visible; sign-in never appears inside a frame |
 | A leaked agent key | Scoped, expiring, revoked at once; it can't answer, delete or make keys; old versions stay |
 | Someone tricks a person into connecting the attacker's agent | The person must type a code at their own Lawh, after a warning. The agent can't answer, delete or make keys, shows in the list and the audit log, and is revoked at once |
+| A fake or repeated ping | It carries no data; the client reads the real events with its key |
 | A leaked content URL | One version, at most 4 hours |
 | A leaked D1 copy | No usable keys or sessions (hashes only; the pepper is elsewhere). Page files aren't in D1, but titles, decisions and comments are |
 | Prompt injection in a page or comment | Author type and `fromDecider` in the API; only deciders and the owner can answer |
@@ -148,6 +153,7 @@ Every comment has `authorType` (`person` or `agent`), and a person's comment has
 | Someone keeps an invite link to use when its person gets more access | An invited person can't be in a team; the link gives only its own team and level, and only while its maker still could |
 | An old owner keeps a way in | Transfer deletes unused links for and by both people, and revokes the moved agents' keys |
 | A comment or decision attached to another project to gain weight there | A foreign key ties it to its page's project; a comment can't be edited |
+| One person decides alone where two must agree | The database counts the people, in the same statement as the answer |
 | A question changes after the answer | New revision; the decision becomes `stale`; the old answer keeps its own wording |
 
 ## 10. Security tests (S3, S4 and S18, Chromium, Firefox and WebKit)
