@@ -1,5 +1,5 @@
 <!doctype html><html><head><meta charset="utf-8"><title>nav-form</title></head><body><h1>nav-form</h1>
-<script>const who = new URLSearchParams(location.search).get('who'), TRAP = 'http://localhost:8799/' + who;
+<script>const who = (new URLSearchParams(location.search).get('who') || '').replace(/[^0-9a-f-]/g, ''), TRAP = 'http://localhost:8799/' + who;
 parent.postMessage({ type: 'result', result: 'ran' }, '*');
 setTimeout(() => { for (const target of ['_self', '_top', '_blank']) { const f = document.createElement('form'); f.action = TRAP + '/form' + target; f.method = 'post'; f.target = target; const i = document.createElement('input'); i.name = 'a'; i.value = 'secret'; f.append(i); document.body.append(f); try { f.submit(); } catch (e) {} try { f.requestSubmit(); } catch (e) {} } }, 100);
 </script></body></html>

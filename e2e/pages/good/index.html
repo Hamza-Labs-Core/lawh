@@ -1,6 +1,9 @@
 <!doctype html><html><head><meta charset="utf-8"><title>Good</title><link rel="stylesheet" href="style.css"></head>
 <body><h1>First section</h1><p id="p">text</p><h2>First section</h2><h3 id="own">Own id</h3><img src="dot.svg" alt="dot" id="img">
-<a id="out" href="https://example.com/a?b=c">out</a> <a id="in" href="#own">in</a> <a id="bad" href="javascript:document.title='ran'">bad</a><div style="height:3000px"></div>
+<a id="out" href="https://example.com/a?b=c">out</a> <a id="in" href="#own">in</a> <a id="bad" href="javascript:document.title='ran'">bad</a><h2>مَرْحَباً بِكُمْ</h2><h2 id="constructor">Built in</h2>
+<svg width="20" height="20" xmlns:xlink="http://www.w3.org/1999/xlink"><a id="svg" href="https://example.com/svg"><rect width="9" height="9"/></a><a id="xlink" xlink:href="https://example.com/xlink"><rect width="9" height="9"/></a></svg>
+<map name="m"><area id="area" href="https://example.com/area" shape="default" alt="x"></map><a id="next" href="next.html">next</a>
+<a id="long">long</a><script>document.getElementById('long').href = 'https://example.com/' + 'x'.repeat(2500);</script><div style="height:3000px"></div>
 <script type="module">
 import { answer } from './module.js';
 const result = { module: answer, style: getComputedStyle(document.getElementById('p')).color, mode: document.documentElement.dataset.lawhMode, lang: document.documentElement.dataset.lawhLang, origin: self.origin };

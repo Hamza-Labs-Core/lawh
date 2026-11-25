@@ -1,5 +1,5 @@
 <!doctype html><html><head><meta charset="utf-8"><title>nav-link</title></head><body><h1>nav-link</h1>
-<script>const who = new URLSearchParams(location.search).get('who'), TRAP = 'http://localhost:8799/' + who;
+<script>const who = (new URLSearchParams(location.search).get('who') || '').replace(/[^0-9a-f-]/g, ''), TRAP = 'http://localhost:8799/' + who;
 parent.postMessage({ type: 'result', result: 'ran' }, '*');
 setTimeout(() => { for (const set of [{ target: '_self' }, { target: '_top' }, { target: '_blank' }, { target: '_blank', rel: 'opener' }, { download: 'x' }, { ping: TRAP + '/ping', target: '_self' }]) { const a = document.createElement('a'); Object.assign(a, set); a.href = TRAP + '/link' + (a.target || '-download'); a.textContent = 'x'; document.body.append(a); a.dispatchEvent(new MouseEvent('click', { bubbles: false, cancelable: true })); HTMLAnchorElement.prototype.click.call(a); } }, 100);
 </script></body></html>

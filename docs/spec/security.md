@@ -27,7 +27,7 @@ CSP doesn't close every channel. These remain:
 - **WebRTC.** No fetch directive covers it. `webrtc 'block'` is sent, but browsers don't reliably enforce it. Patching `RTCPeerConnection` in the bridge isn't a boundary, because a page can make a `srcdoc` frame with a fresh copy.
 - **DNS prefetch.** `X-DNS-Prefetch-Control: off` is sent; not every browser honors it.
 
-What could leave is only what the page already has: its own files, which its agent wrote, and its own URL token (one version, at most 4 hours). It can't reach the session, the API, decisions, comments or other pages. The S3 tests record these two per browser; they aren't expected to fail.
+What could leave is only what the page already has: its own files, which its agent wrote, and its own URL token (one version, at most 4 hours). It can't reach the session, the API, decisions, comments or other pages. The S3 tests record WebRTC per browser; DNS prefetch isn't measured. Neither is expected to fail.
 
 ### Content host headers
 
@@ -62,7 +62,7 @@ An opaque origin sends no session cookie, so each file URL carries a token: `htt
 
 ## 3. The bridge
 
-`lawh-content` adds one script to HTML responses. It sends the app four kinds of message:
+`lawh-content` adds one script to HTML responses, at the end of the body. It works in pages in UTF-8 that close what they open. It talks only to the app's origin. It sends the app four kinds of message:
 
 | Message | Used for | The app's check |
 |---|---|---|
@@ -159,4 +159,4 @@ Every comment has `authorType` (`person` or `agent`), and a person's comment has
 
 ## 10. Security tests (S3, S4 and S18, Chromium, Firefox and WebKit)
 
-Fixtures try to: read `parent.document`; read cookies and storage; fetch the API; navigate `top` and the frame; open a popup; submit a form; load an outside image, script, font and WebSocket; forge each bridge message; read another page's file; use an expired, changed or deleted version's token. Each must fail, and the test proves the fixture ran. WebRTC and DNS prefetch are measured and recorded per browser instead (section 2).
+Fixtures try to: read `parent.document`; read cookies and storage; fetch the API; navigate `top` and the frame; open a popup; submit a form; load an outside image, script, font and WebSocket; forge each bridge message; read another page's file; use an expired, changed or deleted version's token. Each must fail, and the test proves the fixture ran. WebRTC is recorded per browser instead (section 2).

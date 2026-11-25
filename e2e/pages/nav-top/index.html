@@ -1,5 +1,5 @@
 <!doctype html><html><head><meta charset="utf-8"><title>nav-top</title></head><body><h1>nav-top</h1>
-<script>const who = new URLSearchParams(location.search).get('who'), TRAP = 'http://localhost:8799/' + who;
+<script>const who = (new URLSearchParams(location.search).get('who') || '').replace(/[^0-9a-f-]/g, ''), TRAP = 'http://localhost:8799/' + who;
 parent.postMessage({ type: 'result', result: 'ran' }, '*');
 setTimeout(() => { for (const go of [() => { top.location.href = TRAP + '/top'; }, () => { parent.location.replace(TRAP + '/parent'); }, () => { top.location.hash = 'x'; }, () => top.close(), () => { history.pushState(null, '', TRAP + '/push'); }]) { try { go(); } catch (e) {} } }, 100);
 </script></body></html>

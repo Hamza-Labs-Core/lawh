@@ -16,17 +16,22 @@ export function readBridgeMessage(event: { source: unknown; data: unknown }, fra
   switch (data.type) {
     case 'lawh:outline': {
       if (!Array.isArray(data.items) || data.items.length > 200) return null;
-      const items = data.items.map((item: unknown) =>
-        isObject(item) && typeof item.id === 'string' && item.id.length > 0 && item.id.length <= 200 && typeof item.title === 'string' && item.title.length > 0 && item.title.length <= 200
-          && typeof item.level === 'number' && [1, 2, 3, 4].includes(item.level) ? { id: item.id, title: item.title, level: item.level } : null);
-      return items.includes(null) ? null : { type: 'outline', items: items as { id: string; title: string; level: number }[] };
+      const items: { id: string; title: string; level: number }[] = [];
+      // By index: a list can come with holes, which map() skips.
+      for (let i = 0; i < data.items.length; i++) {
+        const item: unknown = data.items[i];
+        if (!isObject(item) || typeof item.id !== 'string' || item.id.length < 1 || item.id.length > 200 || typeof item.title !== 'string' || item.title.length < 1
+          || item.title.length > 200 || typeof item.level !== 'number' || ![1, 2, 3, 4].includes(item.level)) return null;
+        items.push({ id: item.id, title: item.title, level: item.level });
+      }
+      return { type: 'outline', items };
     }
     case 'lawh:open-link': {
       if (typeof data.url !== 'string' || data.url.length > 2000) return null;
       try {
         const url = new URL(data.url);
         // No user name or password: they can make an address look like another site's.
-        return url.protocol === 'https:' && !url.username && !url.password ? { type: 'open-link', url: url.href } : null;
+        return url.protocol === 'https:' && !url.username && !url.password && url.href.length <= 2000 ? { type: 'open-link', url: url.href } : null;
       } catch { return null; }
     }
     case 'lawh:scroll-state':
