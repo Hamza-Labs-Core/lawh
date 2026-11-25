@@ -132,7 +132,12 @@ test('a page that asks again and again cannot change the address shown, trap the
   await expect(page.getByRole('dialog')).toHaveCount(1);
   await page.getByRole('button', { name: 'Close' }).click();
   // Each time it waits longer: by now long enough to leave.
-  for (let i = 0; i < 2; i++) { await expect(dialog).toBeVisible(); await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0); }
+  await expect(dialog).toBeVisible({ timeout: 10_000 });
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  // Opening and closing another dialog doesn't shorten it.
+  await page.getByRole('button', { name: 'Version 1' }).click();
+  await page.getByRole('button', { name: 'Close' }).click();
   const shown = Date.now();
   await expect(dialog).toBeVisible({ timeout: 10_000 });
   expect(Date.now() - shown).toBeGreaterThan(1500);
@@ -203,6 +208,8 @@ test('filters by project, with the tags of that project', async ({ page, member 
   let release = () => {};
   const held = new Promise<void>((resolve) => { release = resolve; });
   await page.route('**/app-api/tags?*project=one*', async (route) => { await held; await route.continue(); });
+  await tag.click();
+  await expect(page.locator('.options [role=option]')).toHaveText(['second-only']);
   await page.getByLabel('Project').selectOption('One');
   await tag.click();
   await page.waitForTimeout(400);
@@ -279,6 +286,7 @@ test('projects that fail to load can be tried again, and nobody is told there ar
   await expect(page.locator('.empty')).toHaveCount(0);
   release();
   await expect(page.getByRole('alert')).toHaveText('No connection.');
+  await expect(page.locator('.empty')).toHaveCount(0);
   await page.unroute('**/app-api/projects');
   await page.getByRole('button', { name: 'Try again' }).click();
   await expect(page.getByText('You’re in no project yet.')).toBeVisible();
@@ -288,6 +296,12 @@ test('projects that fail to load can be tried again, and nobody is told there ar
 test('choosing and clearing a tag leaves no old list', async ({ page, member }) => {
   await open(page, member);
   const tag = page.getByRole('combobox', { name: 'Tag' });
+  await tag.fill('we');
+  await expect(page.locator('.options [role=option]')).toHaveText(['weather']);
+  await page.route('**/app-api/tags?q=st*', () => { /* never answered */ });
+  await tag.fill('st');
+  await expect(page.locator('.options').getByText('weather'), 'what no longer matches is gone at once').toHaveCount(0);
+  await page.unroute('**/app-api/tags?q=st*');
   await tag.fill('we');
   await expect(page.locator('.options [role=option]')).toHaveText(['weather']);
   await tag.press('ArrowDown');
