@@ -39,7 +39,7 @@ function App() {
   else if (path === '/account' || !me.instance) screen = <Account me={me} onChange={() => void load()} />;
   else if (reading) screen = <PageView project={reading[1]!} slug={reading[2]!} search={search} />;
   else screen = <Library search={search} />;
-  return <><TopBar>{typeof me === 'object' && me !== null && <Link class="plain as-button" to="/account" current={path === '/account'}>{t('account')}</Link>}</TopBar>{/* A new screen starts over; the link page doesn't depend on who is signed in. */}<main class={reading ? 'reading' : undefined} key={path === '/link' ? path : `${path} ${typeof me === 'object' && me ? me.id : me}`}>{screen}</main></>;
+  return <><TopBar>{typeof me === 'object' && me !== null && me.instance && <Link class="plain as-button" to="/account" current={path === '/account'}>{t('account')}</Link>}</TopBar>{/* A new screen starts over; the link page doesn't depend on who is signed in. */}<main key={path === '/link' ? path : `${path} ${typeof me === 'object' && me ? me.id : me}`}>{screen}</main></>;
 }
 
 render(<SettingsProvider><App /></SettingsProvider>, document.getElementById('app')!);

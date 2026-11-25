@@ -31,12 +31,12 @@ export function SettingsProvider({ children }: { children: ComponentChildren }) 
   );
 }
 
-/** A link inside the app: a real address, opened without loading the app again. */
-export function Link({ to, class: className, children, current }: { to: string; class?: string; children: ComponentChildren; current?: boolean }) {
+/** A link inside the app: a real address, opened without loading the app again. `onGo` is done instead of opening it. */
+export function Link({ to, class: className, children, current, onGo }: { to: string; class?: string; children: ComponentChildren; current?: boolean; onGo?: (() => void) | undefined }) {
   return <a href={to} class={className} aria-current={current ? 'page' : undefined} onClick={(event) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
-    go(to);
+    if (onGo) onGo(); else go(to);
   }}>{children}</a>;
 }
 

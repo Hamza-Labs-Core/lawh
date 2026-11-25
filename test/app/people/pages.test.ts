@@ -53,10 +53,11 @@ describe('what a person sees', () => {
 
   it('every route with a project answers 404 without a level, and works from viewer up', async () => {
     const paths = ['/projects/one/pages/a', '/projects/one/pages/a/versions', '/pages?project=one', '/tags?project=one'];
-    // A route with a project that isn't tested here fails.
-    const withProject = peopleRoutes.filter((r) => r.path.source.includes('projects\\/(') || /pages\$|tags\$/.test(r.path.source));
-    expect(withProject.every((r) => paths.some((p) => r.path.test(`/app-api${p.split('?')[0]!}`)))).toBe(true);
-    expect(withProject.length).toBe(4);
+    // Each route is either tested here or about nothing in a project: a new one must be put in one of the lists.
+    const without = ['/me', '/sessions/current', `/sessions/${'0'.repeat(64)}`, '/switches/instance', '/sessions', '/passkeys', '/passkeys/options', '/passkeys/a', '/projects', '/device/look', '/device/approve'];
+    for (const route of peopleRoutes.filter((r) => r.who === 'person')) {
+      expect([...paths, ...without].some((p) => route.path.test(`/app-api${p.split('?')[0]!}`)), route.path.source).toBe(true);
+    }
     const cookie = await member();
     for (const path of paths) expect(await code(await api('GET', path, { cookie })), path).toEqual([404, 'not_found']);
     await sql("INSERT INTO team_members(team_id,member_id,level,set_by,set_at) VALUES('t1','m',1,'o',1)");
@@ -109,6 +110,40 @@ describe('lists', () => {
     const items = (await json(await api('GET', '/tags?q=x', { cookie }))).items;
     expect(items).toHaveLength(50);
     expect([items[0], items[49]]).toEqual(['x00', 'x49']);
+  });
+
+  it('leaves out tags only deleted pages have', async () => {
+    const { cookie } = await enter('o');
+    await sql("INSERT INTO page_tags VALUES('d','only-deleted','p1',1),('d','alpha','p1',1)");
+    for (const query of ['', '?project=one', '?q=only']) expect((await json(await api('GET', `/tags${query}`, { cookie }))).items).not.toContain('only-deleted');
+    expect((await json(await api('GET', '/tags?q=al', { cookie }))).items).toEqual(['alpha']);
+  });
+
+  it('finds tags of every project, also past the hundredth, with one query for the owner', async () => {
+    const { cookie } = await enter('o');
+    await env.DB.prepare("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<150) INSERT INTO projects(id,slug,name_en,name_ar,created_at) SELECT 'x'||i, 'aa'||printf('%04d',i), 'X', 'X', 1 FROM n").run();
+    await sql("INSERT INTO pages(id,project_id,slug,title,created_by,created_at,updated_at) VALUES('far','x150','far','F','a',1,1)", "INSERT INTO page_tags VALUES('far','far-away','x150',1)");
+    let batches = 0;
+    const DB = new Proxy(env.DB, { get(target, name) {
+      if (name === 'batch') return (statements: D1PreparedStatement[]) => { batches += statements.length; return target.batch(statements); };
+      const value = Reflect.get(target, name) as unknown;
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    expect((await json(await api('GET', '/tags?q=far', { cookie }, { DB }))).items).toEqual(['far-away']);
+    expect(batches).toBe(1);
+  });
+
+  it('keeps the order of the database, and finds tags at the edges of Unicode', async () => {
+    const { cookie } = await enter('o');
+    const tags = ['Z', 'a', '\u{10FFFF}', '\u{10FFFF}x', '\uD7FFq', '\uE000', `r${'🚀'.repeat(30)}`, '🚀'];
+    await env.DB.batch(tags.map((t) => env.DB.prepare("INSERT INTO page_tags VALUES('a',?,'p1',1)").bind(t)));
+    const items = async (q: string): Promise<string[]> => (await json(await api('GET', `/tags?q=${encodeURIComponent(q)}`, { cookie }))).items;
+    expect((await items('')).filter((t) => tags.includes(t))).toEqual(['Z', 'a', tags[6], '\uD7FFq', '\uE000', '🚀', '\u{10FFFF}', '\u{10FFFF}x']);
+    expect(await items('\u{10FFFF}')).toEqual(['\u{10FFFF}', '\u{10FFFF}x']);
+    expect(await items('\uD7FF')).toEqual(['\uD7FFq']);
+    expect(await items(`r${'🚀'.repeat(20)}`)).toEqual([tags[6]]);
+    for (const t of Array.from({ length: 60 }, (_, i) => `A${String(i).padStart(2, '0')}`)) await env.DB.prepare("INSERT INTO page_tags VALUES('a',?,'p1',1)").bind(t).run();
+    expect((await items(''))[0]).toBe('A00');
   });
 
   it('tags of a project a member does not see stay hidden', async () => {

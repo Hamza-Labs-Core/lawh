@@ -108,10 +108,119 @@ test('a link out of a page asks first, with the whole address', async ({ page, m
 
 test('a hostile page cannot do more than ask to open a link', async ({ page, member }) => {
   await open(page, member, '/p/one/forge');
-  await page.waitForTimeout(1500);
+  await expect(frame(page).getByText('sent', { exact: true })).toBeVisible();
+  await page.waitForTimeout(1000);
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Version 1' })).toBeVisible();
   expect(page.url()).toBe(`${APP}/p/one/forge`);
+});
+
+test('a page that asks again and again cannot change the address shown, trap the tab, or cover another dialog', async ({ page, member }) => {
+  await open(page, member, '/p/one/spam');
+  const dialog = page.getByRole('dialog', { name: 'Open another site?' });
+  await expect(dialog).toBeVisible();
+  const address = await dialog.locator('.address').innerText();
+  await page.waitForTimeout(600);
+  expect(await dialog.locator('.address').innerText(), 'the address stays the one that was shown').toBe(address);
+  expect(await dialog.getByRole('link', { name: 'Open' }).getAttribute('href')).toBe(address);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  // Time to open another dialog; nothing comes on top of it.
+  await page.getByRole('button', { name: 'Version 1' }).click();
+  await expect(page.getByRole('dialog', { name: 'Versions' })).toBeVisible();
+  await page.waitForTimeout(1500);
+  await expect(page.getByRole('dialog')).toHaveCount(1);
+  await page.getByRole('button', { name: 'Close' }).click();
+  // Each time it waits longer.
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(1500);
+  await expect(dialog).toHaveCount(0);
+  await page.getByRole('button', { name: 'Back' }).click();
+  await expect(page.getByRole('heading', { name: 'Pages' })).toBeVisible();
+});
+
+test('a theme or language changed while the page loads reaches it', async ({ page, member }) => {
+  await join(member); await enter(page.context(), member);
+  let release = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route('**/app-api/projects/one/pages/good?*', async (route) => { const response = await route.fetch(); await held; await route.fulfill({ response }); });
+  await page.goto(`${APP}/p/one/good`);
+  await page.getByRole('button', { name: 'Light' }).click();
+  await page.getByRole('button', { name: 'العربية' }).click();
+  release();
+  await expect(frame(page).locator('html')).toHaveAttribute('data-lawh-mode', 'light');
+  await expect(frame(page).locator('html')).toHaveAttribute('data-lawh-lang', 'ar');
+});
+
+test('choosing the version already shown closes the dialog and adds nothing to the history', async ({ page, member }) => {
+  await open(page, member, '/p/one/versions');
+  await expect(frame(page).getByRole('heading', { level: 1 })).toBeVisible();
+  const before = await page.evaluate(() => history.length);
+  await page.getByRole('button', { name: 'Version 2' }).click();
+  await page.getByRole('dialog').getByRole('link', { name: /Version 2/ }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  expect(await page.evaluate(() => history.length)).toBe(before);
+});
+
+test('filters by project, with the tags of that project', async ({ page, member }) => {
+  await join(member, 1, true); await enter(page.context(), member);
+  await page.goto(APP);
+  await page.getByLabel('Project').selectOption('Two');
+  await expect(page.locator('.grid li')).toHaveCount(1);
+  await expect(page.getByRole('link', { name: /In the second project/ })).toBeVisible();
+  const tag = page.getByRole('combobox', { name: 'Tag' });
+  await tag.click();
+  await expect(page.locator('.options [role=option]')).toHaveText(['second-only']);
+  await page.locator('.options [role=option]').first().click();
+  await expect(page.getByRole('button', { name: 'Remove the tag filter: second-only' })).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(tag).toBeFocused();
+  await page.getByLabel('Project').selectOption('One');
+  await tag.click();
+  await expect(page.locator('.options [role=option]').filter({ hasText: 'weather' })).toBeVisible();
+  await expect(page.locator('.options [role=option]').filter({ hasText: 'second-only' })).toHaveCount(0);
+});
+
+test('a filter that is not available can be cleared', async ({ page, member }) => {
+  await open(page, member, '/?project=nope');
+  await expect(page.getByText('A filter in this address isn’t available.')).toBeVisible();
+  await expect(page.getByLabel('Status')).toBeVisible();
+  await page.getByRole('button', { name: 'Clear filters' }).click();
+  await expect(page.locator('.grid li')).toHaveCount(30);
+  await page.goto(`${APP}/?status=bogus`);
+  await expect(page.getByText('A filter in this address isn’t available.')).toBeVisible();
+});
+
+test('"Show more" of an old list does not touch the new one, and a failure goes away when it works', async ({ page, member }) => {
+  await open(page, member, '/?status=draft');
+  await expect(page.locator('.grid li')).toHaveCount(30);
+  await page.route('**/app-api/pages?*cursor*', (route) => route.abort());
+  await page.getByRole('button', { name: 'Show more' }).click();
+  await expect(page.getByRole('alert')).toHaveText('No connection.');
+  await expect(page.locator('.grid li')).toHaveCount(30);
+  await page.unroute('**/app-api/pages?*cursor*');
+  let release = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route('**/app-api/pages?*cursor*', async (route) => { await held; await route.abort(); });
+  await page.getByRole('button', { name: 'Show more' }).click();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await page.getByLabel('Status').selectOption('In review');
+  await expect(page.locator('.grid li')).toHaveCount(1);
+  release();
+  await page.waitForTimeout(300);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.locator('.grid li')).toHaveCount(1);
+});
+
+test('a page keeps room on a small screen with a long title', async ({ page, member }) => {
+  await db("INSERT INTO pages(id,project_id,slug,title,created_by,created_at,updated_at) SELECT 'long','p1','long','" + 'Long title '.repeat(18) + "','a',1,1 WHERE NOT EXISTS (SELECT 1 FROM pages WHERE id='long')");
+  await db("INSERT INTO page_versions SELECT 'ver_LLLLLLLLLLLLLLLLLLLLLLLLLL','long',1,'index.html','',1,1,'a',id,1 FROM agent_keys WHERE NOT EXISTS (SELECT 1 FROM page_versions WHERE page_id='long') LIMIT 1");
+  await page.setViewportSize({ width: 320, height: 480 });
+  await open(page, member, '/p/one/long');
+  await expect(page.locator('iframe')).toBeVisible();
+  expect((await page.locator('iframe').boundingBox())!.height).toBeGreaterThanOrEqual(280);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
 });
 
 test('a session that ends goes to sign-in at the same address', async ({ page, member }) => {
@@ -154,6 +263,7 @@ for (const lang of ['en', 'ar'] as const) for (const mode of ['dark', 'light'] a
     await frame(page).locator('#out').click(); await expect(page.getByRole('dialog')).toBeVisible(); await check('leave');
     await page.goto(`${APP}/p/one/versions?v=1`); await expect(frame(page).getByRole('heading', { level: 1 })).toBeVisible(); await check('page-old');
     await page.locator('.reader-bar button').last().click(); await expect(page.locator('.versions li').first()).toBeVisible(); await check('versions');
+    await page.goto(`${APP}/p/one/versions`); await expect(frame(page).getByRole('heading', { level: 1 })).toBeVisible(); await page.locator('.reader-bar button').last().click(); await expect(page.locator('.versions li').first()).toBeVisible(); await check('versions-current');
     await page.goto(`${APP}/account`); await expect(page.locator('main h1')).toBeVisible(); await check('account');
   });
 }

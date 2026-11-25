@@ -52,6 +52,7 @@ const TEXT = {
   more: ['Show more', 'عرض المزيد'],
   noPages: ['No pages here yet.', 'لا توجد صفحات هنا بعد.'],
   noMatches: ['No pages match these filters.', 'لا توجد صفحات تطابق هذه التصفية.'],
+  badFilter: ['A filter in this address isn’t available.', 'إحدى خيارات التصفية في هذا العنوان غير متاحة.'],
   clear: ['Clear filters', 'مسح التصفية'],
   noProjects: ['You’re in no project yet.', 'لم تتم إضافتك إلى أي مشروع بعد.'],
   pageGone: ['This page isn’t here, or you can’t see it.', 'هذه الصفحة غير موجودة، أو لا تتوفر لك.'],
