@@ -1,14 +1,10 @@
 import { env } from 'cloudflare:workers';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 // integrity.py tests the rules on SQLite. This proves that D1 itself accepts the schema and runs its triggers:
 // the migration splitter, json_each in a trigger, CASE in a trigger, foreign keys, and the Arabic search index.
 const run = (...statements: string[]) => env.DB.batch(statements.map((s) => env.DB.prepare(s)));
 const SOON = Date.now() + 600_000;
-
-const TABLES = ['pages_fts_map', 'events', 'decision_answers', 'decision_revisions', 'decisions', 'page_versions', 'pages',
-  'agent_key_projects', 'agent_keys', 'agent_connects', 'agents', 'sessions', 'passkeys', 'access_links', 'team_members',
-  'team_projects', 'teams', 'members', 'settings', 'projects'];
 
 beforeEach(async () => {
   await run(
@@ -20,15 +16,6 @@ beforeEach(async () => {
     "INSERT INTO agents(id,member_id,name,created_at) VALUES('a','o','bot',1)",
     `INSERT INTO agent_connects(id,code_hmac,secret_hmac,client,machine,created_at,expires_at) VALUES('k','code','mac','claude','laptop',1,${SOON})`,
   );
-});
-
-afterEach(async () => {
-  // Answers are append only, so their guard is lifted to clean up. The rows go; the guard comes back.
-  const guard = await env.DB.prepare("SELECT sql FROM sqlite_master WHERE name='decision_answers_no_delete'").first<string>('sql');
-  await run('DROP TRIGGER decision_answers_no_delete', 'DELETE FROM pages_fts',
-    ...TABLES.filter((t) => t !== 'projects' && t !== 'members').map((t) => `DELETE FROM ${t}`),
-    'DELETE FROM members', 'DELETE FROM projects');
-  await env.DB.prepare(guard!).run();
 });
 
 describe('schema on D1', () => {

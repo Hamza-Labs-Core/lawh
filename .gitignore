@@ -2,8 +2,13 @@ node_modules/
 .build/
 .wrangler/
 .dev.vars*
+.env
+.env.*
 lawh.config.json
-wrangler.app.jsonc
-wrangler.content.jsonc
+wrangler*.jsonc
+wrangler*.json
+wrangler*.toml
+!wrangler.app.dev.jsonc
+!wrangler.content.dev.jsonc
 *.log
 .DS_Store
