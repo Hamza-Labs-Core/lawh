@@ -38,7 +38,7 @@ export function readCloudflareToken(env = process.env, homeDir = homedir()) {
     const match = /^\s*oauth_token\s*=\s*"([^"]+)"/m.exec(text);
     if (match?.[1]) return match[1];
   }
-  throw new Error('Not signed in to Cloudflare. Run `pnpm exec wrangler login` or set CLOUDFLARE_API_TOKEN.');
+  throw new Error('Not signed in to Cloudflare. Run `lawh login` (or `pnpm lawh login`) or set CLOUDFLARE_API_TOKEN.');
 }
 
 export function createCloudflareClient({ apiBase = process.env.CLOUDFLARE_API_BASE_URL || DEFAULT_API_BASE, token, fetchImpl = fetch } = {}) {

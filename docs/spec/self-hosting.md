@@ -4,11 +4,23 @@ Lawh is a repository people clone. Each copy runs in its owner's Cloudflare acco
 
 ## Install
 
-Needs Node, pnpm, a Cloudflare account on Workers Paid, and no domain.
+Needs Node `>= 22.12`, pnpm (or Corepack), a Cloudflare account on Workers Paid, and no domain.
 
+**Without cloning (recommended):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Hamza-Labs-Core/lawh/main/install.sh | bash
+lawh init
 ```
+
+`install.sh` unpacks the latest tagged GitHub Release into `~/.lawh/app` (preserving `lawh.config.json`, generated Wrangler configs, and `.wrangler/` on re-runs) and installs the `lawh` wrapper into `~/.local/bin/lawh`.
+
+**Or from a git clone:**
+
+```bash
 git clone https://github.com/Hamza-Labs-Core/lawh && cd lawh
 pnpm install
+pnpm lawh login
 pnpm lawh init
 ```
 
