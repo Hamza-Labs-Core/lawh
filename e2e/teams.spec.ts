@@ -43,6 +43,7 @@ test.describe('S17 Settings → Teams and managers’ agents', () => {
           keys: [],
         },
       ],
+      next: null,
     };
 
     // Mock teams=true on /app-api/me and /app-api/teams + /app-api/agents without touching shared D1 settings.
@@ -75,7 +76,26 @@ test.describe('S17 Settings → Teams and managers’ agents', () => {
       }
       await route.continue();
     });
-    await page.route('**/app-api/agents', async (route) => {
+    await page.route('**/app-api/teams/*/projects', async (route) => {
+      if (route.request().method() === 'POST') {
+        const body = route.request().postDataJSON() as { project: string };
+        const p = teamsState.availableProjects.find((x) => x.slug === body.project)!;
+        teamsState.items[0]!.projects.push(p);
+        await route.fulfill({ status: 201, json: { teamId: teamsState.items[0]!.id, project: p.slug } });
+        return;
+      }
+      await route.continue();
+    });
+    await page.route('**/app-api/teams/*/projects/*', async (route) => {
+      if (route.request().method() === 'DELETE') {
+        const slug = route.request().url().split('/').at(-1)!;
+        teamsState.items[0]!.projects = teamsState.items[0]!.projects.filter((x) => x.slug !== slug);
+        await route.fulfill({ status: 204 });
+        return;
+      }
+      await route.continue();
+    });
+    await page.route('**/app-api/agents*', async (route) => {
       if (route.request().method() === 'GET') {
         await route.fulfill({ json: agentsState });
         return;
@@ -93,11 +113,26 @@ test.describe('S17 Settings → Teams and managers’ agents', () => {
     await expect(page.getByText('Mona')).toBeVisible();
     await expect(page.getByText('Rami')).toBeVisible();
 
-    // Create a new team via the form.
-    await page.getByRole('button', { name: 'New team' }).click();
+    // Keyboard navigation: open New team with Enter, cancel -> focus returns to New team button.
+    const newTeamBtn = page.getByRole('button', { name: 'New team' });
+    await newTeamBtn.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByLabel('Team name')).toBeFocused();
+    await page.getByRole('button', { name: 'Cancel' }).click();
+    await expect(newTeamBtn).toBeFocused();
+
+    // Create a new team via keyboard submit -> focus returns to New team button.
+    await page.keyboard.press('Enter');
     await page.getByLabel('Team name').fill('Ops');
-    await page.getByRole('button', { name: 'Save' }).click();
+    await page.keyboard.press('Enter');
     await expect(page.getByRole('heading', { name: 'Ops' })).toBeVisible();
+    await expect(newTeamBtn).toBeFocused();
+
+    // Assign project Two to Design team, then remove it.
+    await page.getByRole('button', { name: 'Add project' }).first().click();
+    await expect(page.getByText('(two)')).toBeVisible();
+    await page.locator('ul.rows li', { hasText: '(two)' }).getByRole('button', { name: 'Remove' }).click();
+    await expect(page.getByText('(two)')).toHaveCount(0);
 
     // Add Dina to Design team.
     await page.getByRole('button', { name: 'Add member' }).first().click();

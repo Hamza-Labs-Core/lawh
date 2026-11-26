@@ -52,5 +52,5 @@ export interface DeletedPage { id: string; project: ProjectName; slug: string; t
 export interface WebhookItem { id: string; project: ProjectName; url: string; eventTypes: string[]; enabled: boolean; createdBy: string | null; createdAt: number }
 export interface FailedDelivery { webhookId: string; eventSeq: number; url: string; project: ProjectName; eventType: string; attempts: number; lastCode: number | null; updatedAt: number; eventAt: number }
 
-/** `manages`: manages at least one project. */
-export interface Me { id: string; name: string; isOwner: boolean; instance: boolean; manages: boolean; webhooks: boolean; teams: boolean }
+/** `manages`: manages at least one project. `managesTeam`: manages at least one team. */
+export interface Me { id: string; name: string; isOwner: boolean; instance: boolean; manages: boolean; managesTeam: boolean; webhooks: boolean; teams: boolean }

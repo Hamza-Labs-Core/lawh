@@ -8,13 +8,14 @@ import { stillOwner } from './settings';
 
 export async function whoAmI(ctx: SignedIn): Promise<Response> {
   const { env, person } = ctx;
-  const [manages, instance, webhooks, teams] = await Promise.all([
+  const [manages, managesTeam, instance, webhooks, teams] = await Promise.all([
     person.isOwner ? Promise.resolve(true) : env.DB.prepare('SELECT 1 FROM project_access WHERE member_id = ? AND level = 4 LIMIT 1').bind(person.memberId).first().then((r) => r !== null),
+    person.isOwner ? Promise.resolve(true) : env.DB.prepare('SELECT 1 FROM team_members WHERE member_id = ? AND level = 4 LIMIT 1').bind(person.memberId).first().then((r) => r !== null),
     isOn(env.DB, 'instance'),
     isOn(env.DB, 'webhooks'),
     isOn(env.DB, 'teams'),
   ]);
-  return Response.json({ id: person.memberId, name: person.name, isOwner: person.isOwner, instance, manages, webhooks, teams });
+  return Response.json({ id: person.memberId, name: person.name, isOwner: person.isOwner, instance, manages, managesTeam, webhooks, teams });
 }
 
 /** What the app calls a session. Not the stored hash, so a request log and a copy of the database can't be matched. */

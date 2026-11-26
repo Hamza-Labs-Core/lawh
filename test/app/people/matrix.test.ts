@@ -36,6 +36,7 @@ interface Fixture {
   webhookId: string;
   teamId: string;
   otherMemberId: string;
+  teamMemberId: string;
   connectId: string;
   connectCode: string;
 }
@@ -90,8 +91,8 @@ const MATRIX: MatrixRow[] = [
   { method: 'PATCH', pattern: '^/app-api/teams/([a-zA-Z0-9_-]{1,64})$', request: (fx) => ({ path: `/teams/${fx.teamId}`, body: { name: 'Renamed' } }), expected: [403, 403, 403, 403, 403, 200] },
   { method: 'DELETE', pattern: '^/app-api/teams/([a-zA-Z0-9_-]{1,64})$', request: (fx) => ({ path: `/teams/${fx.teamId}` }), expected: [403, 403, 403, 403, 403, 204] },
   { method: 'POST', pattern: '^/app-api/teams/([a-zA-Z0-9_-]{1,64})/members$', request: (fx) => ({ path: `/teams/${fx.teamId}/members`, body: { memberId: fx.otherMemberId, level: 2 } }), expected: [403, 403, 403, 403, 201, 201] },
-  { method: 'PATCH', pattern: '^/app-api/teams/([a-zA-Z0-9_-]{1,64})/members/([a-zA-Z0-9_-]{1,64})$', request: (fx) => ({ path: `/teams/${fx.teamId}/members/${fx.otherMemberId}`, body: { level: 3 } }), expected: [403, 403, 403, 403, 404, 404] },
-  { method: 'DELETE', pattern: '^/app-api/teams/([a-zA-Z0-9_-]{1,64})/members/([a-zA-Z0-9_-]{1,64})$', request: (fx) => ({ path: `/teams/${fx.teamId}/members/${fx.otherMemberId}` }), expected: [403, 403, 403, 403, 404, 404] },
+  { method: 'PATCH', pattern: '^/app-api/teams/([a-zA-Z0-9_-]{1,64})/members/([a-zA-Z0-9_-]{1,64})$', request: (fx) => ({ path: `/teams/${fx.teamId}/members/${fx.teamMemberId}`, body: { level: 3 } }), expected: [403, 403, 403, 403, 200, 200] },
+  { method: 'DELETE', pattern: '^/app-api/teams/([a-zA-Z0-9_-]{1,64})/members/([a-zA-Z0-9_-]{1,64})$', request: (fx) => ({ path: `/teams/${fx.teamId}/members/${fx.teamMemberId}` }), expected: [403, 403, 403, 403, 204, 204] },
   { method: 'POST', pattern: '^/app-api/teams/([a-zA-Z0-9_-]{1,64})/projects$', request: (fx) => ({ path: `/teams/${fx.teamId}/projects`, body: { project: 'three' } }), expected: [403, 403, 403, 403, 403, 201] },
   { method: 'DELETE', pattern: '^/app-api/teams/([a-zA-Z0-9_-]{1,64})/projects/([a-z0-9][a-z0-9-]{0,79})$', request: (fx) => ({ path: `/teams/${fx.teamId}/projects/one` }), expected: [403, 403, 403, 403, 403, 204] },
 
@@ -141,6 +142,8 @@ async function setupFixture(): Promise<Fixture> {
   await sql(
     "INSERT INTO members(id, name, role, created_by, created_at) VALUES('r', 'Rami', 'member', 'o', 1)",
     "UPDATE members SET joined_at=1 WHERE id='r'",
+    "INSERT INTO members(id, name, role, created_by, created_at) VALUES('q', 'Qasim', 'member', 'o', 1)",
+    "UPDATE members SET joined_at=1 WHERE id='q'",
   );
 
   const { token } = await makeKey();
@@ -167,6 +170,7 @@ async function setupFixture(): Promise<Fixture> {
   await sql(`INSERT INTO team_members(team_id, member_id, level, set_by, set_at) VALUES('t1', 'm', 4, 'o', 1)`);
   const { id: keyId } = await makeKey({ agent: agentId, projects: ['p1'] });
   await sql('DELETE FROM team_members');
+  await sql("INSERT INTO team_members(team_id, member_id, level, set_by, set_at) VALUES('t1', 'q', 1, 'o', 1)");
 
   const wh = await json(await api('POST', '/webhooks', { cookie: owner, body: { project: 'one', url: 'https://hooks.example.com/mx', eventTypes: ['page.published'] } }));
   const webhookId = wh.id as string;
@@ -189,6 +193,7 @@ async function setupFixture(): Promise<Fixture> {
     webhookId,
     teamId: 't1',
     otherMemberId: 'r',
+    teamMemberId: 'q',
     connectId: started.id ?? connectId,
     connectCode: started.code ?? connectCode,
   };
