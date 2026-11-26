@@ -1,7 +1,7 @@
 import { ApiError, conflict, invalid, notFound } from '../../shared/errors';
 import { integer, oneOf, onlyKeys, readJson, text } from '../api/body';
 import { findPage } from '../api/pages';
-import { answeredStatement, answerers, type Decision, decisionJson, inboxStatement, readDecisions } from '../decisions/read';
+import { answeredStatement, answerers, countInboxStatement, type Decision, decisionJson, inboxStatement, readDecisions } from '../decisions/read';
 import { encodeCursor, pageLimit, readCursor } from '../pages/list';
 import { levelOn, openProject, visibleProjects } from './access';
 import type { SignedIn } from './router';
@@ -52,13 +52,20 @@ export async function listMyDecisions(ctx: SignedIn): Promise<Response> {
   const found = queries.length === 0 ? [] : (await env.DB.batch<{ id: string; updated_at: number }>(queries)).flatMap((r) => r.results);
   found.sort((a, b) => (newestFirst ? -1 : 1) * (a.updated_at - b.updated_at || (a.id < b.id ? -1 : 1)));
   const rows = found.slice(0, limit), last = rows.at(-1);
-  return Response.json({ items: (await readDecisions(env, rows.map((r) => r.id))).map((d) => seen(d, DECIDER)), next: found.length > limit && last ? encodeCursor([last.updated_at, last.id]) : null });
+  const decisions = await readDecisions(env, rows.map((r) => r.id));
+  // Each project that needs agreement once, to say when fewer people can answer than must agree.
+  const needing = [...new Set(decisions.filter((d) => d.row.answers_needed > 1).map((d) => d.row.project_id))];
+  const counts = new Map(await Promise.all(needing.map(async (p): Promise<[string, number]> => [p, await answerers(env, p)])));
+  return Response.json({
+    items: decisions.map((d) => ({ ...seen(d, DECIDER), answerers: counts.get(d.row.project_id) ?? null })), next: found.length > limit && last ? encodeCursor([last.updated_at, last.id]) : null,
+  });
 }
 
 /** How many wait for the person's answer, counted up to 99. */
 export async function countMyDecisions(ctx: SignedIn): Promise<Response> {
-  const queries = (await answerable(ctx)).map((p) => inboxStatement(ctx.env, p, ctx.person.memberId, false, [0, ''], MAX_COUNT + 1));
-  const n = queries.length === 0 ? 0 : (await ctx.env.DB.batch(queries)).reduce((sum, r) => sum + r.results.length, 0);
+  const projects = ctx.person.isOwner ? null : (await visibleProjects(ctx.env, ctx.person)).filter((p) => p.level >= DECIDER).map((p) => p.id);
+  if (projects !== null && projects.length === 0) return Response.json({ count: 0, more: false });
+  const n = (await countInboxStatement(ctx.env, projects, ctx.person.memberId, MAX_COUNT + 1).all()).results.length;
   return Response.json({ count: Math.min(n, MAX_COUNT), more: n > MAX_COUNT });
 }
 

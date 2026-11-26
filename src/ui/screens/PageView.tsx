@@ -172,8 +172,7 @@ export function PageView({ project, slug, search, me }: { project: string; slug:
         <div class="to-panel"><button class="primary" aria-haspopup="dialog" onClick={(event) => setSheet(event.currentTarget)}>{left(asks.items, me) > 0 ? <Fill text="toMake" n={digits(lang, left(asks.items, me))} /> : t('decisions')}</button></div>
       )}
       {asks !== null && sheet !== null && !wide && (
-        <Dialog class="sheet" title={t('decisions')} returnTo={sheet} onClose={closeSheet}>
-          <button class="plain sheet-close" onClick={closeSheet}>{t('close')}</button>
+        <Dialog class="sheet" title={t('decisions')} returnTo={sheet} onClose={closeSheet} closer={t('close')}>
           <DecisionList {...asks} me={me} onChange={answeredOne} />
         </Dialog>
       )}
@@ -196,15 +195,16 @@ function useWide(): boolean {
 }
 
 /** An in-app dialog. Escape and the area around it close it, and the focus returns to what opened it (Safari doesn't focus a clicked button). */
-function Dialog({ title, class: className, returnTo, onClose, children }: { title: string; class?: string; returnTo: HTMLElement | null; onClose: () => void; children: preact.ComponentChildren }) {
+/** `closer`: a Close button beside the title, which stays at the top. */
+function Dialog({ title, class: className, returnTo, onClose, closer, children }: { title: string; class?: string; returnTo: HTMLElement | null; onClose: () => void; closer?: string; children: preact.ComponentChildren }) {
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     dialog.current?.showModal();
     return () => { if (returnTo?.isConnected) returnTo.focus(); };
   }, []);
   return (
-    <dialog ref={dialog} class={className} aria-label={title} onClose={onClose} onClick={(event) => { if (event.target === dialog.current) dialog.current?.close(); }}>
-      <div class="dialog"><h2>{title}</h2>{children}</div>
+    <dialog ref={dialog} tabIndex={-1} class={className} aria-label={title} onClose={onClose} onClick={(event) => { if (event.target === dialog.current) dialog.current?.close(); }}>
+      <div class="dialog">{closer ? <div class="dialog-head"><h2>{title}</h2><button class="plain" onClick={onClose}>{closer}</button></div> : <h2>{title}</h2>}{children}</div>
     </dialog>
   );
 }

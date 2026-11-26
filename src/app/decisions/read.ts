@@ -81,6 +81,14 @@ export function inboxStatement(env: AppEnv, project: string | null, memberId: st
     .bind(...(project === null ? [] : [project]), ...after, memberId, limit);
 }
 
+/** Counts open and stale ones to answer, up to `limit`, across one or many projects in a single query. */
+export function countInboxStatement(env: AppEnv, projects: string[] | null, memberId: string, limit: number): D1PreparedStatement {
+  if (projects === null) return inboxStatement(env, null, memberId, false, [0, ''], limit);
+  return env.DB.prepare(`SELECT d.id FROM json_each(?) j
+    CROSS JOIN decisions d INDEXED BY decisions_project_inbox ON d.project_id = j.value AND d.status IN ('open','stale') ${IN_PAGE}
+    WHERE NOT ${WAITS} LIMIT ?`).bind(JSON.stringify(projects), memberId, limit);
+}
+
 /** Answered ones, newest first. */
 export function answeredStatement(env: AppEnv, project: string | null, before: Place, limit: number): D1PreparedStatement {
   return env.DB.prepare(`SELECT d.id, d.updated_at FROM decisions d ${IN_PAGE} WHERE ${project === null ? '' : 'd.project_id = ? AND '}d.status = 'answered' AND (d.updated_at, d.id) < (?, ?)

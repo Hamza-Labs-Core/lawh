@@ -3,9 +3,17 @@ import { type Answer, call, CallError, type Decision, type Listed, type Me, prob
 import { Failure, Fill, Heading, Link, useBusy, useSettings, useText } from '../app';
 import { day, digits } from '../i18n';
 
-/** What was chosen and written but not recorded yet. In memory only: closing the panel or moving to another screen keeps it. */
-const drafts = new Map<string, { option: string | null; notes: string }>();
+/**
+ * What was chosen and written but not recorded yet, with the wording it was for. In memory only: closing the panel or
+ * moving to another screen keeps it, signing out ends it. A choice is for one wording; notes carry over to the next.
+ */
+const drafts = new Map<string, { revision: number; option: string | null; notes: string }>();
+addEventListener('lawh:signed-out', () => drafts.clear());
 const NO_DRAFT = { option: null, notes: '' };
+function draftFor(place: string, revision: number): { option: string | null; notes: string } {
+  const kept = drafts.get(place);
+  return !kept ? NO_DRAFT : kept.revision === revision ? kept : { option: null, notes: kept.notes };
+}
 
 /** Tells the bar to count again. */
 const changed = () => dispatchEvent(new Event('lawh:decisions'));
@@ -32,37 +40,43 @@ function Given({ answer, me }: { answer: Answer; me: Me }) {
 
 /** One question: its options, what was answered, and the form for those who may answer. */
 export function DecisionCard({ decision, answerers, me, level, onChange }: { decision: Decision; answerers: number | null; me: Me; level: 'h2' | 'h3'; onChange: (next: Decision) => void }) {
-  const t = useText(), { lang } = useSettings(), [busy, run] = useBusy(), id = useId(), place = `${me.id} ${decision.id} ${decision.revision}`;
-  const [draft, setDraft] = useState(drafts.get(place) ?? NO_DRAFT), [problem, setProblem] = useState<'offline' | 'wait' | 'failed' | 'changedMeanwhile' | 'mayNot' | 'gone' | 'secret' | null>(null);
+  const t = useText(), { lang } = useSettings(), [busy, run] = useBusy(), id = useId(), place = `${me.id} ${decision.id}`;
+  const [draft, setDraft] = useState(() => draftFor(place, decision.revision)), [problem, setProblem] = useState<'offline' | 'wait' | 'failed' | 'changedMeanwhile' | 'mayNot' | 'gone' | 'secret' | null>(null);
   const [editing, setEditing] = useState(false), [history, setHistory] = useState<Answer[] | null>(null), [said, setSaid] = useState(false), card = useRef<HTMLDivElement>(null);
   const Title = level, mine = decision.agreement.find((a) => a.answeredBy.id === me.id), needed = decision.answersNeeded, open = toAnswer(decision);
   // Another wording starts over: what was chosen was chosen for the old one. The notes stay, they may be long.
-  const lastPlace = useRef(place);
-  if (lastPlace.current !== place) {
-    const kept = drafts.get(lastPlace.current)?.notes ?? draft.notes;
-    drafts.delete(lastPlace.current);
-    lastPlace.current = place;
-    setDraft({ option: null, notes: kept });
+  const lastRevision = useRef(decision.revision);
+  if (lastRevision.current !== decision.revision) {
+    lastRevision.current = decision.revision;
+    const next = { option: null, notes: draft.notes };
+    if (next.notes) drafts.set(place, { revision: decision.revision, ...next }); else drafts.delete(place);
+    setDraft(next);
   }
-  const write = (change: Partial<typeof draft>) => { const next = { ...draft, ...change }; drafts.set(place, next); setDraft(next); setSaid(false); };
+  const write = (change: Partial<typeof draft>) => { const next = { ...draft, ...change }; drafts.set(place, { revision: decision.revision, ...next }); setDraft(next); setSaid(false); };
   const take = (next: Decision) => { onChange(next); setHistory(next.history ?? null); changed(); };
-  const record = () => run(async () => {
-    setProblem(null); setSaid(false);
-    try {
-      const next = await call<Decision>('POST', `/decisions/${decision.id}/answers`, { revision: decision.revision, seq: decision.answerSeq, optionId: draft.option, notes: draft.notes });
-      drafts.delete(place);
-      setDraft(NO_DRAFT); setEditing(false); setSaid(true);
-      take(next);
-      // The form may be gone: the focus stays at this question.
-      card.current?.focus();
-    } catch (error) {
-      const status = error instanceof CallError ? error.status : 0;
-      if (status === 409 || status === 403 || status === 404) {
-        // Shown as it is now, before answering again.
-        await call<Decision>('GET', `/decisions/${decision.id}`).then((next) => { take(next); setProblem(status === 403 ? 'mayNot' : 'changedMeanwhile'); }, (e: unknown) => setProblem(e instanceof CallError && e.status === 404 ? 'gone' : problemOf(e)));
-      } else setProblem(error instanceof CallError && error.code === 'secret_found' ? 'secret' : problemOf(error));
-    }
-  });
+  const record = () => {
+    // Before the button disables, so the focus stays at this question while sending.
+    card.current?.focus();
+    return run(async () => {
+      setProblem(null); setSaid(false);
+      try {
+        const next = await call<Decision>('POST', `/decisions/${decision.id}/answers`, { revision: decision.revision, seq: decision.answerSeq, optionId: draft.option, notes: draft.notes });
+        drafts.delete(place);
+        setDraft(NO_DRAFT); setEditing(false); setSaid(true);
+        take(next);
+        // The form may be gone: the focus stays at this question.
+        card.current?.focus();
+      } catch (error) {
+        const status = error instanceof CallError ? error.status : 0;
+        if (status === 409 || status === 403 || status === 404) {
+          // Shown as it is now, before answering again.
+          await call<Decision>('GET', `/decisions/${decision.id}`).then((next) => { take(next); setProblem(status === 403 ? 'mayNot' : 'changedMeanwhile'); }, (e: unknown) => setProblem(e instanceof CallError && e.status === 404 ? 'gone' : problemOf(e)));
+        } else setProblem(error instanceof CallError && error.code === 'secret_found' ? 'secret' : problemOf(error));
+        // Where the person was, with the form still there to try again.
+        card.current?.focus();
+      }
+    });
+  };
   const loadHistory = () => { if (history === null) call<Decision>('GET', `/decisions/${decision.id}`).then((d) => setHistory(d.history ?? []), (error: unknown) => setProblem(problemOf(error))); };
   const most = Math.max(0, ...decision.options.map((o) => decision.agreement.filter((a) => a.optionId === o.id).length));
   const form = decision.mayAnswer && decision.status !== 'withdrawn' && (open || editing);
@@ -112,7 +126,7 @@ export function DecisionCard({ decision, answerers, me, level, onChange }: { dec
       {open && !decision.mayAnswer && <p class="muted">{t('mayNot')}</p>}
       <div aria-live="polite">{said && <p class="done">{t(decision.status === 'answered' ? 'recorded' : 'recordedWaits')}</p>}</div>
       {problem && <Failure>{t(problem)}</Failure>}
-      {decision.mayAnswer && decision.status === 'answered' && !editing && <button class="plain wide" onClick={() => { setSaid(false); setEditing(true); }}>{t('changeAnswer')}</button>}
+      {decision.mayAnswer && decision.status === 'answered' && !editing && <button class="plain wide" onClick={() => { setSaid(false); setEditing(true); card.current?.focus(); }}>{t('changeAnswer')}</button>}
       {decision.answerSeq > 0 && (
         <details onToggle={(event) => { if (event.currentTarget.open) loadHistory(); }}>
           <summary>{t('history')}</summary>
@@ -165,7 +179,7 @@ export function Decisions({ search, me }: { search: string; me: Me }) {
           <li key={d.id}>
             <div class="card">
               <p class="muted from"><Link to={`/p/${d.project}/${d.page.slug}`}><bdi lang={d.page.lang}>{d.page.title}</bdi></Link>{lang === 'ar' ? '، ' : ', '}<bdi>{d.projectName[lang]}</bdi></p>
-              <DecisionCard decision={d} answerers={null} me={me} level="h2" onChange={(next) => setList((now) => now && { ...now, items: now.items.map((o) => (o.id === next.id ? next : o)) })} />
+              <DecisionCard decision={d} answerers={d.answerers ?? null} me={me} level="h2" onChange={(next) => setList((now) => now && { ...now, items: now.items.map((o) => (o.id === next.id ? next : o)) })} />
             </div>
           </li>
         ))}

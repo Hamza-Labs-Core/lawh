@@ -1,5 +1,5 @@
 import { render } from 'preact';
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { call, CallError, type Me } from './api';
 import { Failure, go, Link, SettingsProvider, TopBar, useSettings, useText } from './app';
 import { digits } from './i18n';
@@ -18,12 +18,22 @@ if (linkToken) history.replaceState(null, '', '/link');
 /** Where to go. On a phone it is at the bottom, in reach of a thumb. */
 function Nav({ path }: { path: string }) {
   const t = useText(), { lang } = useSettings(), [waiting, setWaiting] = useState<{ count: number; more: boolean } | null>(null);
+  // After an answer at once; on moving around or coming back, at most once a minute.
+  const counted = useRef(0), inFlight = useRef<AbortController | null>(null);
+  const load = () => {
+    inFlight.current?.abort();
+    const stop = new AbortController();
+    inFlight.current = stop;
+    call<{ count: number; more: boolean }>('GET', '/decisions/count', undefined, stop.signal)
+      .then((next) => { if (!stop.signal.aborted) { counted.current = Date.now(); setWaiting(next); } }, () => undefined);
+  };
   useEffect(() => {
-    const load = () => { call<{ count: number; more: boolean }>('GET', '/decisions/count').then(setWaiting, () => undefined); };
-    load();
+    const onVisible = () => { if (document.visibilityState === 'visible' && Date.now() - counted.current > 60_000) load(); };
     addEventListener('lawh:decisions', load);
-    return () => removeEventListener('lawh:decisions', load);
-  }, [path]);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { inFlight.current?.abort(); removeEventListener('lawh:decisions', load); document.removeEventListener('visibilitychange', onVisible); };
+  }, []);
+  useEffect(() => { if (Date.now() - counted.current > 60_000) load(); }, [path]);
   const n = waiting ? digits(lang, waiting.count) + (waiting.more ? '+' : '') : '';
   return (
     <nav class="places" aria-label={t('app')}>

@@ -149,6 +149,9 @@ describe('agreement of two people', () => {
   it('one answer waits, the second to the same option decides', async () => {
     const owner = (await enter('o')).cookie, cookie = await member(3);
     const first = await json(await answer(cookie, 1));
+    expect((await json(await api('GET', '/decisions', { cookie }))).items.find((d: { key: string }) => d.key === 'k2')).toMatchObject({ answerers: 2 });
+    expect((await json(await api('GET', '/decisions', { cookie }))).items.find((d: { key: string }) => d.key === 'k3')).toMatchObject({ answerers: null });
+    expect((await json(await api('GET', '/decisions?show=waiting', { cookie }))).items.find((d: { key: string }) => d.key === 'k1')).toMatchObject({ answerers: 2 });
     expect(first).toMatchObject({ status: 'open', answer: null, answersNeeded: 2, answerers: 2, agreement: [{ optionId: 'a', decides: false, answeredBy: { id: 'm', name: 'Mona' } }] });
     expect([await shown(cookie), await shown(cookie, 'waiting'), await shown(owner), await shown(owner, 'waiting')]).toEqual(['k2,k3', 'k1', 'k2,k3,k4,k1', '']);
     const apart = await json(await answer(owner, 1, { seq: 1, optionId: 'b' }));
@@ -208,6 +211,8 @@ describe('the lists', () => {
 
   it.each(['open', 'answered'])('pages through every row of %s once, for the owner and a member', async (show) => {
     const owner = (await enter('o')).cookie, cookie = await member(3);
+    // The same moment everywhere: the id decides, in each project and across them.
+    await sql('UPDATE decisions SET updated_at=7');
     if (show === 'answered') for (const n of [1, 2, 3]) await answer(owner, n);
     for (const person of [owner, cookie]) {
       const all = await shown(person, show), seen: string[] = [];
@@ -221,8 +226,9 @@ describe('the lists', () => {
   });
 
   it('counts up to 99', async () => {
-    const { cookie } = await enter('o');
+    const owner = (await enter('o')).cookie, cookie = await member(3);
     await env.DB.batch(Array.from({ length: 99 }, (_, i) => env.DB.prepare("INSERT INTO decisions(id,page_id,project_id,key,position,created_at,updated_at) VALUES(?,'a','p1',?,1,1,1)").bind(`dec_${i}`, `x${i}`)));
+    expect(await json(await api('GET', '/decisions/count', { cookie: owner }))).toEqual({ count: 99, more: true });
     expect(await json(await api('GET', '/decisions/count', { cookie }))).toEqual({ count: 99, more: true });
   });
 

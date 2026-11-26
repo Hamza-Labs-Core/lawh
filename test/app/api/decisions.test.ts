@@ -101,9 +101,28 @@ describe('what a page declares', () => {
     expect(await states()).toEqual({ x: 'open 1' });
   });
 
-  it('50 long questions fit in one publish', async () => {
-    await declare(Array.from({ length: 50 }, (_, i) => ask(`k${i}`, { context: 'x'.repeat(4000), options: Array.from({ length: 10 }, (_, o) => ({ id: `o${o}`, label: 'L', detail: 'y'.repeat(2000) })) })).map((d) => ({ ...d })));
+  it('all decisions together are at most 1 MB, whatever the language', async () => {
+    const big = (letter: string, n: number) => Array.from({ length: 50 }, (_, i) => ask(`k${i}`, { question: letter.repeat(500), context: letter.repeat(n),
+      options: Array.from({ length: 10 }, (_, o) => ({ id: `o${o}`, label: letter.repeat(200), detail: letter.repeat(1000), cost: letter.repeat(300) })) }));
+    for (const letter of ['x', 'م']) expect(await code(await start(token, await manifest({ 'index.html': 'x' }, { decisions: big(letter, 4000) }))), letter).toEqual([413, 'too_large']);
+    // Just under.
+    const fits = big('x', 2000);
+    const bytes = new TextEncoder().encode(JSON.stringify(fits)).byteLength;
+    expect(bytes).toBeGreaterThan(900_000);
+    expect(bytes).toBeLessThan(1_000_000);
+    await declare(fits);
     expect(await one("SELECT COUNT(*) n FROM decisions WHERE status='open'")).toEqual({ n: 50 });
+  });
+
+  it('a change after quick answers still moves forward in time', async () => {
+    await declare([ask('x')]);
+    const id = await idOf('x');
+    await sql(`UPDATE decisions SET updated_at=${Date.now() + 60_000} WHERE id='${id}'`);
+    const before = (await one<{ t: number }>(`SELECT updated_at t FROM decisions WHERE id='${id}'`))!.t;
+    await declare([ask('x', { question: 'New?' })]);
+    expect((await one<{ t: number }>(`SELECT updated_at t FROM decisions WHERE id='${id}'`))!.t).toBeGreaterThan(before);
+    await declare([]);
+    expect((await one<{ t: number }>(`SELECT updated_at t FROM decisions WHERE id='${id}'`))!.t).toBeGreaterThan(before + 1);
   });
 
   it.each([

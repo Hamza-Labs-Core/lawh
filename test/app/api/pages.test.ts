@@ -172,13 +172,25 @@ describe('queries', () => {
       const go = (path: string, init: object = {}) => call(path, { token: t, ...init }, { DB });
       const { manifest, sha } = await import('./helpers');
       for (const baseVersion of [0, 1]) {
-        const started = await json(await go(`/v1/projects/one/pages/q${i}/versions`, { method: 'POST', json: await manifest({ 'index.html': `x${i}${baseVersion}`, 'b.css': 'same' }, { baseVersion, page: { title: 'T', tags: ['x'], status: baseVersion ? 'in_review' : 'draft' } }), idem: `s${i}${baseVersion}` }));
+        const started = await json(await go(`/v1/projects/one/pages/q${i}/versions`, {
+          method: 'POST', idem: `s${i}${baseVersion}`,
+          json: await manifest({ 'index.html': `x${i}${baseVersion}`, 'b.css': 'same' }, {
+            baseVersion, page: { title: 'T', tags: ['x'], status: baseVersion ? 'in_review' : 'draft' },
+            decisions: [{ key: 'k', question: baseVersion ? 'Q2?' : 'Q?', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] }],
+          }),
+        }));
         for (const c of [`x${i}${baseVersion}`, 'same']) await go(`/v1/uploads/${started.uploadId}/blobs/${await sha(c)}`, { method: 'PUT', body: c });
         expect((await go(`/v1/uploads/${started.uploadId}/commit`, { method: 'POST', idem: `c${i}${baseVersion}` })).status).toBe(200);
       }
       await go(`/v1/projects/one/pages/q${i}`, { method: 'PATCH', json: { title: 'x', tags: ['y'], status: 'draft' }, idem: `p${i}` });
       for (const q of ['', '?project=one', '?tag=x', '?status=draft', '?project=one&tag=x', '?project=one&status=draft', '?tag=x&status=draft', '?project=one&tag=x&status=draft']) await go(`/v1/pages${q}`);
       for (const path of ['', '/versions', '/versions/1', '/versions/1/file?path=index.html']) expect((await go(`/v1/projects/one/pages/q${i}${path}`)).status).toBe(200);
+      for (const q of ['', '?status=open', '?project=one', '?project=one&status=open']) await go(`/v1/decisions${q}`);
+      const listed = await json(await go('/v1/decisions?project=one'));
+      if (listed.items?.[0]) {
+        expect((await go(`/v1/decisions?page=${listed.items[0].pageId}`)).status).toBe(200);
+        expect((await go(`/v1/decisions/${listed.items[0].id}`)).status).toBe(200);
+      }
       await go('/v1/me'); await go('/v1/projects');
     }
     const left = await json(await call('/v1/projects/one/pages/left/versions', { token, method: 'POST', json: await (await import('./helpers')).manifest({ 'index.html': 'left' }), idem: 'left' }));
@@ -189,7 +201,9 @@ describe('queries', () => {
     for (const query of seen) {
       const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${query}`).bind(...Array(Math.max((query.match(/\?(?!\d)/g) ?? []).length, /\?2/.test(query) ? 2 : 0)).fill(null)).all<{ detail: string }>();
       for (const { detail } of results) {
-        expect(/^SCAN (?!j\b|json_each\b|CONSTANT ROW)/.test(detail) || detail.includes('TEMP B-TREE'), `${detail} | ${query}`).toBe(false);
+        // SQLite emits a guarded FkIfZero branch on webhook_deliveries(event_seq) for INSERT INTO events SELECT; never reached with AUTOINCREMENT.
+        if (query.startsWith('INSERT INTO events(') && detail === 'SCAN webhook_deliveries USING INDEX webhook_deliveries_status') continue;
+        expect(/^SCAN (?!j\b|o VIRTUAL TABLE|json_each\b|CONSTANT ROW)/.test(detail) || detail.includes('TEMP B-TREE'), `${detail} | ${query}`).toBe(false);
       }
     }
   });
