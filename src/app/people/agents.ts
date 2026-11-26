@@ -94,10 +94,16 @@ export async function revokeKey(ctx: SignedIn): Promise<Response> {
   const key = await env.DB.prepare('SELECT k.revoked_at, a.member_id FROM agent_keys k JOIN agents a ON a.id = k.agent_id WHERE k.id = ?').bind(id).first<{ revoked_at: number | null; member_id: string }>();
   if (!key || (key.member_id !== person.memberId && !person.isOwner)) throw notFound();
   if (key.revoked_at === null) {
-    await env.DB.batch([
-      env.DB.prepare('UPDATE agent_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL').bind(now, id),
-      auditStatement(env, person.memberId, 'key.revoke', id),
-    ]);
+    try {
+      await env.DB.batch([
+        env.DB.prepare("SELECT CASE WHEN EXISTS (SELECT 1 FROM members WHERE id = ?1 AND removed_at IS NULL AND (?1 = ?2 OR role = 'owner')) THEN 1 ELSE json('forbidden') END").bind(person.memberId, key.member_id),
+        env.DB.prepare('UPDATE agent_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL').bind(now, id),
+        env.DB.prepare("INSERT INTO audit(at, actor_type, actor_id, action, subject_id) SELECT ?, 'member', ?, 'key.revoke', ? WHERE changes() = 1").bind(now, person.memberId, id),
+      ]);
+    } catch (error) {
+      if (String(error).includes('malformed JSON')) throw notFound();
+      throw error;
+    }
   }
   return new Response(null, { status: 204 });
 }
@@ -109,9 +115,16 @@ export async function setAgentOff(ctx: SignedIn): Promise<Response> {
   if (typeof body.off !== 'boolean') throw invalid('off must be true or false.');
   const agent = await env.DB.prepare('SELECT member_id FROM agents WHERE id = ?').bind(id).first<{ member_id: string }>();
   if (!agent || (agent.member_id !== person.memberId && !person.isOwner)) throw notFound();
-  await env.DB.batch([
-    env.DB.prepare(`UPDATE agents SET disabled_at = ? WHERE id = ? AND disabled_at IS ${body.off ? '' : 'NOT '}NULL`).bind(body.off ? Date.now() : null, id),
-    auditStatement(env, person.memberId, body.off ? 'agent.off' : 'agent.on', id),
-  ]);
+  const now = Date.now();
+  try {
+    await env.DB.batch([
+      env.DB.prepare("SELECT CASE WHEN EXISTS (SELECT 1 FROM members WHERE id = ?1 AND removed_at IS NULL AND (?1 = ?2 OR role = 'owner')) THEN 1 ELSE json('forbidden') END").bind(person.memberId, agent.member_id),
+      env.DB.prepare(`UPDATE agents SET disabled_at = ? WHERE id = ? AND disabled_at IS ${body.off ? '' : 'NOT '}NULL`).bind(body.off ? now : null, id),
+      env.DB.prepare("INSERT INTO audit(at, actor_type, actor_id, action, subject_id) SELECT ?, 'member', ?, ?, ? WHERE changes() = 1").bind(now, person.memberId, body.off ? 'agent.off' : 'agent.on', id),
+    ]);
+  } catch (error) {
+    if (String(error).includes('malformed JSON')) throw notFound();
+    throw error;
+  }
   return new Response(null, { status: 204 });
 }

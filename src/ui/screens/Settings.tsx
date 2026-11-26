@@ -9,7 +9,7 @@ const problemIn = (error: unknown): Problem =>
   error instanceof CallError && error.status === 403 ? 'notAllowed' : error instanceof CallError && error.code === 'secret_found' ? 'secretComment' : error instanceof CallError && error.status === 422 ? 'badInput' : problemOf(error);
 
 /** Loads once, and again on request. */
-function useLoad<T>(path: string): { data: T | null; problem: 'offline' | 'wait' | 'failed' | null; load: () => void; set: (next: T) => void } {
+function useLoad<T>(path: string): { data: T | null; problem: 'offline' | 'wait' | 'failed' | null; load: () => void; set: (next: T | ((prev: T | null) => T | null)) => void } {
   const [data, set] = useState<T | null>(null), [problem, setProblem] = useState<'offline' | 'wait' | 'failed' | null>(null), [tries, setTries] = useState(0);
   useEffect(() => {
     const stop = new AbortController();
@@ -53,8 +53,8 @@ const b64 = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes)).r
 
 function Agents({ me }: { me: Me }) {
   const t = useText(), { data, problem, load, set } = useLoad<{ items: Agent[] }>('/agents'), [making, setMaking] = useState(false), [made, setMade] = useState<string | null>(null);
-  const off = (agent: Agent, value: boolean) => call('PUT', `/agents/${agent.id}/off`, { off: value }).then(() => set({ items: data!.items.map((a) => (a.id === agent.id ? { ...a, disabledAt: value ? Date.now() : null } : a)) }));
-  const revoke = (id: string) => call('DELETE', `/agent-keys/${id}`).then(() => set({ items: data!.items.map((a) => ({ ...a, keys: a.keys.map((k) => (k.id === id ? { ...k, revokedAt: Date.now() } : k)) })) }));
+  const off = (agent: Agent, value: boolean) => call('PUT', `/agents/${agent.id}/off`, { off: value }).then(() => set((now) => now && { items: now.items.map((a) => (a.id === agent.id ? { ...a, disabledAt: value ? Date.now() : null } : a)) }));
+  const revoke = (id: string) => call('DELETE', `/agent-keys/${id}`).then(() => set((now) => now && { items: now.items.map((a) => ({ ...a, keys: a.keys.map((k) => (k.id === id ? { ...k, revokedAt: Date.now() } : k)) })) }));
   if (data === null) return <Loading problem={problem} load={load} />;
   return (
     <>
@@ -163,9 +163,9 @@ function Projects() {
   if (data === null) return <Loading problem={problem} load={load} />;
   return (
     <>
-      <ProjectForm onSave={async (slug, name) => { const made = await call<ProjectName>('POST', '/projects', { slug, name }); set({ ...data, items: [...data.items, made] }); }} />
+      <ProjectForm onSave={async (slug, name) => { const made = await call<ProjectName>('POST', '/projects', { slug, name }); set((now) => now && { ...now, items: [...now.items, made] }); }} />
       <ul class="grid wide-cards">
-        {data.items.map((p) => <li key={p.slug}><ProjectForm project={p} onSave={async (slug, name) => { const next = await call<ProjectName>('PATCH', `/projects/${slug}`, { name }); set({ ...data, items: data.items.map((o) => (o.slug === slug ? { ...o, ...next } : o)) }); }} /></li>)}
+        {data.items.map((p) => <li key={p.slug}><ProjectForm project={p} onSave={async (slug, name) => { const next = await call<ProjectName>('PATCH', `/projects/${slug}`, { name }); set((now) => now && { ...now, items: now.items.map((o) => (o.slug === slug ? { ...o, ...next } : o)) }); }} /></li>)}
       </ul>
       {data.items.length === 0 && <p class="muted">{t('noProjectsYet')}</p>}
     </>
@@ -196,7 +196,7 @@ function ProjectForm({ project, onSave }: { project?: ProjectName; onSave: (slug
       <label class="muted" for={`${id}-r`}>{t('nameAr')}</label><input id={`${id}-r`} class="field" lang="ar" dir="rtl" maxLength={80} autocomplete="off" value={ar} onInput={(event) => setAr(event.currentTarget.value)} />
       {problem && <Failure>{t(problem)}</Failure>}
       <button class="primary" type="submit" disabled={!ready || busy}>{t('save')}</button>
-      <button class="plain wide" type="button" disabled={busy} onClick={() => setOpen(false)}>{t('cancel')}</button>
+      <button class="plain wide" type="button" disabled={busy} onClick={() => { setOpen(false); setProblem(null); setSlug(project?.slug ?? ''); setEn(project?.name.en ?? ''); setAr(project?.name.ar ?? ''); }}>{t('cancel')}</button>
     </form>
   );
 }
@@ -216,12 +216,12 @@ function Deleted() {
         {data.items.map((p) => (
           <li key={p.id} class="card">
             <div><strong><bdi lang={p.lang}>{p.title}</bdi></strong><p class="muted"><bdi>{p.project.name[lang]}</bdi>{lang === 'ar' ? '، ' : ', '}<Fill text="goneOn" date={day(lang, p.purgedAfter)} /></p></div>
-            <button class="plain" disabled={busy} onClick={() => act(async () => { const made = await call<{ project: string; slug: string }>('POST', `/deleted/${p.id}/restore`); set({ ...data, items: data.items.filter((o) => o.id !== p.id) }); setBack({ ...made, title: p.title }); })}>{t('restore')}</button>
+            <button class="plain" disabled={busy} onClick={() => act(async () => { const made = await call<{ project: string; slug: string }>('POST', `/deleted/${p.id}/restore`); set((now) => now && { ...now, items: now.items.filter((o) => o.id !== p.id) }); setBack({ ...made, title: p.title }); })}>{t('restore')}</button>
           </li>
         ))}
       </ul>
       {failed && <Failure>{t(failed)}</Failure>}
-      {data.next && <button class="plain wide" disabled={busy} onClick={() => act(async () => { const next = await call<Listed<DeletedPage>>('GET', `/deleted?cursor=${data.next!}`); set({ items: [...data.items, ...next.items], next: next.next }); })}>{t('more')}</button>}
+      {data.next && <button class="plain wide" disabled={busy} onClick={() => act(async () => { const next = await call<Listed<DeletedPage>>('GET', `/deleted?cursor=${data.next!}`); set((now) => now && { items: [...now.items, ...next.items], next: next.next }); })}>{t('more')}</button>}
     </>
   );
 }

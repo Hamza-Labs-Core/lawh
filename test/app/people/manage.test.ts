@@ -78,6 +78,25 @@ describe('deleting and restoring', () => {
     expect((await restore(cookie)).status).toBe(200);
     expect((await status(cookie)).status).toBe(200);
     expect((await remove(cookie)).status).toBe(204);
+    // Demotion right before the write batch rolls back status, delete, and restore.
+    const demoting = () => {
+      let armed = true;
+      return new Proxy(env.DB, { get: (target, key) => {
+        if (key !== 'batch') { const value = Reflect.get(target, key) as unknown; return typeof value === 'function' ? (value as () => void).bind(target) : value; }
+        return async (statements: D1PreparedStatement[]) => { if (armed) { armed = false; await setLevel(3); } return target.batch(statements); };
+      } });
+    };
+    expect(await code(await api('POST', `/deleted/${pageId}/restore`, { cookie }, { DB: demoting() }))).toEqual([403, 'forbidden']);
+    expect((await deleted(owner)).map((p) => p.id)).toEqual([pageId]);
+    await setLevel(4);
+    expect((await restore(cookie)).status).toBe(200);
+    expect(await code(await api('PUT', `${PAGE}/status`, { cookie, body: { status: 'draft' } }, { DB: demoting() }))).toEqual([403, 'forbidden']);
+    expect((await one<{ status: string }>(`SELECT status FROM pages WHERE id='${pageId}'`))!.status).toBe('archived');
+    await setLevel(4);
+    expect(await code(await api('DELETE', PAGE, { cookie }, { DB: demoting() }))).toEqual([403, 'forbidden']);
+    expect((await one<{ deleted_at: number | null }>(`SELECT deleted_at FROM pages WHERE id='${pageId}'`))!.deleted_at).toBeNull();
+    await setLevel(4);
+    expect((await remove(cookie)).status).toBe(204);
     await sql("DELETE FROM team_members WHERE member_id='m'");
     expect(await deleted(cookie)).toEqual([]);
     for (const response of [await restore(cookie), await status(cookie), await remove(cookie)]) expect(await code(response)).toEqual([404, 'not_found']);
@@ -202,6 +221,19 @@ describe('how many versions are kept', () => {
     expect(await versions()).toBe('46');
     await pruneVersions(env, pageId, 46, 1);
     expect(await versions()).toBe('46');
+  });
+
+  it('saving Keep all while pruning keeps every version intact', async () => {
+    const { cookie } = await enter('o');
+    for (const n of [2, 3]) await version(n, `v${n}`);
+    await keep(cookie, 1);
+    let armed = true;
+    const DB = new Proxy(env.DB, { get: (target, key) => {
+      if (key !== 'batch') { const value = Reflect.get(target, key) as unknown; return typeof value === 'function' ? (value as () => void).bind(target) : value; }
+      return async (statements: D1PreparedStatement[]) => { if (armed) { armed = false; await keep(cookie, null); } return target.batch(statements); };
+    } });
+    await prune({ ...env, DB });
+    expect([armed, await versions()]).toEqual([false, '1,2,3']);
   });
 
   it('the owner’s alone, and a number', async () => {
@@ -383,6 +415,16 @@ describe('the export', () => {
     expect(many.map((p) => p.files)).toEqual([1, 1, 500, 500, 1]);
     expect(many.reduce((n, p) => n + p.files, 0)).toBe(1003);
     for (const [i, p] of many.entries()) expect(p.after).toBe(i === 0 ? '' : many[i - 1]!.last);
+  });
+
+  it('writes ZIP64 central headers when an entry or offset reaches 4 GiB', async () => {
+    const { centralEntry } = await import('../../../src/app/people/zip');
+    const size = 0x1_0000_0005, offset = 0x1_0000_0020;
+    const [head, , extra] = centralEntry(new TextEncoder().encode('big.bin'), 0x12345678, size, offset);
+    const hv = new DataView(head.buffer), ev = new DataView(extra.buffer);
+    expect([hv.getUint32(20, true), hv.getUint32(24, true), hv.getUint32(42, true)]).toEqual([0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF]);
+    expect([ev.getUint16(0, true), ev.getUint16(2, true), ev.getBigUint64(4, true), ev.getBigUint64(12, true), ev.getBigUint64(20, true)])
+      .toEqual([1, 24, BigInt(size), BigInt(size), BigInt(offset)]);
   });
 
   it('the owner’s alone', async () => {

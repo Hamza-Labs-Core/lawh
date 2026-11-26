@@ -4,6 +4,7 @@ import { ApiError, invalid, notFound } from '../../shared/errors';
 import { onlyKeys, readJson } from '../api/body';
 import type { SignedIn } from './router';
 import { auditStatement, sessionCookie } from './session';
+import { stillOwner } from './settings';
 
 export async function whoAmI(ctx: SignedIn): Promise<Response> {
   const { env, person } = ctx;
@@ -45,9 +46,15 @@ export async function setInstance(ctx: SignedIn): Promise<Response> {
   onlyKeys(body, ['on']);
   if (!person.isOwner) throw new ApiError('forbidden', 'Only the owner can do this.');
   if (typeof body.on !== 'boolean') throw invalid('on must be true or false.');
-  await env.DB.batch([
-    env.DB.prepare("INSERT INTO settings(key, value_json, updated_at) VALUES('instance', ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at").bind(String(body.on), Date.now()),
-    auditStatement(env, person.memberId, body.on ? 'instance.on' : 'instance.off', null),
-  ]);
+  try {
+    await env.DB.batch([
+      stillOwner(env, person.memberId),
+      env.DB.prepare("INSERT INTO settings(key, value_json, updated_at) VALUES('instance', ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at").bind(String(body.on), Date.now()),
+      auditStatement(env, person.memberId, body.on ? 'instance.on' : 'instance.off', null),
+    ]);
+  } catch (error) {
+    if (String(error).includes('malformed JSON')) throw new ApiError('forbidden', 'Only the owner can do this.');
+    throw error;
+  }
   return new Response(null, { status: 204 });
 }

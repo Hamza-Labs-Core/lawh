@@ -1,3 +1,4 @@
+import type { AppEnv } from '../../shared/env';
 import { ApiError, conflict, notFound } from '../../shared/errors';
 import { oneOf, onlyKeys, readJson } from '../api/body';
 import { findPage, type PageRow } from '../api/pages';
@@ -14,6 +15,14 @@ import { auditStatement } from './session';
 const MANAGER = 4;
 const refuse = () => new ApiError('forbidden', 'Your level does not allow this.');
 
+/** Fails the batch unless the caller is still active and manages this project at write time. */
+const stillManager = (env: AppEnv, memberId: string, projectId: string): D1PreparedStatement =>
+  env.DB.prepare(`SELECT CASE WHEN EXISTS (
+    SELECT 1 FROM members m WHERE m.id = ?1 AND m.removed_at IS NULL AND (
+      m.role = 'owner' OR EXISTS (SELECT 1 FROM project_access x WHERE x.member_id = m.id AND x.project_id = ?2 AND x.level = 4)
+    )
+  ) THEN 1 ELSE json('forbidden') END`).bind(memberId, projectId);
+
 async function managed(ctx: SignedIn): Promise<PageRow> {
   const { project, level } = await openProject(ctx.env, ctx.person, ctx.params[0]!, 1), page = await findPage(ctx.env, project, ctx.params[1]!);
   if (level < MANAGER) throw refuse();
@@ -24,23 +33,44 @@ export async function setStatus(ctx: SignedIn): Promise<Response> {
   const { env, person } = ctx, page = await managed(ctx), { body } = await readJson(ctx.request);
   onlyKeys(body, ['status']);
   const status = oneOf(body.status, 'status', STATUSES), now = Date.now();
-  await env.DB.batch([
-    env.DB.prepare('UPDATE pages SET status = ?1, updated_at = MAX(updated_at + 1, ?2) WHERE id = ?3 AND status <> ?1 AND deleted_at IS NULL').bind(status, now, page.id),
-    env.DB.prepare("INSERT INTO events(project_id, page_id, type, subject_id, created_at, actor_type, actor_id) SELECT ?, ?, 'page.status', ?, ?, 'person', ? WHERE changes() = 1")
-      .bind(page.project_id, page.id, page.id, now, person.memberId),
-    ...statusStatements(env, page.id),
-  ]);
+  try {
+    await env.DB.batch([
+      stillManager(env, person.memberId, page.project_id),
+      env.DB.prepare("SELECT CASE WHEN EXISTS (SELECT 1 FROM pages WHERE id = ? AND deleted_at IS NULL) THEN 1 ELSE json('gone') END").bind(page.id),
+      env.DB.prepare('UPDATE pages SET status = ?1, updated_at = MAX(updated_at + 1, ?2) WHERE id = ?3 AND status <> ?1 AND deleted_at IS NULL').bind(status, now, page.id),
+      env.DB.prepare("INSERT INTO events(project_id, page_id, type, subject_id, created_at, actor_type, actor_id) SELECT ?, ?, 'page.status', ?, ?, 'person', ? WHERE changes() = 1")
+        .bind(page.project_id, page.id, page.id, now, person.memberId),
+      ...statusStatements(env, page.id),
+    ]);
+  } catch (error) {
+    if (String(error).includes('malformed JSON')) {
+      const level = await levelOn(env, person, page.project_id);
+      if (level < 1) throw notFound();
+      if (level < MANAGER) throw refuse();
+      throw notFound();
+    }
+    throw error;
+  }
   return Response.json({ status });
 }
 
 /** Out of every list and the search at once; gone for good after 30 days. */
 export async function deletePage(ctx: SignedIn): Promise<Response> {
-  const { env, person } = ctx, page = await managed(ctx);
-  await env.DB.batch([
-    env.DB.prepare('UPDATE pages SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL').bind(Date.now(), page.id),
-    ...unindexStatements(env, page.id),
-    auditStatement(env, person.memberId, 'page.delete', page.id),
-  ]);
+  const { env, person } = ctx, page = await managed(ctx), now = Date.now();
+  try {
+    await env.DB.batch([
+      stillManager(env, person.memberId, page.project_id),
+      env.DB.prepare('UPDATE pages SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL').bind(now, page.id),
+      env.DB.prepare("INSERT INTO audit(at, actor_type, actor_id, action, subject_id) SELECT ?, 'member', ?, 'page.delete', ? WHERE changes() = 1").bind(now, person.memberId, page.id),
+      ...unindexStatements(env, page.id),
+    ]);
+  } catch (error) {
+    if (String(error).includes('malformed JSON')) {
+      const level = await levelOn(env, person, page.project_id);
+      throw level < 1 ? notFound() : refuse();
+    }
+    throw error;
+  }
   return new Response(null, { status: 204 });
 }
 
@@ -72,14 +102,22 @@ export async function restorePage(ctx: SignedIn): Promise<Response> {
   const tags = (await tagsOf(env, [page.id])).get(page.id) ?? [], text = await entryTextOf(env, page.id, page.current_version);
   try {
     await env.DB.batch([
+      stillManager(env, person.memberId, page.project_id),
       env.DB.prepare('UPDATE pages SET deleted_at = NULL, updated_at = MAX(updated_at + 1, ?) WHERE id = ? AND deleted_at = ?').bind(now, page.id, page.deleted_at),
-      // Someone else restored it first.
+      // Someone else restored or purged it first.
       env.DB.prepare("SELECT CASE WHEN changes() = 1 THEN 1 ELSE json('restored') END"),
       ...indexStatements(env, page.id, { title: page.title, summary: page.summary, tags }, text),
       auditStatement(env, person.memberId, 'page.restore', page.id),
     ]);
   } catch (error) {
-    if (String(error).includes('malformed JSON')) throw conflict('It was restored meanwhile.');
+    if (String(error).includes('malformed JSON')) {
+      const level = await levelOn(env, person, page.project_id);
+      if (level < 1) throw notFound();
+      if (level < MANAGER) throw refuse();
+      const exists = await env.DB.prepare('SELECT 1 FROM pages WHERE id = ?').bind(page.id).first();
+      if (!exists) throw notFound();
+      throw conflict('It was restored meanwhile.');
+    }
     throw error;
   }
   const project = await env.DB.prepare('SELECT slug FROM projects WHERE id = ?').bind(page.project_id).first<{ slug: string }>();

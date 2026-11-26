@@ -66,7 +66,7 @@ dialog{border:1px solid var(--edge);border-radius:16px;padding:0;background:var(
 dialog:focus{outline:none}
 dialog::backdrop{background:rgb(0 0 0/.6)}
 .dialog{padding:20px}
-.row{display:flex;gap:10px;align-items:center}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
 .row .primary{margin:0;width:auto;flex:1}
 .address{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px;max-height:40dvh;overflow:auto;word-break:break-all}
 .versions{list-style:none;margin:0;padding:0}
