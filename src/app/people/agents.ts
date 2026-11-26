@@ -76,14 +76,21 @@ export async function addKey(ctx: SignedIn): Promise<Response> {
     await env.DB.batch([
       env.DB.prepare('INSERT INTO agents(id, member_id, name, created_at) VALUES(?,?,?,?) ON CONFLICT(member_id, name) DO NOTHING').bind(newId('agt', now), person.memberId, agent, now),
       env.DB.prepare(`INSERT INTO agent_keys(id, agent_id, secret_hmac, scopes_json, all_projects, created_at, expires_at, label)
-        SELECT ?, a.id, ?, ?, ?, ?, ?, ? FROM agents a WHERE a.member_id = ? AND a.name = ?`).bind(keyId, hmac, JSON.stringify(SCOPES.filter((s) => (body.scopes as string[]).includes(s))), all ? 1 : 0, now, now + days * DAY, label || null, person.memberId, agent),
+        SELECT ?, a.id, ?, ?, ?, ?, ?, ? FROM agents a WHERE a.member_id = ? AND a.name = ?
+          AND (SELECT COUNT(*) FROM (
+            SELECT 1 FROM agents a2 CROSS JOIN agent_keys k2 ON k2.agent_id = a2.id
+            WHERE a2.member_id = ? AND k2.revoked_at IS NULL AND k2.expires_at > ? LIMIT ?
+          )) < ?`)
+        .bind(keyId, hmac, JSON.stringify(SCOPES.filter((s) => (body.scopes as string[]).includes(s))), all ? 1 : 0, now, now + days * DAY, label || null, person.memberId, agent, person.memberId, now, MAX_KEYS, MAX_KEYS),
       mustChange(env),
       env.DB.prepare('INSERT INTO agent_key_projects(key_id, project_id) SELECT ?, value FROM json_each(?)').bind(keyId, JSON.stringify(projects)),
       auditStatement(env, person.memberId, 'key.add', keyId),
     ]);
   } catch (error) {
-    // The agent is disabled, or the person lost the level since it was read.
-    if (String(error).includes('key not allowed')) throw conflict('The agent is off, or a project is not yours to give anymore.');
+    const msg = String(error);
+    // The agent is disabled, the 100-key cap was reached concurrently, or the person lost the level since it was read.
+    if (msg.includes('key not allowed')) throw conflict('The agent is off, or a project is not yours to give anymore.');
+    if (msg.includes('malformed JSON')) throw conflict('Too many keys. Revoke some first.');
     throw error;
   }
   return Response.json({ id: keyId, expiresAt: now + days * DAY }, { status: 201 });

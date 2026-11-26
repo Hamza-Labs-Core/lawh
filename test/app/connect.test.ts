@@ -238,5 +238,24 @@ describe('connect an agent (/v1/connect, /app-api/connect/*, /connect.md, /lawh.
     expect([resA.status, resB.status].sort()).toEqual([200, 409]);
     const finalCount = await count('agent_keys', 'revoked_at IS NULL AND expires_at > ' + Date.now() + " AND agent_id IN (SELECT id FROM agents WHERE member_id='o')");
     expect(finalCount).toBe(100);
+
+    // 6) Cross-route 100-key cap: revoke 1 key (back to 99) and race connect/answer against manual POST /agent-keys.
+    await sql("UPDATE agent_keys SET revoked_at = 1 WHERE id = 'key_CAP00000000000000000000000'");
+    const rC = await json(await agent('/v1/connect', { method: 'POST', json: { secretSha256: await sha256Hex(randomToken()), client: 'claude', machine: 'm3' } }));
+    const [crossConnect, crossManual] = await Promise.all([
+      api('POST', '/connect/answer', { cookie: owner2, body: { id: rC.id, code: rC.code, agentName: 'cap-c', projects: ['one'] } }, { CODE_LIMIT: unlimited }),
+      api('POST', '/agent-keys', { cookie: owner2, body: { agent: 'manual-cap', secretSha256: 'd'.repeat(64), scopes: ['pages:read'], projects: ['one'], days: 30 } }),
+    ]);
+    expect([crossConnect.status, crossManual.status].sort()).toEqual([200, 409].every((s, i) => [crossConnect.status, crossManual.status].sort()[i] === s) ? [200, 409] : [201, 409]);
+    const crossCount = await count('agent_keys', 'revoked_at IS NULL AND expires_at > ' + Date.now() + " AND agent_id IN (SELECT id FROM agents WHERE member_id='o')");
+    expect(crossCount).toBe(100);
+
+    // 7) Concurrent wrong codes cannot exceed 5 recorded failures per session.
+    const { cookie: owner3 } = await enter('o');
+    const burst = await Promise.all(
+      Array.from({ length: 8 }, () => api('POST', '/connect/look', { cookie: owner3, body: { code: 'BBBB-CCCC' } }, { CODE_LIMIT: unlimited })),
+    );
+    expect(burst.filter((r) => r.status === 404)).toHaveLength(5);
+    expect(burst.filter((r) => r.status === 429)).toHaveLength(3);
   });
 });

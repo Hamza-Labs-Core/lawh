@@ -19,45 +19,72 @@ async function managedProjects(ctx: SignedIn) {
   return projects;
 }
 
-/** Security model §5: wrong codes are limited to 5 a session in 10 minutes (across both look and answer). */
-async function checkCodeLimit(ctx: SignedIn, now: number): Promise<void> {
+/**
+ * Atomically checks the 5-wrong-codes-per-10-min limit AND looks up the open connect row in one serialized D1 batch,
+ * recording a wrong-code timestamp in the same transaction iff no matching open request exists.
+ */
+async function checkAndLookupConnect(
+  ctx: SignedIn,
+  now: number,
+  lookup: { codeHmac: string; id?: string },
+): Promise<{ id: string; code_hmac: string; client: string; machine: string; created_at: number; expires_at: number } | null> {
   const { env, person } = ctx;
   if (!(await env.CODE_LIMIT.limit({ key: person.sessionId })).success) {
     throw new ApiError('rate_limited', 'Too many codes. Try again later.');
   }
-  const row = await env.DB.prepare(
-    "SELECT response_json FROM idempotency WHERE key_id = 'rl:connect-code' AND idem_key = ?",
-  ).bind(person.sessionId).first<{ response_json: string }>();
-  if (!row) return;
-  try {
-    const times = (JSON.parse(row.response_json) as number[]).filter((t) => typeof t === 'number' && t > now - WRONG_CODE_WINDOW);
-    if (times.length >= MAX_WRONG_CODES) throw new ApiError('rate_limited', 'Too many wrong codes. Try again later.');
-  } catch (error) {
-    if (error instanceof ApiError) throw error;
-  }
-}
-
-async function recordWrongCode(ctx: SignedIn, now: number): Promise<void> {
   const cutoff = now - WRONG_CODE_WINDOW;
   const expiresAt = now + WRONG_CODE_WINDOW;
-  await ctx.env.DB.prepare(
-    `INSERT INTO idempotency(key_id, idem_key, request_sha256, status, response_json, expires_at)
-     VALUES('rl:connect-code', ?1, '', 1, json_array(?2), ?3)
-     ON CONFLICT(key_id, idem_key) DO UPDATE SET
-       response_json = (
-         SELECT json_group_array(v) FROM (
-           SELECT value AS v FROM json_each(idempotency.response_json) WHERE value > ?4
-           UNION ALL SELECT ?2
-         )
-       ),
-       status = (
-         SELECT COUNT(*) FROM (
-           SELECT 1 FROM json_each(idempotency.response_json) WHERE value > ?4
-           UNION ALL SELECT 1
-         )
-       ),
-       expires_at = ?3`,
-  ).bind(ctx.person.sessionId, now, expiresAt, cutoff).run();
+  const whereMatch = lookup.id !== undefined
+    ? 'id = ?1 AND code_hmac = ?2 AND expires_at > ?3 AND answered_at IS NULL'
+    : 'code_hmac = ?1 AND expires_at > ?2 AND answered_at IS NULL';
+  const matchParams = lookup.id !== undefined ? [lookup.id, lookup.codeHmac, now] : [lookup.codeHmac, now];
+
+  const missExists = lookup.id !== undefined
+    ? 'NOT EXISTS (SELECT 1 FROM agent_connects WHERE id = ?5 AND code_hmac = ?6 AND expires_at > ?2 AND answered_at IS NULL)'
+    : 'NOT EXISTS (SELECT 1 FROM agent_connects WHERE code_hmac = ?5 AND expires_at > ?2 AND answered_at IS NULL)';
+  const missParams = lookup.id !== undefined
+    ? [person.sessionId, now, expiresAt, cutoff, lookup.id, lookup.codeHmac]
+    : [person.sessionId, now, expiresAt, cutoff, lookup.codeHmac];
+
+  try {
+    const [, foundRes] = await env.DB.batch([
+      env.DB.prepare(
+        `SELECT CASE WHEN COALESCE(
+           (SELECT COUNT(*) FROM idempotency i, json_each(i.response_json) j
+            WHERE i.key_id = 'rl:connect-code' AND i.idem_key = ?1 AND j.value > ?2),
+           0
+         ) < ?3 THEN 1 ELSE json('[') END`,
+      ).bind(person.sessionId, cutoff, MAX_WRONG_CODES),
+      env.DB.prepare(
+        `SELECT id, code_hmac, client, machine, created_at, expires_at FROM agent_connects WHERE ${whereMatch}`,
+      ).bind(...matchParams),
+      env.DB.prepare(
+        `INSERT INTO idempotency(key_id, idem_key, request_sha256, status, response_json, expires_at)
+         SELECT 'rl:connect-code', ?1, '', 1, json_array(?2), ?3
+         WHERE ${missExists}
+         ON CONFLICT(key_id, idem_key) DO UPDATE SET
+           response_json = (
+             SELECT json_group_array(v) FROM (
+               SELECT value AS v FROM json_each(idempotency.response_json) WHERE value > ?4
+               UNION ALL SELECT ?2
+             )
+           ),
+           status = (
+             SELECT COUNT(*) FROM (
+               SELECT 1 FROM json_each(idempotency.response_json) WHERE value > ?4
+               UNION ALL SELECT 1
+             )
+           ),
+           expires_at = ?3`,
+      ).bind(...missParams),
+    ]);
+    return (foundRes!.results[0] as { id: string; code_hmac: string; client: string; machine: string; created_at: number; expires_at: number } | undefined) ?? null;
+  } catch (error) {
+    if (String(error).includes('malformed JSON')) {
+      throw new ApiError('rate_limited', 'Too many wrong codes. Try again later.');
+    }
+    throw error;
+  }
 }
 
 /** POST /app-api/connect/look — look up an open agent connection request by its typed code. */
@@ -67,21 +94,9 @@ export async function lookAtConnect(ctx: SignedIn): Promise<Response> {
   const { body } = await readJson(ctx.request);
   onlyKeys(body, ['code']);
   const now = Date.now();
-  await checkCodeLimit(ctx, now);
-  if (typeof body.code !== 'string' || body.code.length > 40) {
-    await recordWrongCode(ctx, now);
-    throw notFound();
-  }
-
-  const row = await env.DB.prepare(
-    'SELECT id, client, machine, created_at, expires_at FROM agent_connects WHERE code_hmac = ? AND expires_at > ? AND answered_at IS NULL',
-  ).bind(await connectCodeHmac(env, body.code), now).first<{
-    id: string; client: string; machine: string; created_at: number; expires_at: number;
-  }>();
-  if (!row) {
-    await recordWrongCode(ctx, now);
-    throw notFound();
-  }
+  const codeHmac = typeof body.code === 'string' && body.code.length <= 40 ? await connectCodeHmac(env, body.code) : '__invalid__';
+  const row = await checkAndLookupConnect(ctx, now, { codeHmac });
+  if (!row) throw notFound();
 
   const { results: agents } = await env.DB.prepare(
     'SELECT id, name FROM agents WHERE member_id = ? AND disabled_at IS NULL ORDER BY name LIMIT 200',
@@ -108,21 +123,12 @@ export async function answerConnect(ctx: SignedIn): Promise<Response> {
   } else {
     onlyKeys(body, ['id', 'code', 'refuse', 'agentId', 'agentName', 'projects']);
   }
-  const now = Date.now();
-  await checkCodeLimit(ctx, now);
-  if (typeof body.id !== 'string' || typeof body.code !== 'string' || body.code.length > 40) {
-    await recordWrongCode(ctx, now);
-    throw notFound();
-  }
   if (body.refuse !== undefined && typeof body.refuse !== 'boolean') throw invalid('refuse must be true or false.');
-
-  const reqRow = await env.DB.prepare(
-    'SELECT id, code_hmac, client FROM agent_connects WHERE id = ? AND expires_at > ? AND answered_at IS NULL',
-  ).bind(body.id, now).first<{ id: string; code_hmac: string; client: string }>();
-  if (!reqRow || !equalInConstantTime(await connectCodeHmac(env, body.code), reqRow.code_hmac)) {
-    await recordWrongCode(ctx, now);
-    throw notFound();
-  }
+  const now = Date.now();
+  const id = typeof body.id === 'string' && body.id.length <= 64 ? body.id : '__invalid__';
+  const codeHmac = typeof body.code === 'string' && body.code.length <= 40 ? await connectCodeHmac(env, body.code) : '__invalid__';
+  const reqRow = await checkAndLookupConnect(ctx, now, { id, codeHmac });
+  if (!reqRow || !equalInConstantTime(codeHmac, reqRow.code_hmac)) throw notFound();
 
   if (body.refuse === true) {
     try {

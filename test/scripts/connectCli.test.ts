@@ -67,12 +67,13 @@ describe('lawh.mjs CLI connect & read behavior', () => {
       if (req.method === 'GET' && url.pathname === '/v1/projects/one/pages/demo/versions/2/file') {
         const file = url.searchParams.get('path');
         if (file === 'index.html') {
-          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          // Real /v1/.../file endpoint always sends application/octet-stream!
+          res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
           res.end('<h1>Hello</h1>');
           return;
         }
         if (file === 'dot.png') {
-          res.writeHead(200, { 'Content-Type': 'image/png' });
+          res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
           res.end(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
           return;
         }
@@ -179,6 +180,29 @@ process.exit(1);
       expect(loggedArgs).not.toContain('lawh_key_');
       expect(loggedArgs).not.toContain('b64:');
       expect(readFileSync(savedFile, 'utf8')).toMatch(/^b64:/);
+
+      // Simulate stale Keychain (write silently fails, read returns old claude-only entry): fallback file must win!
+      writeFileSync(stub, `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+if (args[0] === '-i') process.exit(0); // silently fails without updating savedFile
+if (args[0] === 'find-generic-password') {
+  process.stdout.write(fs.readFileSync(${JSON.stringify(savedFile)}, 'utf8') + '\\n');
+  process.exit(0);
+}
+process.exit(1);
+`);
+      chmodSync(stub, 0o755);
+      const xdg = mkdtempSync(join(tmpdir(), 'lawh-xdg-'));
+      try {
+        const env2: NodeJS.ProcessEnv = { ...env, XDG_CONFIG_HOME: xdg };
+        const res2 = await runCli(['connect', baseUrl, '--client', 'codex', '--no-open', '--poll-ms', '200', '--json'], env2);
+        expect(res2.status, res2.stderr).toBe(0);
+        const whoCodex = await runCli(['whoami', '--client', 'codex', '--json'], env2);
+        expect(whoCodex.status, whoCodex.stderr).toBe(0);
+      } finally {
+        rmSync(xdg, { recursive: true, force: true });
+      }
     } finally {
       rmSync(binDir, { recursive: true, force: true });
     }
