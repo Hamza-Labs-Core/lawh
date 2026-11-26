@@ -149,7 +149,7 @@ export function assertOutsideRepo(exportDir, repoRoot, homeDir = homedir()) {
   const targetReal = resolveWithExistingAncestor(expanded);
   const repoReal = resolveWithExistingAncestor(repoRoot);
   const rel = relative(repoReal, targetReal);
-  const outside = rel === '..' || rel.startsWith(`..${sep}`) || rel.startsWith('../') || rel.startsWith('..\\') || isAbsolute(rel);
+  const outside = rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel);
   if (!outside) {
     throw new Error(`Export folder must be outside the repository (${repoRoot}). Choose a folder such as ${defaultExportDir(homeDir)}.`);
   }

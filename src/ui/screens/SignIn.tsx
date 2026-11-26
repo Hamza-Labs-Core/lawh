@@ -1,10 +1,10 @@
 import { browserSupportsWebAuthn, startAuthentication } from '@simplewebauthn/browser';
 import { useState } from 'preact/hooks';
 import { call, problemOf } from '../api';
-import { Failure, go, Heading, useBusy, useText } from '../app';
+import { brandName, Failure, go, Heading, useBusy, useSettings, useText } from '../app';
 
 export function SignIn({ onDone }: { onDone: () => void }) {
-  const t = useText(), [busy, run] = useBusy(), [problem, setProblem] = useState<string | null>(null), supported = browserSupportsWebAuthn();
+  const t = useText(), { lang } = useSettings(), [busy, run] = useBusy(), [problem, setProblem] = useState<string | null>(null), supported = browserSupportsWebAuthn();
   const signIn = async () => {
     setProblem(null);
     try {
@@ -19,7 +19,7 @@ export function SignIn({ onDone }: { onDone: () => void }) {
   };
   return (
     <section class="card narrow">
-      <Heading class="brand">{t('app')}</Heading>
+      <Heading class="brand">{brandName(lang)}</Heading>
       <p class="muted">{t('tagline')}</p>
       {supported ? <button class="primary" disabled={busy} onClick={() => run(signIn)}>{t('signIn')}</button> : <p>{t('noPasskeys')}</p>}
       <button class="plain wide" onClick={() => go('/device')}>{t('fromOther')}</button>

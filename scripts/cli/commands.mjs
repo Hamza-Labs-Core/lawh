@@ -5,6 +5,7 @@ import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
+  CloudflareApiError,
   isNotFoundError,
   isSecretsStoreUnavailable,
 } from './cloudflare.mjs';
@@ -216,6 +217,7 @@ export async function runInit({
   // Step 3: Create D1, R2, Queues, secrets, and write generated Wrangler configs.
   // Each resource uses a two-phase `creating` intent flag so an unrelated pre-existing resource is never overwritten
   // or adopted, while a response lost right after Lawh's own remote create commits IS recovered cleanly on resume.
+  // A confirmed HTTP 409 conflict always clears `creating` so a concurrent external creation is never adopted on retry.
   if (!cfg.resources.database.id) {
     const existingDbs = (await cf.listDatabases(accountId)) ?? [];
     const hit = existingDbs.find((d) => d.name === cfg.resources.database.name);
@@ -229,10 +231,18 @@ export async function runInit({
     } else {
       cfg.resources.database.creating = true;
       writeConfig(root, cfg);
-      const db = await cf.createDatabase(accountId, cfg.resources.database.name);
-      cfg.resources.database.id = db.uuid ?? db.id;
-      cfg.resources.database.creating = false;
-      writeConfig(root, cfg);
+      try {
+        const db = await cf.createDatabase(accountId, cfg.resources.database.name);
+        cfg.resources.database.id = db.uuid ?? db.id;
+        cfg.resources.database.creating = false;
+        writeConfig(root, cfg);
+      } catch (err) {
+        if (err instanceof CloudflareApiError && err.status === 409) {
+          cfg.resources.database.creating = false;
+          writeConfig(root, cfg);
+        }
+        throw err;
+      }
     }
   }
 
@@ -250,10 +260,18 @@ export async function runInit({
     } else {
       cfg.resources.bucket.creating = true;
       writeConfig(root, cfg);
-      await cf.createBucket(accountId, cfg.resources.bucket.name);
-      cfg.resources.bucket.created = true;
-      cfg.resources.bucket.creating = false;
-      writeConfig(root, cfg);
+      try {
+        await cf.createBucket(accountId, cfg.resources.bucket.name);
+        cfg.resources.bucket.created = true;
+        cfg.resources.bucket.creating = false;
+        writeConfig(root, cfg);
+      } catch (err) {
+        if (err instanceof CloudflareApiError && err.status === 409) {
+          cfg.resources.bucket.creating = false;
+          writeConfig(root, cfg);
+        }
+        throw err;
+      }
     }
   }
 
@@ -271,10 +289,18 @@ export async function runInit({
     } else {
       slot.creating = true;
       writeConfig(root, cfg);
-      const q = await cf.createQueue(accountId, slot.name);
-      slot.id = q.queue_id ?? q.id;
-      slot.creating = false;
-      writeConfig(root, cfg);
+      try {
+        const q = await cf.createQueue(accountId, slot.name);
+        slot.id = q.queue_id ?? q.id;
+        slot.creating = false;
+        writeConfig(root, cfg);
+      } catch (err) {
+        if (err instanceof CloudflareApiError && err.status === 409) {
+          slot.creating = false;
+          writeConfig(root, cfg);
+        }
+        throw err;
+      }
     }
   }
 
@@ -350,45 +376,34 @@ export async function runInit({
   }
 
   // Refuse to overwrite an unrelated pre-existing Worker script!
-  if (!cfg.resources.workersCreated.app) {
-    if (!cfg.resources.workersCreated.appDeploying && (await cf.workerExists(accountId, cfg.workers.app))) {
-      throw new Error(`Worker "${cfg.workers.app}" already exists in this account. Choose a different worker name or remove it first.`);
+  // If deploy fails before creating the Worker remotely (e.g. local build failure), clear *Deploying so a retry re-checks existence.
+  async function deployInitialWorker(kind, workerName, configFile) {
+    const createdKey = kind === 'app' ? 'app' : 'content';
+    const deployingKey = kind === 'app' ? 'appDeploying' : 'contentDeploying';
+    if (cfg.resources.workersCreated[createdKey]) return;
+    if (!cfg.resources.workersCreated[deployingKey] && (await cf.workerExists(accountId, workerName))) {
+      throw new Error(`Worker "${workerName}" already exists in this account. Choose a different worker name or remove it first.`);
     }
-    cfg.resources.workersCreated.appDeploying = true;
+    cfg.resources.workersCreated[deployingKey] = true;
     writeConfig(root, cfg);
-    await deployWorker({
-      root,
-      cf,
-      accountId,
-      workerName: cfg.workers.app,
-      configFile: 'wrangler.app.jsonc',
-      kind: 'app',
-      env,
-    });
-    cfg.resources.workersCreated.app = true;
-    cfg.resources.workersCreated.appDeploying = false;
-    writeConfig(root, cfg);
+    try {
+      await deployWorker({ root, cf, accountId, workerName, configFile, kind, env });
+      cfg.resources.workersCreated[createdKey] = true;
+      cfg.resources.workersCreated[deployingKey] = false;
+      writeConfig(root, cfg);
+    } catch (err) {
+      let existsNow = false;
+      try { existsNow = await cf.workerExists(accountId, workerName); } catch { existsNow = true; }
+      if (!existsNow) {
+        cfg.resources.workersCreated[deployingKey] = false;
+        writeConfig(root, cfg);
+      }
+      throw err;
+    }
   }
 
-  if (!cfg.resources.workersCreated.content) {
-    if (!cfg.resources.workersCreated.contentDeploying && (await cf.workerExists(accountId, cfg.workers.content))) {
-      throw new Error(`Worker "${cfg.workers.content}" already exists in this account. Choose a different worker name or remove it first.`);
-    }
-    cfg.resources.workersCreated.contentDeploying = true;
-    writeConfig(root, cfg);
-    await deployWorker({
-      root,
-      cf,
-      accountId,
-      workerName: cfg.workers.content,
-      configFile: 'wrangler.content.jsonc',
-      kind: 'content',
-      env,
-    });
-    cfg.resources.workersCreated.content = true;
-    cfg.resources.workersCreated.contentDeploying = false;
-    writeConfig(root, cfg);
-  }
+  await deployInitialWorker('app', cfg.workers.app, 'wrangler.app.jsonc');
+  await deployInitialWorker('content', cfg.workers.content, 'wrangler.content.jsonc');
 
   if (cfg.secrets.backend === 'worker_secrets' && !cfg.secrets.workerSecretsUploaded) {
     for (const name of APP_SECRETS) {
