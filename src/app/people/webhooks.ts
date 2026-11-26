@@ -281,7 +281,7 @@ export async function resendDelivery(ctx: SignedIn): Promise<Response> {
   if (webhook.enabled !== 1) throw conflict('This webhook is off.');
   const { host } = checkWebhookUrl(webhook.url, await readAllowedHosts(env));
 
-  const now = Date.now(), token = randomToken().slice(0, 16), pendingStatus = `pending:${token}`;
+  const now = Date.now(), token = randomToken().slice(0, 16), pendingStatus = `resend:${token}`;
   try {
     await env.DB.batch([
       stillWebhooksOn(env),
