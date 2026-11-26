@@ -356,6 +356,29 @@ describe('no-clone installer (install.sh) and lawh CLI', { timeout: 30_000 }, ()
     expect(resRelPrune.status, resRelPrune.stdout + resRelPrune.stderr).toBe(0);
     expect(existsSync(relOld)).toBe(false);
 
+    // A symlink component followed by `..` that actually resolves outside releases/ must NOT prune a decoy inside releases/.
+    const decoyRel = join(lawhHome, 'releases/decoy');
+    const extParent = join(work, 'ext-parent');
+    const extLeaf = join(extParent, 'leaf');
+    const extSibling = join(extParent, 'decoy');
+    mkdirSync(decoyRel, { recursive: true });
+    mkdirSync(extLeaf, { recursive: true });
+    mkdirSync(extSibling, { recursive: true });
+    symlinkSync(extLeaf, join(lawhHome, 'releases/extlink'));
+    unlinkSync(join(lawhHome, 'app'));
+    // POSIX resolves releases/extlink/../decoy -> ext-parent/decoy (external!), NOT releases/decoy!
+    symlinkSync('releases/extlink/../decoy', join(lawhHome, 'app'));
+    const resDotDot = spawnSync('bash', [installerPath], {
+      cwd: tmpdir(),
+      encoding: 'utf8',
+      env: { ...process.env, LAWH_HOME: lawhHome, LAWH_BIN_DIR: binDir, LAWH_VERSION: 'v1.0.1', LAWH_TARBALL_URL: `file://${validTar}`, LAWH_SKIP_INSTALL_DEPS: '1' },
+    });
+    expect(resDotDot.status, resDotDot.stdout + resDotDot.stderr).toBe(0);
+    expect(existsSync(decoyRel)).toBe(true);
+    expect(existsSync(extSibling)).toBe(true);
+    unlinkSync(join(lawhHome, 'releases/extlink'));
+    rmSync(decoyRel, { recursive: true, force: true });
+
     // Symlinked $LAWH_HOME/releases is rejected before touching any external directory.
     const symReleasesHome = join(work, 'sym-rel-home');
     const externalReleases = join(work, 'external-releases');
