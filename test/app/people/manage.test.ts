@@ -116,6 +116,32 @@ describe('deleting and restoring', () => {
     }
     expect((await restore(owner, `pag_${'0'.repeat(26)}`)).status).toBe(404);
   });
+
+  it('the deleted list handles pages beyond the first 1,000 projects, and restore cannot expose a half-purged page', async () => {
+    const { cookie } = await enter('o');
+    await sql(...Array.from({ length: 1000 }, (_, i) => `INSERT INTO projects(id,slug,name_en,name_ar,created_at) VALUES('pr${i}','zz${String(i).padStart(4, '0')}','P','P',1)`));
+    await sql(`INSERT INTO pages(id,project_id,slug,title,created_by,created_at,updated_at,deleted_at) VALUES('pag_late','pr999','late','T','ao',1,1,${Date.now()})`);
+    expect((await api('GET', '/deleted', { cookie })).status).toBe(200);
+    await remove(cookie);
+    const now = Date.now();
+    await sql(`UPDATE pages SET deleted_at=${now - PURGE_AFTER + 61_000} WHERE id='${pageId}'`);
+    let enterFinal!: () => void, finishFinal!: () => void, batches = 0;
+    const firstCommitted = new Promise<void>((r) => { enterFinal = r; }), finish = new Promise<void>((r) => { finishFinal = r; });
+    const purgeDb = new Proxy(env.DB, { get(target, key) {
+      if (key === 'batch') return async (statements: D1PreparedStatement[]) => { if (++batches === 2) { enterFinal(); await finish; } return target.batch(statements); };
+      const value = Reflect.get(target, key); return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    let pending: Promise<void> | undefined, armed = true;
+    const restoreDb = new Proxy(env.DB, { get(target, key) {
+      if (key === 'batch') return async (statements: D1PreparedStatement[]) => { if (armed) { armed = false; pending = purge({ ...env, DB: purgeDb }, now + 62_000); await firstCommitted; } return target.batch(statements); };
+      const value = Reflect.get(target, key); return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    const response = await api('POST', `/deleted/${pageId}/restore`, { cookie }, { DB: restoreDb });
+    finishFinal();
+    await pending;
+    expect(response.status).toBe(404);
+    expect(await count('pages', `id='${pageId}'`)).toBe(0);
+  });
 });
 
 describe('the purge', () => {
@@ -223,7 +249,7 @@ describe('how many versions are kept', () => {
     expect(await versions()).toBe('46');
   });
 
-  it('saving Keep all while pruning keeps every version intact', async () => {
+  it('saving Keep all or lowering retention while pruning never loses versions or skips the new walk', async () => {
     const { cookie } = await enter('o');
     for (const n of [2, 3]) await version(n, `v${n}`);
     await keep(cookie, 1);
@@ -234,6 +260,29 @@ describe('how many versions are kept', () => {
     } });
     await prune({ ...env, DB });
     expect([armed, await versions()]).toEqual([false, '1,2,3']);
+    // Lowering retention during an older walk must not let the old walk erase the new walk cursor.
+    expect((await keep(cookie, 3)).status).toBe(200);
+    let lowered = false;
+    const raceDb = new Proxy(env.DB, { get(target, key) {
+      if (key === 'prepare') return (query: string) => {
+        const statement = target.prepare(query);
+        if (!query.includes('SELECT id, current_version FROM pages WHERE id > ?')) return statement;
+        return new Proxy(statement, { get(stmt, param) {
+          if (param === 'bind') return (...args: unknown[]) => {
+            const bound = stmt.bind(...args);
+            return new Proxy(bound, { get(b, p) {
+              if (p === 'all') return async () => { if (!lowered) { lowered = true; expect((await keep(cookie, 1)).status).toBe(200); } return b.all(); };
+              const v = Reflect.get(b, p); return typeof v === 'function' ? v.bind(b) : v;
+            } });
+          };
+          const value = Reflect.get(stmt, param); return typeof value === 'function' ? value.bind(stmt) : value;
+        } });
+      };
+      const value = Reflect.get(target, key); return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    await prune({ ...env, DB: raceDb });
+    await prune(env);
+    expect([lowered, await versions(), await count('settings', "key='retention_walk'")]).toEqual([true, '3', 0]);
   });
 
   it('the owner’s alone, and a number', async () => {
@@ -356,6 +405,23 @@ describe('agents and keys', () => {
     await add(cookie);
     await env.DB.batch(Array.from({ length: 99 }, (_, i) => env.DB.prepare("INSERT INTO agent_keys(id,agent_id,secret_hmac,scopes_json,created_at,expires_at) SELECT ?,id,'h','[]',1,? FROM agents WHERE name='ci'").bind(`k${i}`, Date.now() + DAY)));
     expect(await code(await add(cookie))).toEqual([409, 'conflict']);
+  });
+
+  it('toggling a transferred agent after losing ownership fails cleanly', async () => {
+    const { cookie } = await enter('o');
+    await enter('m');
+    const agentId = `agt_${'A'.repeat(26)}`;
+    await sql(`INSERT INTO agents(id,member_id,name,created_at) VALUES('${agentId}','o','ci-transfer',1)`);
+    let armed = true;
+    const DB = new Proxy(env.DB, { get(target, key) {
+      if (key === 'batch') return async (statements: D1PreparedStatement[]) => {
+        if (armed) { armed = false; await sql("UPDATE members SET role='member' WHERE id='o'", "UPDATE members SET role='owner' WHERE id='m'", `UPDATE agents SET member_id='m' WHERE id='${agentId}'`); }
+        return target.batch(statements);
+      };
+      const value = Reflect.get(target, key); return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    expect((await api('PUT', `/agents/${agentId}/off`, { cookie, body: { off: true } }, { DB })).status).toBe(404);
+    expect(await one(`SELECT member_id, disabled_at FROM agents WHERE id='${agentId}'`)).toEqual({ member_id: 'm', disabled_at: null });
   });
 });
 

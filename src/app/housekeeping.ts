@@ -18,9 +18,9 @@ const dropVersion = (env: AppEnv, id: string, now: number): D1PreparedStatement[
 ];
 
 async function purgePage(env: AppEnv, pageId: string, cutoff: number, now: number): Promise<void> {
-  // A few versions at a time: a page can have very many files.
+  // Drop newest versions first so current_version goes in the very first batch; a concurrent restore can never expose a page missing versions.
   for (let i = 0; i < 10; i++) {
-    const { results } = await env.DB.prepare('SELECT id FROM page_versions WHERE page_id = ? ORDER BY n LIMIT 5').bind(pageId).all<{ id: string }>();
+    const { results } = await env.DB.prepare('SELECT id FROM page_versions WHERE page_id = ? ORDER BY n DESC LIMIT 5').bind(pageId).all<{ id: string }>();
     if (results.length === 0) break;
     await env.DB.batch([stillDue(env, pageId, cutoff), ...results.flatMap((v) => dropVersion(env, v.id, now))]);
   }
@@ -82,19 +82,24 @@ export async function pruneVersions(env: AppEnv, pageId: string, currentVersion:
 
 /** After the setting changed: every page once, some each hour. Pages published since are pruned at their publish. */
 export async function prune(env: AppEnv, now = Date.now()): Promise<void> {
-  const keep = await versionsKept(env), row = await env.DB.prepare("SELECT value_json FROM settings WHERE key = 'retention_walk'").first<{ value_json: string }>();
-  if (keep === null || !row) return;
-  const from = JSON.parse(row.value_json) as string;
-  const { results } = await env.DB.prepare('SELECT id, current_version FROM pages WHERE id > ? ORDER BY id LIMIT ?').bind(from, WALK).all<{ id: string; current_version: number }>();
-  let last = from, whole = true;
+  // Read retention and retention_walk in one statement so a concurrent change can never pair an old limit with a new walk.
+  const { results: pair } = await env.DB.prepare("SELECT key, value_json FROM settings WHERE key IN ('retention', 'retention_walk')").all<{ key: string; value_json: string }>();
+  const keepRaw = pair.find((r) => r.key === 'retention')?.value_json, walkRaw = pair.find((r) => r.key === 'retention_walk')?.value_json;
+  const parsedKeep: unknown = keepRaw ? JSON.parse(keepRaw) : null;
+  const keep = typeof parsedKeep === 'number' && Number.isInteger(parsedKeep) && parsedKeep >= 1 ? parsedKeep : null;
+  if (keep === null || !walkRaw) return;
+  const parsed: unknown = JSON.parse(walkRaw);
+  const walk = typeof parsed === 'string' ? { id: '', after: parsed } : parsed as { id: string; after: string };
+  const { results } = await env.DB.prepare('SELECT id, current_version FROM pages WHERE id > ? ORDER BY id LIMIT ?').bind(walk.after, WALK).all<{ id: string; current_version: number }>();
+  let last = walk.after, whole = true;
   for (const page of results) {
     if (!(await pruneVersions(env, page.id, page.current_version, keep, now))) return;
     if (await env.DB.prepare('SELECT 1 FROM page_versions WHERE page_id = ? AND n <= ? LIMIT 1').bind(page.id, page.current_version - keep).first()) { whole = false; break; } // Its rest next hour.
     last = page.id;
   }
-  // Only if the setting wasn't changed meanwhile, which starts over.
-  if (whole && results.length < WALK) await env.DB.prepare("DELETE FROM settings WHERE key = 'retention_walk' AND value_json = ?").bind(row.value_json).run();
-  else await env.DB.prepare("UPDATE settings SET value_json = ?, updated_at = ? WHERE key = 'retention_walk' AND value_json = ?").bind(JSON.stringify(last), now, row.value_json).run();
+  // Only if the setting wasn't changed meanwhile (a new retention setting writes a new walk id and starts over).
+  if (whole && results.length < WALK) await env.DB.prepare("DELETE FROM settings WHERE key = 'retention_walk' AND value_json = ? AND EXISTS (SELECT 1 FROM settings WHERE key = 'retention' AND value_json = ?)").bind(walkRaw, keepRaw).run();
+  else await env.DB.prepare("UPDATE settings SET value_json = ?, updated_at = ? WHERE key = 'retention_walk' AND value_json = ? AND EXISTS (SELECT 1 FROM settings WHERE key = 'retention' AND value_json = ?)").bind(JSON.stringify({ id: walk.id, after: last }), now, walkRaw, keepRaw).run();
 }
 
 /** Once a week: objects that no row names, left by an upload that failed between the two. Some each hour, until all were looked at. */

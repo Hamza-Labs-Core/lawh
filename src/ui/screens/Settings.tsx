@@ -101,8 +101,9 @@ function AgentCard({ agent, off, revoke }: { agent: Agent; off: (agent: Agent, v
 
 /** The browser makes the secret and tells the server only its hash: it is shown here, once, and nowhere else. */
 function MakeKey({ me, agents, onCancel, onMade }: { me: Me; agents: Agent[]; onCancel: () => void; onMade: (secret: string) => void }) {
-  const t = useText(), { lang } = useSettings(), id = useId(), { data: projects, problem: projectsProblem, load } = useLoad<Listed<ProjectName & { level: number }>>('/projects'), [busy, run] = useBusy(), [problem, setProblem] = useState<Problem | null>(null);
+  const t = useText(), { lang } = useSettings(), id = useId(), first = useRef<HTMLInputElement>(null), { data: projects, problem: projectsProblem, load } = useLoad<Listed<ProjectName & { level: number }>>('/projects'), [busy, run] = useBusy(), [problem, setProblem] = useState<Problem | null>(null);
   const [agent, setAgent] = useState(''), [label, setLabel] = useState(''), [days, setDays] = useState(90), [all, setAll] = useState(false), [chosen, setChosen] = useState<string[]>([]), [scopes, setScopes] = useState<string[]>([...SCOPES]);
+  useEffect(() => first.current?.focus(), []);
   const toggle = (list: string[], value: string) => (list.includes(value) ? list.filter((v) => v !== value) : [...list, value]);
   const ready = agent.trim() !== '' && scopes.length > 0 && (all || chosen.length > 0);
   const make = () => run(async () => {
@@ -118,7 +119,7 @@ function MakeKey({ me, agents, onCancel, onMade }: { me: Me; agents: Agent[]; on
     <form class="card form" onSubmit={(event) => { event.preventDefault(); if (ready) make(); }}>
       <h2>{t('newKey')}</h2>
       <label class="muted" for={`${id}-a`}>{t('agentName')}</label>
-      <input id={`${id}-a`} class="field" dir="auto" maxLength={60} list={`${id}-names`} autocomplete="off" value={agent} onInput={(event) => setAgent(event.currentTarget.value)} />
+      <input ref={first} id={`${id}-a`} class="field" dir="auto" maxLength={60} list={`${id}-names`} autocomplete="off" value={agent} onInput={(event) => setAgent(event.currentTarget.value)} />
       <datalist id={`${id}-names`}>{agents.map((a) => <option key={a.id} value={a.name} />)}</datalist>
       <label class="muted" for={`${id}-l`}>{t('keyLabel')}</label>
       <input id={`${id}-l`} class="field" dir="auto" maxLength={60} autocomplete="off" value={label} onInput={(event) => setLabel(event.currentTarget.value)} />
@@ -173,12 +174,13 @@ function Projects() {
 }
 
 function ProjectForm({ project, onSave }: { project?: ProjectName; onSave: (slug: string, name: { en: string; ar: string }) => Promise<void> }) {
-  const t = useText(), { lang } = useSettings(), id = useId(), [busy, run] = useBusy(), [problem, setProblem] = useState<Problem | null>(null), [done, setDone] = useState(false), [open, setOpen] = useState(false), box = useRef<HTMLDivElement>(null);
+  const t = useText(), { lang } = useSettings(), id = useId(), [busy, run] = useBusy(), [problem, setProblem] = useState<Problem | null>(null), [done, setDone] = useState(false), [open, setOpen] = useState(false), box = useRef<HTMLDivElement>(null), first = useRef<HTMLInputElement>(null), wasOpen = useRef(false);
   const [slug, setSlug] = useState(project?.slug ?? ''), [en, setEn] = useState(project?.name.en ?? ''), [ar, setAr] = useState(project?.name.ar ?? '');
+  useEffect(() => { if (open) first.current?.focus(); else if (wasOpen.current) box.current?.focus(); wasOpen.current = open; }, [open]);
   const ready = /^[a-z0-9][a-z0-9-]{0,79}$/.test(slug) && en.trim() !== '' && ar.trim() !== '' && (!project || en.trim() !== project.name.en || ar.trim() !== project.name.ar);
   const save = () => run(async () => {
     setProblem(null); setDone(false);
-    try { await onSave(slug, { en: en.trim(), ar: ar.trim() }); setDone(true); setOpen(false); if (!project) { setSlug(''); setEn(''); setAr(''); } box.current?.focus(); } catch (error) { setProblem(error instanceof CallError && error.status === 409 ? 'taken' : problemIn(error)); }
+    try { await onSave(slug, { en: en.trim(), ar: ar.trim() }); setDone(true); setOpen(false); if (!project) { setSlug(''); setEn(''); setAr(''); } } catch (error) { setProblem(error instanceof CallError && error.status === 409 ? 'taken' : problemIn(error)); }
   });
   if (!open) {
     return (
@@ -191,8 +193,8 @@ function ProjectForm({ project, onSave }: { project?: ProjectName; onSave: (slug
   return (
     <form class="card form" onSubmit={(event) => { event.preventDefault(); if (ready) save(); }}>
       <h2>{project ? <bdi>{project.name[lang]}</bdi> : t('newProject')}</h2>
-      {!project && <><label class="muted" for={`${id}-s`}>{t('slug')}</label><input id={`${id}-s`} class="field" dir="ltr" maxLength={80} autocomplete="off" autocapitalize="none" value={slug} onInput={(event) => setSlug(event.currentTarget.value.toLowerCase())} /><p class="muted">{t('slugHelp')}</p></>}
-      <label class="muted" for={`${id}-e`}>{t('nameEn')}</label><input id={`${id}-e`} class="field" lang="en" dir="ltr" maxLength={80} autocomplete="off" value={en} onInput={(event) => setEn(event.currentTarget.value)} />
+      {!project && <><label class="muted" for={`${id}-s`}>{t('slug')}</label><input ref={first} id={`${id}-s`} class="field" dir="ltr" maxLength={80} autocomplete="off" autocapitalize="none" value={slug} onInput={(event) => setSlug(event.currentTarget.value.toLowerCase())} /><p class="muted">{t('slugHelp')}</p></>}
+      <label class="muted" for={`${id}-e`}>{t('nameEn')}</label><input {...(project && { ref: first })} id={`${id}-e`} class="field" lang="en" dir="ltr" maxLength={80} autocomplete="off" value={en} onInput={(event) => setEn(event.currentTarget.value)} />
       <label class="muted" for={`${id}-r`}>{t('nameAr')}</label><input id={`${id}-r`} class="field" lang="ar" dir="rtl" maxLength={80} autocomplete="off" value={ar} onInput={(event) => setAr(event.currentTarget.value)} />
       {problem && <Failure>{t(problem)}</Failure>}
       <button class="primary" type="submit" disabled={!ready || busy}>{t('save')}</button>

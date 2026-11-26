@@ -126,7 +126,9 @@ test('the owner adds and renames a project', async ({ page }) => {
   await enterOwner(page.context());
   try {
     await page.goto(`${APP}/settings/projects`);
-    await page.getByRole('button', { name: 'New project' }).click();
+    await page.getByRole('button', { name: 'New project' }).focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByLabel('Address')).toBeFocused();
     await page.getByLabel('Address').fill('One');
     await page.getByLabel('Name in English').fill('Garden app');
     await page.getByLabel('Name in Arabic').fill('تطبيق الحديقة');
