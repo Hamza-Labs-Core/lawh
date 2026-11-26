@@ -163,4 +163,80 @@ describe('connect an agent (/v1/connect, /app-api/connect/*, /connect.md, /lawh.
     expect((await exports.default.fetch(new Request('https://lawh.example.com/connect.md'))).status).toBe(404);
     expect((await exports.default.fetch(new Request('https://lawh.example.com/lawh.mjs'))).status).toBe(404);
   });
+
+  it('returns 404 for malformed connect IDs and expired refused requests, enforces 5 wrong codes per 10 min across look/answer, enforces copy-wide start cap, and enforces 100-key cap atomically', async () => {
+    // 1) Malformed connect ID returns 404 (not 401).
+    expect(await apiCode(await agent('/v1/connect/not-a-valid-id'))).toEqual([404, 'not_found']);
+
+    // 2) Refused request returns 403 while in date, then 404 once expired (before cleanup deletes it).
+    const secret = randomToken();
+    const refused = await json(await agent('/v1/connect', {
+      method: 'POST',
+      json: { secretSha256: await sha256Hex(secret), client: 'codex', machine: 'box' },
+    }));
+    const refusedKey = `lawh_${refused.id}_${secret}`;
+    const { cookie: owner } = await enter('o');
+    expect((await api('POST', '/connect/answer', { cookie: owner, body: { id: refused.id, code: refused.code, refuse: true } })).status).toBe(204);
+    expect(await apiCode(await agent(`/v1/connect/${refused.id}`, { token: refusedKey }))).toEqual([403, 'forbidden']);
+
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const future = Date.now() + 601_000;
+    vi.setSystemTime(future);
+    expect(await apiCode(await agent(`/v1/connect/${refused.id}`, { token: refusedKey }))).toEqual([404, 'not_found']);
+    vi.useRealTimers();
+
+    // 3) 5 wrong codes in 10 minutes across /connect/look and /connect/answer -> 6th attempt gets 429 even with a valid code.
+    const validSecret = randomToken();
+    const validReq = await json(await agent('/v1/connect', {
+      method: 'POST',
+      json: { secretSha256: await sha256Hex(validSecret), client: 'claude', machine: 'mac' },
+    }));
+    const unlimited = { limit: async () => ({ success: true }) };
+    for (let i = 0; i < 3; i++) {
+      expect(await code(await api('POST', '/connect/look', { cookie: owner, body: { code: 'BBBB-CCCC' } }, { CODE_LIMIT: unlimited }))).toEqual([404, 'not_found']);
+    }
+    for (let i = 0; i < 2; i++) {
+      expect(await code(await api('POST', '/connect/answer', { cookie: owner, body: { id: validReq.id, code: 'BBBB-DDDD', refuse: true } }, { CODE_LIMIT: unlimited }))).toEqual([404, 'not_found']);
+    }
+    // 6th call (even with the valid code!) is blocked for 10 minutes.
+    expect(await code(await api('POST', '/connect/look', { cookie: owner, body: { code: validReq.code } }, { CODE_LIMIT: unlimited }))).toEqual([429, 'rate_limited']);
+    expect(await code(await api('POST', '/connect/answer', { cookie: owner, body: { id: validReq.id, code: validReq.code, refuse: true } }, { CODE_LIMIT: unlimited }))).toEqual([429, 'rate_limited']);
+
+    // A fresh session is not blocked by the previous session's wrong guesses.
+    const { cookie: owner2 } = await enter('o');
+    expect((await api('POST', '/connect/look', { cookie: owner2, body: { code: validReq.code } }, { CODE_LIMIT: unlimited })).status).toBe(200);
+
+    // 4) Copy-wide D1 start limit blocks requests across distinct IPs once bucket hits 60/min.
+    const bucket = String(Math.floor(Date.now() / 60_000));
+    await sql(
+      `INSERT INTO idempotency(key_id, idem_key, request_sha256, status, response_json, expires_at)
+       VALUES('rl:connect-start', '${bucket}', '', 60, '{}', ${Date.now() + 120_000})
+       ON CONFLICT(key_id, idem_key) DO UPDATE SET status = 60`,
+    );
+    expect(await apiCode(await agent('/v1/connect', {
+      method: 'POST',
+      headers: { 'CF-Connecting-IP': '198.51.100.77' },
+      json: { secretSha256: 'b'.repeat(64), client: 'claude', machine: 'other' },
+    }))).toEqual([429, 'rate_limited']);
+
+    // 5) Atomic 100-key cap: two concurrent approvals at 99 keys allow only 100 total keys.
+    await sql("DELETE FROM idempotency WHERE key_id = 'rl:connect-start'");
+    const liveCount = await count('agent_keys', 'revoked_at IS NULL AND expires_at > ' + Date.now() + " AND agent_id IN (SELECT id FROM agents WHERE member_id='o')");
+    const farFuture = Date.now() + 86_400_000;
+    for (let i = liveCount; i < 99; i++) {
+      await sql(
+        `INSERT INTO agent_keys(id, agent_id, secret_hmac, scopes_json, all_projects, created_at, expires_at)
+         VALUES('key_CAP${String(i).padStart(23, '0')}', 'ao', '${'c'.repeat(64)}', '["pages:read"]', 1, 1, ${farFuture})`,
+      );
+    }
+    const rA = await json(await agent('/v1/connect', { method: 'POST', json: { secretSha256: await sha256Hex(randomToken()), client: 'claude', machine: 'm1' } }));
+    const rB = await json(await agent('/v1/connect', { method: 'POST', json: { secretSha256: await sha256Hex(randomToken()), client: 'codex', machine: 'm2' } }));
+    const [resA, resB] = await Promise.all([
+      api('POST', '/connect/answer', { cookie: owner2, body: { id: rA.id, code: rA.code, agentName: 'cap-a', projects: ['one'] } }, { CODE_LIMIT: unlimited }),
+      api('POST', '/connect/answer', { cookie: owner2, body: { id: rB.id, code: rB.code, agentName: 'cap-b', projects: ['one'] } }, { CODE_LIMIT: unlimited }),
+    ]);
+    expect([resA.status, resB.status].sort()).toEqual([200, 409]);
+    const finalCount = await count('agent_keys', 'revoked_at IS NULL AND expires_at > ' + Date.now() + " AND agent_id IN (SELECT id FROM agents WHERE member_id='o')");
+    expect(finalCount).toBe(100);
+  });
 });

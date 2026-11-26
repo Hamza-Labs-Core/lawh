@@ -3,11 +3,12 @@ import type { AppEnv } from '../../shared/env';
 import { ApiError, invalid, notFound } from '../../shared/errors';
 import { newId } from '../../shared/ids';
 import { origins } from '../../shared/origin';
-import { isOn } from '../../shared/switches';
 import { keyHmac, projectJson, usableProjects } from './auth';
 import { onlyKeys, readJson, text } from './body';
 
 const TEN_MINUTES = 600_000;
+const MINUTE = 60_000;
+const COPY_START_LIMIT_PER_MIN = 60;
 const LETTERS = 'BCDFGHJKLMNPQRSTVWXZ';
 const KEY_HEADER = /^Bearer lawh_(key_[0-9A-HJKMNP-TV-Z]{26})_([A-Za-z0-9_-]{43})$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -50,6 +51,17 @@ export async function startConnect(request: Request, env: AppEnv): Promise<Respo
   const machine = singleLine(body.machine, 'machine', 60);
 
   const now = Date.now(), expiresAt = now + TEN_MINUTES;
+  const bucket = Math.floor(now / MINUTE);
+  const copyRow = await env.DB.prepare(
+    `INSERT INTO idempotency(key_id, idem_key, request_sha256, status, response_json, expires_at)
+     VALUES('rl:connect-start', ?1, '', 1, '{}', ?2)
+     ON CONFLICT(key_id, idem_key) DO UPDATE SET status = status + 1, expires_at = ?2
+     RETURNING status`,
+  ).bind(String(bucket), (bucket + 2) * MINUTE).first<{ status: number }>();
+  if ((copyRow?.status ?? 0) > COPY_START_LIMIT_PER_MIN) {
+    throw new ApiError('rate_limited', 'Too many requests.');
+  }
+
   const id = newId('key', now);
   const code = newCode();
   const [codeHmac, secretHmac] = await Promise.all([
@@ -107,20 +119,31 @@ export async function getConnect(request: Request, env: AppEnv, id: string): Pro
   const now = Date.now();
   const computed = await keyHmac(env, id, secret);
 
+  // Read live key, teams switch, and pending connect row in one atomic D1 batch snapshot so an approval
+  // committing mid-poll can never yield a missing key alongside an already-answered connect row.
+  const [keyRes, teamsRes, connectRes] = await env.DB.batch([
+    env.DB.prepare(
+      `SELECT k.secret_hmac, k.scopes_json, k.all_projects, k.expires_at, k.revoked_at,
+              k.agent_id, a.name AS agent_name, a.disabled_at, a.member_id, m.role, m.removed_at
+       FROM agent_keys k JOIN agents a ON a.id = k.agent_id JOIN members m ON m.id = a.member_id
+       WHERE k.id = ?`,
+    ).bind(id),
+    env.DB.prepare("SELECT value_json FROM settings WHERE key = 'teams'"),
+    env.DB.prepare('SELECT secret_hmac, expires_at, answered_at, agent_id FROM agent_connects WHERE id = ?').bind(id),
+  ]);
+
+  const keyRow = (keyRes!.results[0] as LiveKeyRow | undefined) ?? null;
+  const teamsOn = ((teamsRes!.results[0] as { value_json: string } | undefined)?.value_json) === 'true';
+  const row = (connectRes!.results[0] as ConnectRow | undefined) ?? null;
+
   // 1) Check live key first (openapi.yaml & security.md §5).
-  const keyRow = await env.DB.prepare(
-    `SELECT k.secret_hmac, k.scopes_json, k.all_projects, k.expires_at, k.revoked_at,
-            k.agent_id, a.name AS agent_name, a.disabled_at, a.member_id, m.role, m.removed_at
-     FROM agent_keys k JOIN agents a ON a.id = k.agent_id JOIN members m ON m.id = a.member_id
-     WHERE k.id = ?`,
-  ).bind(id).first<LiveKeyRow>();
   const keySame = equalInConstantTime(computed, keyRow?.secret_hmac ?? '0'.repeat(64));
   if (keyRow && keySame) {
     if (keyRow.revoked_at !== null || keyRow.disabled_at !== null || keyRow.removed_at !== null || keyRow.expires_at <= now) {
       throw notFound();
     }
     const isOwner = keyRow.role === 'owner';
-    if (!isOwner && !(await isOn(env.DB, 'teams'))) throw new ApiError('feature_off', 'This feature is off.');
+    if (!isOwner && !teamsOn) throw new ApiError('feature_off', 'This feature is off.');
     const caller = {
       keyId: id,
       agentId: keyRow.agent_id,
@@ -142,15 +165,13 @@ export async function getConnect(request: Request, env: AppEnv, id: string): Pro
     });
   }
 
-  // 2) Otherwise check the pending/refused connection request.
-  const row = await env.DB.prepare('SELECT secret_hmac, expires_at, answered_at, agent_id FROM agent_connects WHERE id = ?')
-    .bind(id).first<ConnectRow>();
+  // 2) Otherwise check the pending/refused connection request (expired requests always return 404).
   const connectSame = equalInConstantTime(computed, row?.secret_hmac ?? '0'.repeat(64));
   if (!row || !connectSame) throw notFound();
+  if (row.expires_at <= now) throw notFound();
   if (row.answered_at !== null) {
     if (row.agent_id === null) throw new ApiError('forbidden', 'Connection request was refused.');
     throw notFound();
   }
-  if (row.expires_at <= now) throw notFound();
   return new Response(null, { status: 202 });
 }

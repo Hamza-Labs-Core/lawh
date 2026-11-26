@@ -24,16 +24,25 @@ function useKeychain() {
   return !process.env.LAWH_STORE && process.env.LAWH_NO_KEYCHAIN !== '1' && (process.platform === 'darwin' || process.platform === 'linux');
 }
 
+function readDarwinKeychainRaw() {
+  return execFileSync('security', ['find-generic-password', '-s', SERVICE, '-a', ACCOUNT, '-w'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString('utf8').trim();
+}
+
+function decodeKeychainPayload(raw) {
+  if (!raw) return null;
+  if (raw.startsWith('b64:')) return JSON.parse(Buffer.from(raw.slice(4), 'base64').toString('utf8'));
+  return JSON.parse(raw);
+}
+
 function readKeychain() {
   if (!useKeychain()) return null;
   try {
     if (process.platform === 'darwin') {
-      const out = execFileSync('security', ['find-generic-password', '-s', SERVICE, '-a', ACCOUNT, '-w'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString('utf8').trim();
-      return JSON.parse(out);
+      return decodeKeychainPayload(readDarwinKeychainRaw());
     }
     if (process.platform === 'linux') {
       const out = execFileSync('secret-tool', ['lookup', 'service', SERVICE, 'account', ACCOUNT], { stdio: ['ignore', 'pipe', 'ignore'] }).toString('utf8').trim();
-      return out ? JSON.parse(out) : null;
+      return decodeKeychainPayload(out);
     }
   } catch {
     return null;
@@ -46,8 +55,13 @@ function writeKeychain(data) {
   const payload = JSON.stringify(data);
   try {
     if (process.platform === 'darwin') {
-      execFileSync('security', ['add-generic-password', '-U', '-s', SERVICE, '-a', ACCOUNT, '-w', payload], { stdio: 'ignore' });
-      return true;
+      // Pass payload via stdin (`security -i`) so credentials never appear in subprocess argv.
+      const encoded = `b64:${Buffer.from(payload, 'utf8').toString('base64')}`;
+      execFileSync('security', ['-i'], {
+        input: `add-generic-password -U -s ${SERVICE} -a ${ACCOUNT} -w ${encoded}\n`,
+        stdio: ['pipe', 'ignore', 'ignore'],
+      });
+      return readDarwinKeychainRaw() === encoded;
     }
     if (process.platform === 'linux') {
       execFileSync('secret-tool', ['store', '--label=Lawh agents', 'service', SERVICE, 'account', ACCOUNT], { input: payload, stdio: ['pipe', 'ignore', 'ignore'] });
@@ -85,7 +99,7 @@ function writeStore(store) {
 
 function saveEntry(entry) {
   const store = readStore();
-  const next = store.agents.filter((a) => !(a.url === entry.url && a.name === entry.name));
+  const next = store.agents.filter((a) => !(a.url === entry.url && a.name === entry.name && a.client === entry.client));
   next.push(entry);
   writeStore({ agents: next });
 }
@@ -134,11 +148,11 @@ function pickCredentials(flags) {
   let matches = list;
   if (wantedUrl) matches = matches.filter((a) => a.url === wantedUrl);
   if (wantedName) matches = matches.filter((a) => a.name === wantedName);
-  else if (wantedClient) matches = matches.filter((a) => a.client === wantedClient);
+  if (wantedClient && (!wantedName || matches.length > 1)) matches = matches.filter((a) => a.client === wantedClient);
 
   if (matches.length === 1) return matches[0];
   if (matches.length === 0) die(`No matching agent found. Saved agents: ${list.map((a) => `${a.name} (${a.client}, ${a.url})`).join(', ')}`);
-  die(`Multiple agents match (${matches.map((a) => a.name).join(', ')}). Pass --as <name> or set LAWH_AGENT.`);
+  die(`Multiple agents match (${matches.map((a) => `${a.name} (${a.client}, ${a.url})`).join(', ')}). Pass --as <name>, --client <program>, or --url <url>.`);
 }
 
 async function apiRequest(cred, method, path, { body, rawBody, idem = false, headers = {} } = {}) {
@@ -171,6 +185,7 @@ function openBrowser(url) {
     const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
     const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
     const child = spawn(cmd, args, { detached: true, stdio: 'ignore' });
+    child.on('error', () => { /* headless or missing opener */ });
     child.unref();
   } catch { /* headless */ }
 }
@@ -379,7 +394,30 @@ Commands:
         const page = await apiRequest(cred, 'GET', `/v1/projects/${encodeURIComponent(project)}/pages/${encodeURIComponent(slug)}`);
         version = String(page.currentVersion);
       }
-      const bytes = await apiRequest(cred, 'GET', `/v1/projects/${encodeURIComponent(project)}/pages/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}/file?path=${encodeURIComponent(flags.file)}`);
+      const fileUrl = `${cred.url}/v1/projects/${encodeURIComponent(project)}/pages/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}/file?path=${encodeURIComponent(flags.file)}`;
+      const res = await fetch(fileUrl, { headers: { Authorization: `Bearer ${cred.key}` } });
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try { const err = await res.json(); if (err?.message) detail = `${err.code || res.status}: ${err.message}`; } catch { /* ignore */ }
+        die(detail);
+      }
+      const bytes = Buffer.from(await res.arrayBuffer());
+      if (asJson) {
+        const contentType = res.headers.get('Content-Type') || 'application/octet-stream';
+        const textLike = /^(?:text\/|application\/(?:json|javascript|xml|xhtml\+xml|svg\+xml))/.test(contentType);
+        const encoding = textLike ? 'utf8' : 'base64';
+        printOut({
+          project,
+          slug,
+          version: Number(version),
+          path: flags.file,
+          contentType,
+          bytes: bytes.byteLength,
+          encoding,
+          content: bytes.toString(encoding),
+        }, true, '');
+        return;
+      }
       process.stdout.write(bytes);
       return;
     }
