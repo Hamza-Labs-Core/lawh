@@ -312,7 +312,7 @@ describe('projects', () => {
   it('the owner adds and names them', async () => {
     const { cookie } = await enter('o');
     const response = await add(cookie, { slug: 'garden', name: { en: ' Garden ', ar: 'الحديقة' } });
-    expect([response.status, await response.json()]).toEqual([201, { slug: 'garden', name: { en: 'Garden', ar: 'الحديقة' }, level: 5 }]);
+    expect([response.status, await response.json()]).toEqual([201, { slug: 'garden', name: { en: 'Garden', ar: 'الحديقة' }, level: 5, answersNeeded: 1, answerers: 1 }]);
     expect(await code(await add(cookie, { slug: 'garden', name: { en: 'G', ar: 'ح' } }))).toEqual([409, 'conflict']);
     expect((await api('PATCH', '/projects/garden', { cookie, body: { name: { en: 'Yard', ar: 'الفناء' } } })).status).toBe(200);
     expect((await json(await api('GET', '/projects', { cookie }))).items.find((p: { slug: string }) => p.slug === 'garden').name).toEqual({ en: 'Yard', ar: 'الفناء' });
