@@ -113,6 +113,7 @@ describe('every route and every kind of key', () => {
     'POST reply': () => `/v1/comments/cmt_${'0'.repeat(26)}/replies`,
     'GET decisions': () => '/v1/decisions',
     'GET decision': () => `/v1/decisions/dec_${'0'.repeat(26)}`,
+    'GET ^/v1/events$': () => '/v1/events?project=one',
   };
   const paths = () => Object.entries(PATHS).map(([name, make]) => [name.split(' ')[0]!, make({ upload: 'upl_01AAAAAAAAAAAAAAAAAAAAAAAA', hash: 'a'.repeat(64) })] as const);
 

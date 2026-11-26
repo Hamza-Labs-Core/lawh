@@ -4,6 +4,7 @@ import { findPage } from '../api/pages';
 import { answeredStatement, answerers, countInboxStatement, type Decision, decisionJson, inboxStatement, readDecisions } from '../decisions/read';
 import { encodeCursor, pageLimit, readCursor } from '../pages/list';
 import { statusStatements } from '../search';
+import { dispatchOutbox } from '../webhooks/deliver';
 import { levelOn, openProject, visibleProjects } from './access';
 import type { SignedIn } from './router';
 
@@ -111,6 +112,7 @@ export async function answerDecision(ctx: SignedIn): Promise<Response> {
     if (String(error).includes('answer not allowed')) throw new ApiError('forbidden', 'Only deciders answer.');
     throw error;
   }
+  ctx.ctx.waitUntil(dispatchOutbox(env).catch(() => undefined));
   const { decision, level } = await find(ctx, 1, true);
   return Response.json({ ...seen(decision, level), answerers: decision.row.answers_needed > 1 ? await answerers(env, decision.row.project_id) : null });
 }
