@@ -6,7 +6,7 @@ import { normalize, token, words } from './text';
 // The page's project, status and tags, from the database itself, so it is right whatever happened in the same moment.
 const SCOPE = `(SELECT 'p' || lower(hex(p.project_id)) || ' s' || lower(hex(p.status)) || COALESCE((SELECT group_concat(' t' || lower(hex(t.tag)), '') FROM page_tags t WHERE t.page_id = p.id), '') FROM pages p WHERE p.id = ?1)`;
 const ROW = '(SELECT rowid FROM pages_fts_map WHERE page_id = ?1)';
-const NEXT = '(SELECT MAX(rowid) + 1 FROM pages_fts_map)';
+const STAGED = 'EXISTS (SELECT 1 FROM pages_fts WHERE rowid = -1)';
 
 export interface Indexed { title: string; summary: string; tags: string[] }
 
@@ -20,21 +20,31 @@ export function indexStatements(env: AppEnv, pageId: string, { title, summary, t
   ];
 }
 
-const move = (env: AppEnv, pageId: string): D1PreparedStatement =>
-  // Only when the row before it was moved.
-  env.DB.prepare(`UPDATE pages_fts_map SET rowid = ${NEXT} WHERE page_id = ?1 AND NOT EXISTS (SELECT 1 FROM pages_fts f WHERE f.rowid = pages_fts_map.rowid) AND EXISTS (SELECT 1 FROM pages_fts f WHERE f.rowid = ${NEXT})`).bind(pageId);
+/** Re-inserts through pages_fts_map's AUTOINCREMENT so rowids never move backwards or reuse deleted ones, while keeping body. */
+function finishMove(env: AppEnv, pageId: string): D1PreparedStatement[] {
+  return [
+    env.DB.prepare(`DELETE FROM pages_fts WHERE rowid = ${ROW} AND ${STAGED}`).bind(pageId),
+    env.DB.prepare(`INSERT OR REPLACE INTO pages_fts_map(page_id) SELECT ?1 WHERE ${STAGED}`).bind(pageId),
+    env.DB.prepare(`INSERT INTO pages_fts(rowid, scope, title, summary, tags, body) SELECT ${ROW}, scope, title, summary, tags, body FROM pages_fts WHERE rowid = -1`).bind(pageId),
+    env.DB.prepare('DELETE FROM pages_fts WHERE rowid = -1'),
+  ];
+}
 
 /** New details of a page whose files stay. */
 export function detailStatements(env: AppEnv, pageId: string, { title, summary, tags }: Indexed): D1PreparedStatement[] {
   return [
-    env.DB.prepare(`UPDATE pages_fts SET rowid = ${NEXT}, scope = ${SCOPE}, title = ?2, summary = ?3, tags = ?4 WHERE rowid = ${ROW}`).bind(pageId, normalize(title), normalize(summary), normalize(tags.join(' '))),
-    move(env, pageId),
+    env.DB.prepare(`INSERT INTO pages_fts(rowid, scope, title, summary, tags, body) SELECT -1, ${SCOPE}, ?2, ?3, ?4, body FROM pages_fts WHERE rowid = ${ROW}`)
+      .bind(pageId, normalize(title), normalize(summary), normalize(tags.join(' '))),
+    ...finishMove(env, pageId),
   ];
 }
 
 /** A new status, if the statement before these changed a row. */
 export function statusStatements(env: AppEnv, pageId: string): D1PreparedStatement[] {
-  return [env.DB.prepare(`UPDATE pages_fts SET rowid = ${NEXT}, scope = ${SCOPE} WHERE rowid = ${ROW} AND changes() = 1`).bind(pageId), move(env, pageId)];
+  return [
+    env.DB.prepare(`INSERT INTO pages_fts(rowid, scope, title, summary, tags, body) SELECT -1, ${SCOPE}, title, summary, tags, body FROM pages_fts WHERE rowid = ${ROW} AND changes() = 1`).bind(pageId),
+    ...finishMove(env, pageId),
+  ];
 }
 
 export interface Filters { projects: string[] | null; status: string | null; tag: string | null }

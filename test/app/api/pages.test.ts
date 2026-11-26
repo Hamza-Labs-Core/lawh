@@ -204,7 +204,7 @@ describe('queries', () => {
       for (const { detail } of results) {
         // SQLite emits a guarded FkIfZero branch on webhook_deliveries(event_seq) for INSERT INTO events SELECT; never reached with AUTOINCREMENT.
         if (query.startsWith('INSERT INTO events(') && detail === 'SCAN webhook_deliveries USING INDEX webhook_deliveries_status') continue;
-        expect(/^SCAN (?!j\b|json_each\b|CONSTANT ROW|\w+ VIRTUAL TABLE INDEX)/.test(detail) || detail.includes('TEMP B-TREE'), `${detail} | ${query}`).toBe(false);
+        expect(/^SCAN (?!j\b|json_each\b|CONSTANT ROW|\w+(?: EXISTS)? VIRTUAL TABLE INDEX)/.test(detail) || detail.includes('TEMP B-TREE'), `${detail} | ${query}`).toBe(false);
       }
     }
   });

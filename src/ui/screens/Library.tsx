@@ -105,33 +105,37 @@ function Choice({ label, value, options, onChange }: { label: string; value: str
 
 /** Pages that match, live while typing. One is opened, or Enter shows all in the list. */
 function SearchBox({ filters, onSearch }: { filters: Filters; onSearch: (q: string) => void }) {
-  const t = useText(), { lang } = useSettings(), id = useId(), [text, setText] = useState(filters.q), [items, setItems] = useState<PageItem[] | null>(null), [open, setOpen] = useState(false), [at, setAt] = useState(-1);
-  const box = useRef<HTMLFormElement>(null), { project, status, tag } = filters, now = text.trim();
+  const t = useText(), { lang } = useSettings(), id = useId(), [text, setText] = useState(filters.q), [found, setFound] = useState<{ key: string; items: PageItem[] } | null>(null), [open, setOpen] = useState(false), [at, setAt] = useState(-1);
+  const box = useRef<HTMLFormElement>(null), { project, status, tag } = filters, now = text.trim(), key = queryOf({ q: now, project, status, tag });
+  const items = found?.key === key ? found.items : null;
   // Back and "Clear filters" change the address, and the field follows it.
-  useEffect(() => { setText(filters.q); setItems(null); setAt(-1); }, [filters.q]);
+  useEffect(() => { setText(filters.q); setFound(null); setAt(-1); }, [filters.q]);
   useEffect(() => { if (at >= 0) document.getElementById(`${id}-${at}`)?.scrollIntoView({ block: 'nearest' }); }, [at]);
   useEffect(() => {
-    setItems(null); setAt(-1);
-    if (!open || now === '') return;
+    if (!open || now === '' || found?.key === key) return;
     const stop = new AbortController();
     const timer = setTimeout(() => {
-      call<Listed<PageItem>>('GET', `/pages?${queryOf({ q: now, project, status, tag })}&limit=8`, undefined, stop.signal).then((r) => setItems(r.items), () => undefined);
+      call<Listed<PageItem>>('GET', `/pages?${key}&limit=8`, undefined, stop.signal).then((r) => { setFound({ key, items: r.items }); setAt(-1); }, () => undefined);
     }, 150);
     return () => { clearTimeout(timer); stop.abort(); };
-  }, [now, project, status, tag, open]);
+  }, [key, now, open, found?.key]);
   const show = open && now !== '' && items !== null;
-  const search = () => { setOpen(false); if (now !== filters.q) onSearch(now); };
+  const search = (value = now) => { setOpen(false); setAt(-1); if (value !== filters.q) onSearch(value); };
   return (
-    <form class="choice search" role="search" ref={box} onSubmit={(event) => { event.preventDefault(); const page = show ? items[at] : undefined; if (page) go(`/p/${page.project.slug}/${page.slug}`); else search(); }}
+    <form class="choice search" role="search" ref={box} onSubmit={(event) => { event.preventDefault(); const live = (box.current?.querySelector('input')?.value ?? text).trim(); const page = show && live === now ? items[at] : undefined; if (page) go(`/p/${page.project.slug}/${page.slug}`); else search(live); }}
       onFocusOut={(event) => { if (!box.current?.contains(event.relatedTarget as Node | null)) setOpen(false); }}>
       <label class="muted" for={id}>{t('search')}</label>
       <input id={id} class="field" enterkeyhint="search" role="combobox" aria-expanded={show} aria-controls={`${id}-list`} aria-autocomplete="list" aria-activedescendant={show && at >= 0 ? `${id}-${at}` : undefined}
         autocomplete="off" maxLength={100} dir="auto" placeholder={t('searchHint')} value={text}
-        onInput={(event) => { const next = event.currentTarget.value; setText(next); setOpen(true); if (next === '' && filters.q !== '') onSearch(''); }}
+        onInput={(event) => { const next = event.currentTarget.value; setText(next); setAt(-1); setOpen(true); if (next === '' && filters.q !== '') onSearch(''); }}
         onKeyDown={(event) => {
-          const n = show ? items.length : 0;
-          if (event.key === 'Escape' && show) { event.preventDefault(); setOpen(false); }
-          else if (n > 0 && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) { event.preventDefault(); setAt((at + (event.key === 'ArrowDown' ? 1 : n + (at < 0 ? 0 : -1))) % n); }
+          const n = items?.length ?? 0;
+          if (event.key === 'Escape' && show) { event.preventDefault(); setOpen(false); setAt(-1); }
+          else if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && now !== '') {
+            event.preventDefault();
+            if (!open) { setOpen(true); if (n > 0) setAt(event.key === 'ArrowDown' ? 0 : n - 1); }
+            else if (n > 0) setAt((at + (event.key === 'ArrowDown' ? 1 : n + (at < 0 ? 0 : -1))) % n);
+          }
         }} />
       <ul id={`${id}-list`} class="options" role="listbox" aria-label={t('search')} hidden={!show}>
         {items?.map((page, i) => (

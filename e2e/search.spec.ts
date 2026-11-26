@@ -54,8 +54,21 @@ test('no match is told, Escape closes the list, and a click opens a page', async
   await field(page).press('Escape');
   await expect(options(page).first()).toBeHidden();
   await expect(field(page)).toHaveValue('zzzz');
+  await field(page).press('ArrowDown');
+  await expect(options(page)).toHaveText(['No pages match these filters.']);
+  await field(page).press('Escape');
   await field(page).press('Enter');
   await expect(page.locator('.empty')).toContainText('No pages match these filters.');
+  await page.getByRole('button', { name: 'Clear filters' }).click();
+  await expect(field(page)).toHaveValue('');
+  await field(page).fill('photo');
+  await expect(options(page)).toHaveCount(1);
+  await field(page).press('ArrowDown');
+  await expect(options(page).first()).toHaveAttribute('aria-selected', 'true');
+  // Typing a new query and submitting at once searches the new text instead of opening the earlier match.
+  await field(page).fill('zzzz');
+  await field(page).press('Enter');
+  await expect(page).toHaveURL(`${APP}/?q=zzzz`);
   await page.getByRole('button', { name: 'Clear filters' }).click();
   await expect(field(page)).toHaveValue('');
   await field(page).fill('photo');

@@ -64,16 +64,18 @@ export async function listPageRows(env: AppEnv, url: URL, projects: Project[] | 
   const query = url.searchParams, limit = pageLimit(url), status = query.get('status');
   if (status !== null) oneOf(status, 'status', STATUSES);
   const tag = query.get('tag')?.trim().normalize('NFC') ?? null;
-  const after = (readCursor(url, ['number', 'string']) ?? [Number.MAX_SAFE_INTEGER, '']) as [number, string];
   const q = query.get('q');
   if (q !== null) {
     if ([...q].length > 100) throw invalid('q must be text of at most 100 characters.');
+    const before = readCursor(url, ['number'])?.[0] ?? null;
     const match = matchOf(q, { projects: projects && projects.map((p) => p.id), status, tag });
-    // At most 100 matches, so there is nothing to continue.
-    const found = match === null ? [] : (await env.DB.prepare(`SELECT p.* FROM pages_fts f CROSS JOIN pages_fts_map m ON m.rowid = f.rowid CROSS JOIN pages p ON p.id = m.page_id AND p.deleted_at IS NULL
-      WHERE pages_fts MATCH ? ORDER BY f.rowid DESC LIMIT ?`).bind(match, limit).all<PageRow>()).results;
-    return list(env, found, projects, null);
+    const found = match === null ? [] : (await env.DB.prepare(`SELECT p.*, f.rowid fts_rowid FROM pages_fts f CROSS JOIN pages_fts_map m ON m.rowid = f.rowid CROSS JOIN pages p ON p.id = m.page_id AND p.deleted_at IS NULL
+      WHERE pages_fts MATCH ?${before !== null ? ' AND f.rowid < ?' : ''} ORDER BY f.rowid DESC LIMIT ?`)
+      .bind(match, ...(before !== null ? [before] : []), limit + 1).all<PageRow & { fts_rowid: number }>()).results;
+    const more = found.length > limit, rows = found.slice(0, limit), last = rows.at(-1);
+    return list(env, rows, projects, more && last ? encodeCursor([last.fts_rowid]) : null);
   }
+  const after = (readCursor(url, ['number', 'string']) ?? [Number.MAX_SAFE_INTEGER, '']) as [number, string];
   const queries = (projects ?? [null]).map((project) => listIn(env, project, status, tag, after, limit + 1));
   let rows = queries.length === 0 ? [] : (await env.DB.batch<PageRow>(queries)).flatMap((r) => r.results);
   if (queries.length > 1) rows.sort((a, b) => b.updated_at - a.updated_at || (a.id < b.id ? 1 : -1));
