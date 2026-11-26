@@ -67,6 +67,13 @@ export async function setLiveSwitch(ctx: SignedIn): Promise<Response> {
     if (String(error).includes('malformed JSON')) throw new ApiError('forbidden', 'Only the owner can do this.');
     throw error;
   }
+  // When turning live pings off, immediately close all open project WebSockets so clients drop to 30s polling right away.
+  if (!body.on) {
+    const { results } = await env.DB.prepare("SELECT id FROM projects WHERE slug > '' ORDER BY slug LIMIT 1000").all<{ id: string }>();
+    await Promise.allSettled(
+      results.map((p) => env.LIVE.get(env.LIVE.idFromName(p.id)).fetch('https://live/close', { method: 'POST' })),
+    );
+  }
   return Response.json({ live: body.on });
 }
 

@@ -74,16 +74,26 @@ export class LiveProject extends DurableObject {
       return new Response(null, { status: 204 });
     }
 
+    if (request.method === 'POST' && url.pathname === '/close') {
+      for (const ws of this.ctx.getWebSockets()) {
+        this.closeSocket(ws, 1000, 'live_off');
+      }
+      await this.ctx.storage.deleteAlarm();
+      return new Response(null, { status: 204 });
+    }
+
     if (request.method === 'GET' && url.pathname === '/connect') {
       if ((request.headers.get('Upgrade') ?? '').toLowerCase() !== 'websocket') {
         return errorResponse('invalid', 'WebSocket upgrade required.');
       }
       const keyId = request.headers.get('X-Lawh-Key-Id')?.trim() ?? '';
       if (!keyId) return errorResponse('unauthorized', 'Missing key id.');
-      const requestedExp = Number(request.headers.get('X-Lawh-Expires-At') ?? 0);
-      const expiresAt = Number.isFinite(requestedExp) && requestedExp > now
-        ? Math.min(requestedExp, now + MAX_CONNECTION_MS)
-        : now + MAX_CONNECTION_MS;
+      const rawExp = request.headers.get('X-Lawh-Expires-At');
+      const requestedExp = rawExp === null ? NaN : Number(rawExp);
+      if (!Number.isSafeInteger(requestedExp) || requestedExp <= now) {
+        return errorResponse('unauthorized', 'Ticket or key expired.');
+      }
+      const expiresAt = Math.min(requestedExp, now + MAX_CONNECTION_MS);
 
       // Enforce at most 5 active connections per key in one project, pruning any expired ones first.
       const existing = this.ctx.getWebSockets(`key:${keyId}`);
