@@ -132,6 +132,7 @@ export function validateProjectSlug(value) {
 export function generateAppWranglerConfig(cfg) {
   const config = {
     name: cfg.workers.app,
+    account_id: cfg.resources.accountId,
     main: 'src/app/index.ts',
     send_metrics: false,
     compatibility_date: '2026-11-10',
@@ -191,6 +192,7 @@ export function generateAppWranglerConfig(cfg) {
 export function generateContentWranglerConfig(cfg) {
   const config = {
     name: cfg.workers.content,
+    account_id: cfg.resources.accountId,
     main: 'src/content/index.ts',
     send_metrics: false,
     compatibility_date: '2026-11-10',

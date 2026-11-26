@@ -19,8 +19,8 @@ export const isNotFoundError = (err) => err instanceof CloudflareApiError && err
 
 export const isSecretsStoreUnavailable = (err) =>
   err instanceof CloudflareApiError &&
-  (err.status === 403 || err.status === 404 || err.status === 429 ||
-    /limit|quota|access|entitlement|not enabled|not available|permission/i.test(err.message));
+  (err.status === 403 || err.status === 404 || err.status === 409 || err.status === 429 ||
+    /limit|quota|access|entitlement|not enabled|not available|permission|already exists/i.test(err.message));
 
 /** Reads CLOUDFLARE_API_TOKEN or Wrangler's saved OAuth token. */
 export function readCloudflareToken(env = process.env, homeDir = homedir()) {
@@ -44,7 +44,7 @@ export function readCloudflareToken(env = process.env, homeDir = homedir()) {
 export function createCloudflareClient({ apiBase = process.env.CLOUDFLARE_API_BASE_URL || DEFAULT_API_BASE, token, fetchImpl = fetch } = {}) {
   const base = apiBase.replace(/\/+$/, '');
 
-  async function req(method, path, { body, raw = false } = {}) {
+  async function req(method, path, { body, raw = false, withEnvelope = false } = {}) {
     const headers = { Authorization: `Bearer ${token}` };
     let payload;
     if (body !== undefined) {
@@ -77,6 +77,7 @@ export function createCloudflareClient({ apiBase = process.env.CLOUDFLARE_API_BA
         : `Cloudflare API ${method} ${path} failed (${res.status})`;
       throw new CloudflareApiError(msg, { status: res.status, code: errors[0]?.code ?? 0, errors });
     }
+    if (withEnvelope) return { result: parsed?.result ?? null, result_info: parsed?.result_info ?? null };
     return parsed?.result ?? null;
   }
 
@@ -84,6 +85,8 @@ export function createCloudflareClient({ apiBase = process.env.CLOUDFLARE_API_BA
     apiBase: base,
     listAccounts: () => req('GET', '/accounts'),
     getWorkersSubdomain: (accountId) => req('GET', `/accounts/${encodeURIComponent(accountId)}/workers/subdomain`),
+    createWorkersSubdomain: (accountId, subdomain) =>
+      req('PUT', `/accounts/${encodeURIComponent(accountId)}/workers/subdomain`, { body: { subdomain } }),
 
     // D1
     listDatabases: (accountId) => req('GET', `/accounts/${encodeURIComponent(accountId)}/d1/database`),
@@ -98,9 +101,17 @@ export function createCloudflareClient({ apiBase = process.env.CLOUDFLARE_API_BA
     listBuckets: (accountId) => req('GET', `/accounts/${encodeURIComponent(accountId)}/r2/buckets`),
     createBucket: (accountId, name) => req('POST', `/accounts/${encodeURIComponent(accountId)}/r2/buckets`, { body: { name } }),
     deleteBucket: (accountId, name) => req('DELETE', `/accounts/${encodeURIComponent(accountId)}/r2/buckets/${encodeURIComponent(name)}`),
-    listR2Objects: (accountId, bucket, cursor = '') => {
+    listR2Objects: async (accountId, bucket, cursor = '') => {
       const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
-      return req('GET', `/accounts/${encodeURIComponent(accountId)}/r2/buckets/${encodeURIComponent(bucket)}/objects${qs}`);
+      const { result, result_info } = await req(
+        'GET',
+        `/accounts/${encodeURIComponent(accountId)}/r2/buckets/${encodeURIComponent(bucket)}/objects${qs}`,
+        { withEnvelope: true },
+      );
+      const objects = Array.isArray(result) ? result : (result?.objects ?? []);
+      const nextCursor = result_info?.cursor ?? result?.cursor ?? '';
+      const truncated = Boolean(result_info?.is_truncated ?? result?.truncated ?? false);
+      return { objects, cursor: nextCursor, truncated };
     },
     getR2Object: (accountId, bucket, key) =>
       req('GET', `/accounts/${encodeURIComponent(accountId)}/r2/buckets/${encodeURIComponent(bucket)}/objects/${encodeURIComponent(key)}`, { raw: true }),
@@ -130,6 +141,15 @@ export function createCloudflareClient({ apiBase = process.env.CLOUDFLARE_API_BA
       }),
 
     // Workers versions, deployments, rollback, delete
+    workerExists: async (accountId, scriptName) => {
+      try {
+        await req('GET', `/accounts/${encodeURIComponent(accountId)}/workers/scripts/${encodeURIComponent(scriptName)}/deployments`);
+        return true;
+      } catch (err) {
+        if (isNotFoundError(err)) return false;
+        throw err;
+      }
+    },
     listWorkerDeployments: (accountId, scriptName) =>
       req('GET', `/accounts/${encodeURIComponent(accountId)}/workers/scripts/${encodeURIComponent(scriptName)}/deployments`),
     listWorkerVersions: (accountId, scriptName) =>

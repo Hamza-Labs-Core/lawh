@@ -72,16 +72,29 @@ export async function defaultDeployWorker({ root, cf, accountId, workerName, con
   const wrangler = join(root, 'node_modules/wrangler/bin/wrangler.js');
   execFileSync(process.execPath, [wrangler, 'deploy', '-c', join(root, configFile)], {
     cwd: root,
-    env: { ...env, WRANGLER_SEND_METRICS: 'false' },
+    env: { ...env, CLOUDFLARE_ACCOUNT_ID: accountId, WRANGLER_SEND_METRICS: 'false' },
     stdio: 'inherit',
   });
   return (await currentWorkerVersion(cf, accountId, workerName)) ?? `ver_${randomBytes(8).toString('hex')}`;
 }
 
-async function checkHost(fetchImpl, origin, label) {
+async function checkHost(fetchImpl, origin, label, kind) {
   const res = await fetchImpl(`${origin}/`, { method: 'GET', redirect: 'manual' });
-  if (res.status >= 500) {
-    throw new Error(`Health check failed for ${label} (${origin}): HTTP ${res.status}`);
+  const csp = res.headers.get('Content-Security-Policy') ?? '';
+  const nosniff = res.headers.get('X-Content-Type-Options') ?? '';
+  if (kind === 'app') {
+    if (res.status !== 200 || nosniff.toLowerCase() !== 'nosniff' || !csp) {
+      throw new Error(`Health check failed for ${label} (${origin}): expected Lawh app response (HTTP 200 with security headers), got HTTP ${res.status}`);
+    }
+    return res.status;
+  }
+  let code = '';
+  try {
+    const body = await res.json();
+    code = typeof body?.code === 'string' ? body.code : '';
+  } catch { /* non-JSON */ }
+  if (res.status !== 404 || !csp.includes('sandbox allow-scripts') || (code !== 'not_found' && code !== 'feature_off')) {
+    throw new Error(`Health check failed for ${label} (${origin}): expected Lawh content Worker response (HTTP 404 with sandbox CSP and Lawh error JSON), got HTTP ${res.status}`);
   }
   return res.status;
 }
@@ -147,9 +160,21 @@ export async function runInit({
       const pair = validateHostPair(appRaw, contentRaw, { allowLocalHttp });
       cfg.hosts = { mode: 'custom', app: pair.app, content: pair.content };
     } else if (!hostModeRaw || hostModeRaw === 'workers.dev') {
-      const sub = await cf.getWorkersSubdomain(accountId);
-      const subdomain = sub?.subdomain;
-      if (!subdomain) throw new Error('Cloudflare account does not have a workers.dev subdomain configured.');
+      let subdomain = '';
+      try {
+        const sub = await cf.getWorkersSubdomain(accountId);
+        subdomain = sub?.subdomain ?? '';
+      } catch (err) {
+        if (!isNotFoundError(err)) throw err;
+      }
+      if (!subdomain) {
+        const wanted = (await prompt('No workers.dev subdomain is registered yet. Enter a subdomain to register (or leave blank to abort): ')).trim().toLowerCase();
+        if (!wanted || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(wanted)) {
+          throw new Error('A valid workers.dev subdomain is required when using workers.dev hosts.');
+        }
+        const registered = await cf.createWorkersSubdomain(accountId, wanted);
+        subdomain = registered?.subdomain ?? wanted;
+      }
       const pair = validateHostPair(
         `https://${cfg.workers.app}.${subdomain}.workers.dev`,
         `https://${cfg.workers.content}.${subdomain}.workers.dev`,
@@ -188,30 +213,73 @@ export async function runInit({
     writeConfig(root, cfg);
   }
 
-  // Step 3: Create D1, R2, Queues, secrets, and write generated Wrangler configs (each persisted immediately for resume).
+  // Step 3: Create D1, R2, Queues, secrets, and write generated Wrangler configs.
+  // Each resource uses a two-phase `creating` intent flag so an unrelated pre-existing resource is never overwritten
+  // or adopted, while a response lost right after Lawh's own remote create commits IS recovered cleanly on resume.
   if (!cfg.resources.database.id) {
-    const db = await cf.createDatabase(accountId, cfg.resources.database.name);
-    cfg.resources.database.id = db.uuid ?? db.id;
-    writeConfig(root, cfg);
+    const existingDbs = (await cf.listDatabases(accountId)) ?? [];
+    const hit = existingDbs.find((d) => d.name === cfg.resources.database.name);
+    if (hit) {
+      if (!cfg.resources.database.creating) {
+        throw new Error(`D1 database "${cfg.resources.database.name}" already exists in this account. Choose a different name or remove it first.`);
+      }
+      cfg.resources.database.id = hit.uuid ?? hit.id;
+      cfg.resources.database.creating = false;
+      writeConfig(root, cfg);
+    } else {
+      cfg.resources.database.creating = true;
+      writeConfig(root, cfg);
+      const db = await cf.createDatabase(accountId, cfg.resources.database.name);
+      cfg.resources.database.id = db.uuid ?? db.id;
+      cfg.resources.database.creating = false;
+      writeConfig(root, cfg);
+    }
   }
 
   if (!cfg.resources.bucket.created) {
-    await cf.createBucket(accountId, cfg.resources.bucket.name);
-    cfg.resources.bucket.created = true;
-    writeConfig(root, cfg);
+    const listing = await cf.listBuckets(accountId);
+    const buckets = Array.isArray(listing) ? listing : (listing?.buckets ?? []);
+    const hit = buckets.find((b) => b.name === cfg.resources.bucket.name);
+    if (hit) {
+      if (!cfg.resources.bucket.creating) {
+        throw new Error(`R2 bucket "${cfg.resources.bucket.name}" already exists in this account. Choose a different name or remove it first.`);
+      }
+      cfg.resources.bucket.created = true;
+      cfg.resources.bucket.creating = false;
+      writeConfig(root, cfg);
+    } else {
+      cfg.resources.bucket.creating = true;
+      writeConfig(root, cfg);
+      await cf.createBucket(accountId, cfg.resources.bucket.name);
+      cfg.resources.bucket.created = true;
+      cfg.resources.bucket.creating = false;
+      writeConfig(root, cfg);
+    }
   }
 
-  if (!cfg.resources.deadLetterQueue.id) {
-    const dlq = await cf.createQueue(accountId, cfg.resources.deadLetterQueue.name);
-    cfg.resources.deadLetterQueue.id = dlq.queue_id ?? dlq.id;
-    writeConfig(root, cfg);
+  async function ensureQueue(slot) {
+    if (slot.id) return;
+    const queues = (await cf.listQueues(accountId)) ?? [];
+    const hit = queues.find((q) => q.queue_name === slot.name);
+    if (hit) {
+      if (!slot.creating) {
+        throw new Error(`Queue "${slot.name}" already exists in this account. Choose a different name or remove it first.`);
+      }
+      slot.id = hit.queue_id ?? hit.id;
+      slot.creating = false;
+      writeConfig(root, cfg);
+    } else {
+      slot.creating = true;
+      writeConfig(root, cfg);
+      const q = await cf.createQueue(accountId, slot.name);
+      slot.id = q.queue_id ?? q.id;
+      slot.creating = false;
+      writeConfig(root, cfg);
+    }
   }
 
-  if (!cfg.resources.queue.id) {
-    const queue = await cf.createQueue(accountId, cfg.resources.queue.name);
-    cfg.resources.queue.id = queue.queue_id ?? queue.id;
-    writeConfig(root, cfg);
-  }
+  await ensureQueue(cfg.resources.deadLetterQueue);
+  await ensureQueue(cfg.resources.queue);
 
   // Generate local secrets once per interrupted init so CONTENT_KEY stays identical across resumes.
   let localSecrets = readInitSecrets(root);
@@ -228,13 +296,32 @@ export async function runInit({
   if (cfg.secrets.backend === 'secrets_store') {
     try {
       if (!cfg.resources.secretsStore.id) {
-        const store = await cf.createSecretStore(accountId, cfg.secrets.storeName);
-        cfg.resources.secretsStore.id = store.id;
-        cfg.resources.secretsStore.created = true;
-        writeConfig(root, cfg);
+        const stores = (await cf.listSecretStores(accountId)) ?? [];
+        const hit = stores.find((s) => s.name === cfg.secrets.storeName);
+        if (hit && cfg.resources.secretsStore.creating) {
+          cfg.resources.secretsStore.id = hit.id;
+          cfg.resources.secretsStore.created = true;
+          cfg.resources.secretsStore.creating = false;
+          writeConfig(root, cfg);
+        } else {
+          cfg.resources.secretsStore.creating = true;
+          writeConfig(root, cfg);
+          const store = await cf.createSecretStore(accountId, cfg.secrets.storeName);
+          cfg.resources.secretsStore.id = store.id;
+          cfg.resources.secretsStore.created = true;
+          cfg.resources.secretsStore.creating = false;
+          writeConfig(root, cfg);
+        }
       }
+      const existingSecrets = (await cf.listStoreSecrets(accountId, cfg.resources.secretsStore.id)) ?? [];
       for (const [binding, secretName] of SECRET_NAMES) {
         if (cfg.resources.secretsStore.secrets[secretName]) continue;
+        const found = existingSecrets.find((s) => s.name === secretName);
+        if (found) {
+          cfg.resources.secretsStore.secrets[secretName] = found.id;
+          writeConfig(root, cfg);
+          continue;
+        }
         const created = await cf.createStoreSecret(accountId, cfg.resources.secretsStore.id, {
           name: secretName,
           value: localSecrets[binding],
@@ -247,6 +334,7 @@ export async function runInit({
     } catch (err) {
       if (!isSecretsStoreUnavailable(err)) throw err;
       log(`Secrets Store unavailable (${err.message}); falling back to Worker secrets.`);
+      cfg.resources.secretsStore.creating = false;
       cfg.secrets.backend = 'worker_secrets';
       writeConfig(root, cfg);
     }
@@ -261,7 +349,13 @@ export async function runInit({
     await applyPendingMigrations(cf, accountId, cfg.resources.database.id, migrationsDir, pending);
   }
 
+  // Refuse to overwrite an unrelated pre-existing Worker script!
   if (!cfg.resources.workersCreated.app) {
+    if (!cfg.resources.workersCreated.appDeploying && (await cf.workerExists(accountId, cfg.workers.app))) {
+      throw new Error(`Worker "${cfg.workers.app}" already exists in this account. Choose a different worker name or remove it first.`);
+    }
+    cfg.resources.workersCreated.appDeploying = true;
+    writeConfig(root, cfg);
     await deployWorker({
       root,
       cf,
@@ -272,10 +366,16 @@ export async function runInit({
       env,
     });
     cfg.resources.workersCreated.app = true;
+    cfg.resources.workersCreated.appDeploying = false;
     writeConfig(root, cfg);
   }
 
   if (!cfg.resources.workersCreated.content) {
+    if (!cfg.resources.workersCreated.contentDeploying && (await cf.workerExists(accountId, cfg.workers.content))) {
+      throw new Error(`Worker "${cfg.workers.content}" already exists in this account. Choose a different worker name or remove it first.`);
+    }
+    cfg.resources.workersCreated.contentDeploying = true;
+    writeConfig(root, cfg);
     await deployWorker({
       root,
       cf,
@@ -286,6 +386,7 @@ export async function runInit({
       env,
     });
     cfg.resources.workersCreated.content = true;
+    cfg.resources.workersCreated.contentDeploying = false;
     writeConfig(root, cfg);
   }
 
@@ -483,8 +584,8 @@ export async function runUpgrade({
     writeUpgradeState(root, state);
   }
 
-  const appStatus = await checkHost(fetchImpl, cfg.hosts.app, cfg.workers.app);
-  const contentStatus = await checkHost(fetchImpl, cfg.hosts.content, cfg.workers.content);
+  const appStatus = await checkHost(fetchImpl, cfg.hosts.app, cfg.workers.app, 'app');
+  const contentStatus = await checkHost(fetchImpl, cfg.hosts.content, cfg.workers.content, 'content');
   state.inProgress = false;
   state.completedAt = now();
   writeUpgradeState(root, state);
@@ -513,8 +614,8 @@ export async function runRollback({
   await cf.createWorkerDeployment(accountId, cfg.workers.app, state.previousVersions.app, 'lawh rollback');
   await cf.createWorkerDeployment(accountId, cfg.workers.content, state.previousVersions.content, 'lawh rollback');
 
-  const appStatus = await checkHost(fetchImpl, cfg.hosts.app, cfg.workers.app);
-  const contentStatus = await checkHost(fetchImpl, cfg.hosts.content, cfg.workers.content);
+  const appStatus = await checkHost(fetchImpl, cfg.hosts.app, cfg.workers.app, 'app');
+  const contentStatus = await checkHost(fetchImpl, cfg.hosts.content, cfg.workers.content, 'content');
 
   state.inProgress = false;
   state.rolledBackAt = now();
@@ -547,29 +648,35 @@ export async function runDestroy({
   const accountId = cfg.resources.accountId;
 
   let exportResult = null;
-  if (cfg.resources.database.id) {
-    const wantExport = await prompt('Export a backup ZIP (rows + files, without search index) before deleting? [Y/n]: ');
-    if (isYes(wantExport, true)) {
-      const defDir = defaultExportDir(homeDir);
-      const chosen = (await prompt(`Export folder (must be outside this repository) [${defDir}]: `)).trim();
-      exportResult = await exportInstance({
-        cf,
-        accountId,
-        dbId: cfg.resources.database.id,
-        bucketName: cfg.resources.bucket.name,
-        exportDir: chosen || defDir,
-        repoRoot: root,
-        homeDir,
-        now: now(),
-      });
-      log(`Backup exported to ${exportResult.zipPath} (${exportResult.fileCount} files, ${exportResult.bytes} bytes).`);
+  if (!cfg.destroyStarted) {
+    if (cfg.resources.database.id) {
+      const wantExport = await prompt('Export a backup ZIP (rows + files, without search index) before deleting? [Y/n]: ');
+      if (isYes(wantExport, true)) {
+        const defDir = defaultExportDir(homeDir);
+        const chosen = (await prompt(`Export folder (must be outside this repository) [${defDir}]: `)).trim();
+        exportResult = await exportInstance({
+          cf,
+          accountId,
+          dbId: cfg.resources.database.id,
+          bucketName: cfg.resources.bucket.name,
+          exportDir: chosen || defDir,
+          repoRoot: root,
+          homeDir,
+          now: now(),
+        });
+        log(`Backup exported to ${exportResult.zipPath} (${exportResult.fileCount} files, ${exportResult.bytes} bytes).`);
+      }
     }
-  }
 
-  const expectedName = cfg.instance.name.en;
-  const typed = (await prompt(`Type the instance name (${expectedName}) to permanently delete this copy: `)).trim();
-  if (typed !== expectedName) {
-    throw new Error('Instance name did not match. Nothing was deleted.');
+    const expectedName = cfg.instance.name.en;
+    const typed = (await prompt(`Type the instance name (${expectedName}) to permanently delete this copy: `)).trim();
+    if (typed !== expectedName) {
+      throw new Error('Instance name did not match. Nothing was deleted.');
+    }
+    cfg.destroyStarted = true;
+    writeConfig(root, cfg);
+  } else {
+    log('Resuming previously confirmed destroy (skipping export because resource deletion already started).');
   }
 
   // Delete ONLY resources recorded in lawh.config.json; each step is idempotent on 404.
@@ -590,13 +697,16 @@ export async function runDestroy({
       let cursor = '';
       for (;;) {
         const listing = await cf.listR2Objects(accountId, cfg.resources.bucket.name, cursor);
-        const objects = Array.isArray(listing) ? listing : (listing?.objects ?? []);
+        const objects = listing?.objects ?? [];
         for (const obj of objects) {
           await ignoreNotFound(() => cf.deleteR2Object(accountId, cfg.resources.bucket.name, obj.key));
         }
-        const next = listing?.cursor ?? '';
-        if (!listing?.truncated || !next) break;
-        cursor = next;
+        if (listing?.truncated && listing?.cursor) {
+          cursor = listing.cursor;
+          continue;
+        }
+        if (objects.length === 0) break;
+        cursor = '';
       }
       await cf.deleteBucket(accountId, cfg.resources.bucket.name);
     });

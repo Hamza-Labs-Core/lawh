@@ -28,10 +28,12 @@ export async function listPendingMigrations(cf, accountId, dbId, migrationsDir) 
 export async function applyPendingMigrations(cf, accountId, dbId, migrationsDir, pending) {
   const applied = [];
   for (const name of pending) {
-    const sql = readFileSync(join(migrationsDir, name), 'utf8');
+    if (!MIGRATION_FILE.test(name)) throw new Error(`Invalid migration filename: ${name}`);
+    const sql = readFileSync(join(migrationsDir, name), 'utf8').trim();
+    const withRecord = `${sql.replace(/;\s*$/, '')};\nINSERT INTO d1_migrations(name) VALUES('${name}');`;
     try {
-      await cf.queryD1(accountId, dbId, sql);
-      await cf.queryD1(accountId, dbId, 'INSERT INTO d1_migrations(name) VALUES(?)', [name]);
+      // Submit migration SQL and its d1_migrations record in one atomic D1 query batch so a mid-run stop never leaves an unrecorded applied migration.
+      await cf.queryD1(accountId, dbId, withRecord);
       applied.push(name);
     } catch (error) {
       const err = new Error(`Migration ${name} failed: ${error instanceof Error ? error.message : String(error)}`);
