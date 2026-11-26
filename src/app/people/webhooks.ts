@@ -7,6 +7,7 @@ import { onlyKeys, readJson } from '../api/body';
 import { EVENT_TYPES, type EventType } from '../api/events';
 import { mustChange } from '../api/idempotency';
 import { checkWebhookUrl, encryptWebhookSecret, readAllowedHosts } from '../webhooks/crypto';
+import { sendWithTimeout } from '../webhooks/deliver';
 import { levelOn, openProject, visibleProjects } from './access';
 import type { SignedIn } from './router';
 import { auditStatement } from './session';
@@ -280,14 +281,14 @@ export async function resendDelivery(ctx: SignedIn): Promise<Response> {
   if (webhook.enabled !== 1) throw conflict('This webhook is off.');
   const { host } = checkWebhookUrl(webhook.url, await readAllowedHosts(env));
 
-  const now = Date.now();
+  const now = Date.now(), token = randomToken().slice(0, 16), pendingStatus = `pending:${token}`;
   try {
     await env.DB.batch([
       stillWebhooksOn(env),
       stillManager(env, person.memberId, webhook.project_id),
       hostStillAllowed(env, host),
       env.DB.prepare("SELECT CASE WHEN EXISTS (SELECT 1 FROM webhooks WHERE id = ? AND enabled = 1) THEN 1 ELSE json('disabled') END").bind(id),
-      env.DB.prepare("UPDATE webhook_deliveries SET status = 'pending', updated_at = ? WHERE webhook_id = ? AND event_seq = ? AND status = 'failed'").bind(now, id, seq),
+      env.DB.prepare("UPDATE webhook_deliveries SET status = ?, updated_at = ? WHERE webhook_id = ? AND event_seq = ? AND status = 'failed'").bind(pendingStatus, now, id, seq),
       mustChange(env),
       auditStatement(env, person.memberId, 'webhook.resend', `${id}:${seq}`),
     ]);
@@ -307,10 +308,10 @@ export async function resendDelivery(ctx: SignedIn): Promise<Response> {
   }
 
   try {
-    await env.WEBHOOKS.send({ webhookId: id, eventSeq: seq });
+    await sendWithTimeout(env.WEBHOOKS, { webhookId: id, eventSeq: seq, token });
   } catch (error) {
-    await env.DB.prepare("UPDATE webhook_deliveries SET status = 'failed', updated_at = ? WHERE webhook_id = ? AND event_seq = ? AND status = 'pending'")
-      .bind(Date.now(), id, seq).run();
+    await env.DB.prepare("UPDATE webhook_deliveries SET status = 'failed', updated_at = ? WHERE webhook_id = ? AND event_seq = ? AND status = ?")
+      .bind(Date.now(), id, seq, pendingStatus).run();
     throw error;
   }
   return new Response(null, { status: 202 });
