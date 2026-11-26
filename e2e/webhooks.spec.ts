@@ -81,7 +81,7 @@ test('the owner turns webhooks on, allows a host, and a manager adds, resends, a
   await newBtn.click();
   await page.getByLabel('HTTPS address').fill('https://hooks.example.com/lawh');
   await page.getByRole('button', { name: 'Save' }).click();
-  const secret = await page.locator('.address').innerText();
+  const secret = await page.locator('.card').filter({ hasText: 'Signing secret' }).locator('.address').innerText();
   expect(secret).toMatch(/^whsec_[A-Za-z0-9_-]{43}$/);
   await page.getByRole('button', { name: 'Done, hide it' }).click();
   await expect(page.getByText(secret)).toHaveCount(0);
