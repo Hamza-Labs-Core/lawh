@@ -65,6 +65,12 @@ function App() {
     addEventListener('lawh:signed-out', onOut);
     return () => { removeEventListener('popstate', onMove); removeEventListener('lawh:signed-out', onOut); };
   }, []);
+  const swReady = typeof me === 'object' && me !== null && me.instance;
+  useEffect(() => {
+    if (swReady && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => undefined);
+    }
+  }, [swReady]);
   // The link or code is used: Back must not return to it.
   const arrive = () => { linkToken = ''; go('/', true); setMe(null); void load(); };
   const { path, search } = place, reading = /^\/p\/([a-z0-9-]+)\/([a-z0-9-]+)$/.exec(path);
