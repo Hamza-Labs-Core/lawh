@@ -291,33 +291,49 @@ describe('webhooks switch, allowlist, CRUD, and delivery', () => {
     expect(await one('SELECT status FROM webhook_deliveries WHERE webhook_id=? AND event_seq=16', hook.id)).toBeNull();
     expect((await one<{ status: string }>('SELECT status FROM webhook_deliveries WHERE webhook_id=? AND event_seq=18', hook.id))!.status).toBe('failed');
 
-    // 2) Old DLQ messages (matching cycle-1 token) cannot overwrite a manual resend even at attempts=0 or after a transient failure ('retrying:cycle2').
-    const tok1 = recovered[0]!.token!;
+    // 2) Old primary/DLQ messages (tokenless or wrong token) cannot overwrite a manual resend even at attempts=0 or after a transient failure.
+    //    Also test late 503 cannot overwrite 204 on a fresh post-watermark event (seq 19).
+    await sql(
+      "INSERT INTO events(seq,project_id,page_id,type,subject_id,actor_type,actor_id,created_at,enqueued_at) VALUES(19,'p1',NULL,'page.published','pg19','agent','ao',1,1)",
+      `INSERT INTO webhook_deliveries(webhook_id,event_seq,attempts,status,updated_at) VALUES('${hook.id}',19,0,'pending:tok19',1)`,
+    );
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('err', { status: 503 }));
-    expect(await deliverOne(env, hook.id, 10, 6, 1_700_000_000_000, tok1)).toBe('retry');
-    expect((await one<{ status: string }>('SELECT status FROM webhook_deliveries WHERE webhook_id=? AND event_seq=10', hook.id))!.status).toBe(`retrying:${tok1}`);
+    expect(await deliverOne(env, hook.id, 19, 6, 1_700_000_000_000, 'tok19')).toBe('retry');
+    expect((await one<{ status: string }>('SELECT status FROM webhook_deliveries WHERE webhook_id=? AND event_seq=19', hook.id))!.status).toBe('retrying:tok19');
 
-    // Resend seq 17 (which has attempts=0 from timeout above): old DLQ with wrong token does not overwrite pending:tok2 OR retrying:tok2.
+    // Resend seq 17 (attempts=0, pre-watermark — manual resends still work across toggles!):
+    // Neither an old tokenized DLQ nor a legacy tokenless primary message can touch resend:tok2 or retrying-resend:tok2.
     const resendMsgs: WebhookMessage[] = [];
     const resendQ = { send: async (m: WebhookMessage) => { resendMsgs.push(m); } } as unknown as Queue<WebhookMessage>;
     await api('POST', `/webhooks/${hook.id}/deliveries/17/resend`, { cookie: owner }, { WEBHOOKS: resendQ });
     const tok2 = resendMsgs[0]!.token!;
+    const legacySpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok', { status: 200 }));
+    legacySpy.mockClear();
+    expect(await deliverOne(env, hook.id, 17, 1, 1_700_000_004_000)).toBe('ack');
+    expect(legacySpy).not.toHaveBeenCalled();
+    expect((await one<{ status: string }>('SELECT status FROM webhook_deliveries WHERE webhook_id=? AND event_seq=17', hook.id))!.status).toBe(`resend:${tok2}`);
     await handleWebhookQueue({
       queue: 'lawh-webhooks-dlq',
       messages: [{ id: 'dlq-old-0', timestamp: new Date(), attempts: 6, body: { webhookId: hook.id, eventSeq: 17, token: 'old_token_000000' }, ack: () => {}, retry: () => {} }],
       ackAll: () => {},
       retryAll: () => {},
     } as unknown as MessageBatch<WebhookMessage>, env, 1_700_000_005_000);
-    expect((await one<{ status: string }>('SELECT status FROM webhook_deliveries WHERE webhook_id=? AND event_seq=17', hook.id))!.status).toBe(`pending:${tok2}`);
+    expect((await one<{ status: string }>('SELECT status FROM webhook_deliveries WHERE webhook_id=? AND event_seq=17', hook.id))!.status).toBe(`resend:${tok2}`);
+    legacySpy.mockRestore();
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('err', { status: 503 }));
     expect(await deliverOne(env, hook.id, 17, 1, 1_700_000_006_000, tok2)).toBe('retry');
+    const legacySpy2 = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok', { status: 200 }));
+    legacySpy2.mockClear();
+    expect(await deliverOne(env, hook.id, 17, 1, 1_700_000_006_500)).toBe('ack');
+    expect(legacySpy2).not.toHaveBeenCalled();
+    legacySpy2.mockRestore();
     await handleWebhookQueue({
       queue: 'lawh-webhooks-dlq',
       messages: [{ id: 'dlq-old-1', timestamp: new Date(), attempts: 6, body: { webhookId: hook.id, eventSeq: 17, token: 'old_token_000000' }, ack: () => {}, retry: () => {} }],
       ackAll: () => {},
       retryAll: () => {},
     } as unknown as MessageBatch<WebhookMessage>, env, 1_700_000_007_000);
-    expect((await one<{ status: string }>('SELECT status FROM webhook_deliveries WHERE webhook_id=? AND event_seq=17', hook.id))!.status).toBe(`retrying:${tok2}`);
+    expect((await one<{ status: string }>('SELECT status FROM webhook_deliveries WHERE webhook_id=? AND event_seq=17', hook.id))!.status).toBe(`retrying-resend:${tok2}`);
 
     // Late 503 cannot overwrite a completed 204.
     let releaseSlow!: (r: Response) => void;
@@ -325,16 +341,16 @@ describe('webhooks switch, allowlist, CRUD, and delivery', () => {
     vi.spyOn(globalThis, 'fetch')
       .mockImplementationOnce(() => slow)
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
-    const pSlow = deliverOne(env, hook.id, 10, 6, 1_700_000_010_000, tok1);
-    expect(await deliverOne(env, hook.id, 10, 6, 1_700_000_011_000, tok1)).toBe('ack');
+    const pSlow = deliverOne(env, hook.id, 19, 6, 1_700_000_010_000, 'tok19');
+    expect(await deliverOne(env, hook.id, 19, 6, 1_700_000_011_000, 'tok19')).toBe('ack');
     releaseSlow(new Response('late fail', { status: 503 }));
     await pSlow;
-    expect((await one<{ status: string; last_code: number }>('SELECT status, last_code FROM webhook_deliveries WHERE webhook_id=? AND event_seq=10', hook.id))).toEqual({ status: 'delivered', last_code: 204 });
+    expect((await one<{ status: string; last_code: number }>('SELECT status, last_code FROM webhook_deliveries WHERE webhook_id=? AND event_seq=19', hook.id))).toEqual({ status: 'delivered', last_code: 204 });
 
     // 3) Host removal mid-batch takes effect for the very next message in the same batch.
     await sql(
-      "INSERT INTO events(seq,project_id,page_id,type,subject_id,actor_type,actor_id,created_at,enqueued_at) VALUES(11,'p1',NULL,'page.published','pg2','agent','ao',1,1),(12,'p1',NULL,'page.published','pg3','agent','ao',1,1)",
-      `INSERT INTO webhook_deliveries(webhook_id,event_seq,attempts,status,updated_at) VALUES('${hook.id}',11,0,'pending',1),('${hook.id}',12,0,'pending',1)`,
+      "INSERT INTO events(seq,project_id,page_id,type,subject_id,actor_type,actor_id,created_at,enqueued_at) VALUES(20,'p1',NULL,'page.published','pg2','agent','ao',1,1),(21,'p1',NULL,'page.published','pg3','agent','ao',1,1)",
+      `INSERT INTO webhook_deliveries(webhook_id,event_seq,attempts,status,updated_at) VALUES('${hook.id}',20,0,'pending',1),('${hook.id}',21,0,'pending',1)`,
     );
     let fetchCount = 0;
     vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
@@ -345,29 +361,29 @@ describe('webhooks switch, allowlist, CRUD, and delivery', () => {
     await handleWebhookQueue({
       queue: 'lawh-webhooks',
       messages: [
-        { id: 'b1', timestamp: new Date(), attempts: 1, body: { webhookId: hook.id, eventSeq: 11 }, ack: () => {}, retry: () => {} },
-        { id: 'b2', timestamp: new Date(), attempts: 1, body: { webhookId: hook.id, eventSeq: 12 }, ack: () => {}, retry: () => {} },
+        { id: 'b1', timestamp: new Date(), attempts: 1, body: { webhookId: hook.id, eventSeq: 20 }, ack: () => {}, retry: () => {} },
+        { id: 'b2', timestamp: new Date(), attempts: 1, body: { webhookId: hook.id, eventSeq: 21 }, ack: () => {}, retry: () => {} },
       ],
       ackAll: () => {},
       retryAll: () => {},
     } as unknown as MessageBatch<WebhookMessage>, env, 1_700_000_020_000);
     expect(fetchCount).toBe(1);
-    expect((await one<{ status: string }>('SELECT status FROM webhook_deliveries WHERE webhook_id=? AND event_seq=12', hook.id))!.status).toBe('failed');
+    expect((await one<{ status: string }>('SELECT status FROM webhook_deliveries WHERE webhook_id=? AND event_seq=21', hook.id))!.status).toBe('failed');
 
     // 4) Turning webhooks off marks queued deliveries failed so re-enabling exposes Send again.
     await api('PUT', '/settings/webhook-hosts', { cookie: owner, body: { hosts: ['hooks.example.com'] } });
     await sql(
-      "INSERT INTO events(seq,project_id,page_id,type,subject_id,actor_type,actor_id,created_at,enqueued_at) VALUES(13,'p1',NULL,'page.published','pg4','agent','ao',1,1)",
-      `INSERT INTO webhook_deliveries(webhook_id,event_seq,attempts,status,updated_at) VALUES('${hook.id}',13,0,'pending',1)`,
+      "INSERT INTO events(seq,project_id,page_id,type,subject_id,actor_type,actor_id,created_at,enqueued_at) VALUES(22,'p1',NULL,'page.published','pg4','agent','ao',1,1)",
+      `INSERT INTO webhook_deliveries(webhook_id,event_seq,attempts,status,updated_at) VALUES('${hook.id}',22,0,'pending',1)`,
     );
     await api('PUT', '/switches/webhooks', { cookie: owner, body: { on: false } });
     await handleWebhookQueue({
       queue: 'lawh-webhooks',
-      messages: [{ id: 'b3', timestamp: new Date(), attempts: 1, body: { webhookId: hook.id, eventSeq: 13 }, ack: () => {}, retry: () => {} }],
+      messages: [{ id: 'b3', timestamp: new Date(), attempts: 1, body: { webhookId: hook.id, eventSeq: 22 }, ack: () => {}, retry: () => {} }],
       ackAll: () => {},
       retryAll: () => {},
     } as unknown as MessageBatch<WebhookMessage>, env, 1_700_000_030_000);
-    expect((await one<{ status: string }>('SELECT status FROM webhook_deliveries WHERE webhook_id=? AND event_seq=13', hook.id))!.status).toBe('failed');
+    expect((await one<{ status: string }>('SELECT status FROM webhook_deliveries WHERE webhook_id=? AND event_seq=22', hook.id))!.status).toBe('failed');
 
     // 5) Event-types-only PATCH overlapping a pause preserves enabled=false.
     await api('PUT', '/switches/webhooks', { cookie: owner, body: { on: true } });
