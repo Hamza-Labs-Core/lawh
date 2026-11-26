@@ -211,9 +211,9 @@ describe('the lists', () => {
 
   it.each(['open', 'answered'])('pages through every row of %s once, for the owner and a member', async (show) => {
     const owner = (await enter('o')).cookie, cookie = await member(3);
+    if (show === 'answered') for (const n of [1, 2, 3]) await answer(owner, n);
     // The same moment everywhere: the id decides, in each project and across them.
     await sql('UPDATE decisions SET updated_at=7');
-    if (show === 'answered') for (const n of [1, 2, 3]) await answer(owner, n);
     for (const person of [owner, cookie]) {
       const all = await shown(person, show), seen: string[] = [];
       let cursor: string | null = null;

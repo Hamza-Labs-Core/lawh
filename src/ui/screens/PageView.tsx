@@ -204,7 +204,12 @@ function Dialog({ title, class: className, returnTo, onClose, closer, children }
   }, []);
   return (
     <dialog ref={dialog} tabIndex={-1} class={className} aria-label={title} onClose={onClose} onClick={(event) => { if (event.target === dialog.current) dialog.current?.close(); }}>
-      <div class="dialog">{closer ? <div class="dialog-head"><h2>{title}</h2><button class="plain" onClick={onClose}>{closer}</button></div> : <h2>{title}</h2>}{children}</div>
+      {closer ? (
+        <>
+          <div class="dialog-head"><h2>{title}</h2><button class="plain" onClick={onClose}>{closer}</button></div>
+          <div class="dialog-body">{children}</div>
+        </>
+      ) : <div class="dialog"><h2>{title}</h2>{children}</div>}
     </dialog>
   );
 }

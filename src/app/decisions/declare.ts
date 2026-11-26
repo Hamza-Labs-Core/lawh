@@ -6,7 +6,7 @@ import { isObject, onlyKeys, text } from '../api/body';
 /** What a page asks. `options` is JSON text: as stored, and compared as text to tell whether the wording changed. */
 export interface Declared { key: string; question: string; context: string; options: string }
 
-const MAX_DECISIONS = 50, MAX_BYTES = 1_000_000;
+const MAX_DECISIONS = 50, MAX_BYTES = 500_000;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
 
 function name(value: unknown, what: string): string {
@@ -38,8 +38,8 @@ export function readDeclared(value: unknown): Declared[] {
       options: JSON.stringify(options),
     };
   });
-  // Stored with the upload and sent to the database as one value, which holds at most 2 MB.
-  if (new TextEncoder().encode(JSON.stringify(declared)).byteLength > MAX_BYTES) throw new ApiError('too_large', 'All decisions together can be at most 1 MB.');
+  // Stored with the upload and sent to the database as one value; 500 KB leaves room for 500 max-length UTF-8 paths under the 1.5 MB body cap and D1's 2 MB limit.
+  if (new TextEncoder().encode(JSON.stringify(declared)).byteLength > MAX_BYTES) throw new ApiError('too_large', 'All decisions together can be at most 500 KB.');
   return declared;
 }
 
