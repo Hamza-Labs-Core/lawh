@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Reviewed and merged on 2026-11-24. Being built, story by story (section 14) |
-| **Last updated** | 2026-11-24 |
+| **Status** | Released as v1.0.0 on 2026-11-26 (all v1 stories S1–S20 implemented; S16 is the author's private copy) |
+| **Last updated** | 2026-11-26 |
 | **Files** | [Data model](schema.sql) · [API (OpenAPI 3.1)](openapi.yaml) · [Security model](security.md) · [People and teams](teams.md) · [Self-hosting](self-hosting.md) · [Mockups](mockups/index.html) · Checks: [query plans](checks/query_plans.py), [integrity](checks/integrity.py) |
 
 ## 1. Goal
@@ -21,7 +21,7 @@ Lawh (لوح, a writing tablet) is a private, self-hosted place where agents pub
 
 ## 2. What exists today
 
-S1: both Workers (closed by the `instance` switch), the D1 schema (migrations), and CI. S2: agent keys and the publish API. S3: the content Worker, its tokens, sandbox and bridge (images and charts open full size with S6). S4: passkeys, sessions, device approval, `pnpm lawh owner setup`, and the first screens (invites and resets are made with S18). S5: the pages list, reading a page and its versions, and levels on every route. S6: the full-size viewer. S7: decisions, beside the page (a sheet on a phone) and on a screen of their own. S8: comments on a page or a section, and agents' replies. S9: search. There is no earlier code to reuse or migrate.
+All v1 stories are shipped in v1.0.0: S1 (both Workers, `instance` switch, D1 migrations, query-plan and integrity checks, CI), S2 (agent keys, projects, 3-step publish API), S3 (content Worker, HMAC tokens, opaque-origin sandbox, CSP, bridge, hostile-page tests), S4 (passkeys, sessions, device approval, `pnpm lawh owner setup`), S5 (pages list, reading pages & versions, en/ar RTL, light/dark, `levelOn` enforcement), S6 (full-size viewer), S7 (decisions panel & inbox), S8 (page/section comments & agent replies), S9 (FTS5 search with Arabic normalization), S10 (Settings: agents/keys, projects, delete/restore/purge, ZIP export, version retention), S11 (connect-an-agent flow, `/connect.md` skill, zero-dependency `lawh.mjs` CLI), S13 (ordered events feed & signed webhooks via Queue), S14 (PWA manifest, icons, shell-only service worker), S15 (self-hosting CLI `init`/`upgrade`/`rollback`/`destroy`, fork-safe CI, `check:instance`), S17 (teams CRUD, levels, project assignment, manager agent takeover, exhaustive route-by-level matrix), S18 (invites, reset links, removal, ownership transfer, `teams` switch, post-reset key review), S19 (multi-decider project agreement setting, answerer warnings, decision progress), and S20 (live pings Durable Object, HMAC WebSocket tickets, `live` switch, and `lawh wait`/`listen` with kernel `fcntl.flock` cursor locking). S16 is the author's private deployment and stays outside this repository.
 
 ## 3. How it works
 
