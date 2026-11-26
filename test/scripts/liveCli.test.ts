@@ -41,6 +41,9 @@ async function startMockLiveServer() {
   let liveOn = true;
   const wsSockets = new Set<Socket>();
   let ticketRequests = 0;
+  let headRequests = 0;
+  const wsWaiters: (() => void)[] = [];
+  const headWaiters: (() => void)[] = [];
 
   const server: Server = createServer((req, res) => {
     const url = new URL(req.url!, 'http://127.0.0.1');
@@ -75,6 +78,8 @@ async function startMockLiveServer() {
       const afterRaw = url.searchParams.get('after');
       const maxSeq = events.reduce((m, e) => Math.max(m, e.seq), 0);
       if (afterRaw === null) {
+        headRequests++;
+        while (headWaiters.length > 0) headWaiters.shift()!();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ items: [], next: maxSeq }));
         return;
@@ -100,6 +105,7 @@ async function startMockLiveServer() {
       `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
     );
     wsSockets.add(socket);
+    while (wsWaiters.length > 0) wsWaiters.shift()!();
     socket.on('data', (chunk) => {
       // Echo minimal Close frame (opcode 0x8) so client WebSocket teardown completes promptly.
       if (chunk.length >= 2 && (chunk[0]! & 0x0f) === 0x08) {
@@ -118,6 +124,9 @@ async function startMockLiveServer() {
     baseUrl,
     events,
     get ticketRequests() { return ticketRequests; },
+    get headRequests() { return headRequests; },
+    waitForWs: () => (wsSockets.size > 0 ? Promise.resolve() : new Promise<void>((r) => wsWaiters.push(r))),
+    waitForHead: (prevCount: number) => (headRequests > prevCount ? Promise.resolve() : new Promise<void>((r) => headWaiters.push(r))),
     setLiveOn(v: boolean) { liveOn = v; },
     pushEvent(ev: Omit<EventItem, 'seq' | 'createdAt'>) {
       const next: EventItem = { ...ev, seq: events.length + 1, createdAt: Date.now() };
@@ -162,8 +171,8 @@ describe('S20 CLI: lawh wait and lawh listen', () => {
     let waitOut = '';
     waitChild.stdout.on('data', (d) => { waitOut += d.toString('utf8'); });
 
-    // Wait briefly for WebSocket connection to open, then test lock refusal from a second concurrent wait!
-    await new Promise((r) => setTimeout(r, 200));
+    // Wait deterministically for WebSocket connection to open, then test lock refusal from a second concurrent wait!
+    await srv.waitForWs();
     const dupRes = await execFileAsync(process.execPath, [cli, 'wait', '--project', 'one', '--timeout', '2'], { env }).then(
       () => ({ ok: true, stderr: '' }),
       (err) => ({ ok: false, stderr: String(err.stderr || err.message) }),
@@ -191,14 +200,15 @@ describe('S20 CLI: lawh wait and lawh listen', () => {
 
     // Polling fallback when `live` switch is off (POST /v1/events/ticket returns 404 feature_off).
     srv.setLiveOn(false);
+    const beforeHead = srv.headRequests;
     const pollChild = spawn(process.execPath, [cli, 'wait', '--project', 'one', '--cursor', 'poll-test', '--poll-ms', '80', '--timeout', '5'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     let pollOut = '';
     pollChild.stdout.on('data', (d) => { pollOut += d.toString('utf8'); });
-    await new Promise((r) => setTimeout(r, 150));
+    await srv.waitForHead(beforeHead);
     const pollEv = srv.pushEvent({ type: 'page.status', actorType: 'person', actorId: 'mem_1', pageId: 'pag_2', subjectId: 'pag_2' });
     expect(await new Promise<number | null>((resolve) => pollChild.on('close', resolve))).toBe(0);
     expect(JSON.parse(pollOut.trim())).toMatchObject({ seq: pollEv.seq, type: 'page.status' });
-  });
+  }, 15_000);
 
   it('lawh listen runs the given command with shell: false, passes event JSON on stdin, and only advances cursor on exit 0', async () => {
     const srv = await startMockLiveServer();
@@ -232,14 +242,82 @@ describe('S20 CLI: lawh wait and lawh listen', () => {
     ).then(() => true, () => false);
     expect(failRun).toBe(false);
 
-    // Re-running without --after picks up the SAME event because cursor was NOT advanced on failure, then advances on success!
+    // Re-running WITHOUT --after picks up the SAME event because --after persisted the starting cursor and failure did not advance it!
     await execFileAsync(
       process.execPath,
-      [cli, 'listen', '--project', 'one', '--after', '0', '--once', '--', process.execPath, handlerScript],
+      [cli, 'listen', '--project', 'one', '--once', '--', process.execPath, handlerScript],
       { env },
     );
     const lines = readFileSync(outFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({ project: 'one', seq: ev.seq, subjectId: 'dec_9' });
   });
+
+  it('drains >30 queued events across pages without pausing, recovers from transient 503, and bounds stalled /v1/me with --timeout', async () => {
+    const events: EventItem[] = [];
+    for (let i = 1; i <= 31; i++) {
+      events.push({ seq: i, type: 'comment.created', actorType: 'person', actorId: 'mem_1', pageId: 'pag_1', subjectId: `cmt_${i}`, createdAt: Date.now() });
+    }
+    let failOnce = true;
+    let stallMe = false;
+    const srv: Server = createServer((req, res) => {
+      const url = new URL(req.url!, 'http://127.0.0.1');
+      if (url.pathname === '/v1/me') {
+        if (stallMe) return; // intentionally never respond
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ agentId: 'agt_self', name: 'my-agent', scopes: [], allProjects: false, projects: [{ slug: 'one', name: { en: 'One', ar: 'واحد' } }], expiresAt: Date.now() + 86_400_000 }));
+        return;
+      }
+      if (url.pathname === '/v1/events/ticket') {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ code: 'feature_off', message: 'Off' }));
+        return;
+      }
+      if (url.pathname === '/v1/events') {
+        if (failOnce) {
+          failOnce = false;
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ code: 'unavailable', message: 'Try again' }));
+          return;
+        }
+        const after = Number(url.searchParams.get('after') ?? '0');
+        const page = events.filter((e) => e.seq > after).slice(0, 30);
+        const next = page.length > 0 ? page[page.length - 1]!.seq : after;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ items: page, next }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', resolve));
+    cleanups.push(() => new Promise<void>((resolve) => srv.close(() => resolve())));
+    const { port } = srv.address() as { port: number };
+    const dir = mkdtempSync(join(tmpdir(), 'lawh-s20-edge-'));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const outFile = join(dir, 'batch.jsonl');
+    const handlerScript = join(dir, 'batch-handler.mjs');
+    writeFileSync(handlerScript, `import { appendFileSync, readFileSync } from 'node:fs'; appendFileSync(${JSON.stringify(outFile)}, readFileSync(0, 'utf8'));`);
+    const env = { ...process.env, LAWH_URL: `http://127.0.0.1:${port}`, LAWH_KEY: 'lawh_key_test_secret', LAWH_CURSOR_DIR: dir };
+
+    // Must recover from initial 503 and drain ALL 31 events immediately (despite huge 60s poll-ms) before 1.5s timeout!
+    const code = await new Promise<number | null>((resolve) => {
+      const child = spawn(process.execPath, [cli, 'listen', '--project', 'one', '--after', '0', '--poll-ms', '60000', '--timeout', '1.5', '--', process.execPath, handlerScript], { env, stdio: 'ignore' });
+      child.on('close', resolve);
+    });
+    expect(code).toBe(124);
+    const seen = readFileSync(outFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l).seq);
+    expect(seen).toHaveLength(31);
+    expect(seen[30]).toBe(31);
+
+    // Stalled /v1/me must still exit 124 promptly when --timeout is set!
+    stallMe = true;
+    const t0 = Date.now();
+    const timeoutCode = await new Promise<number | null>((resolve) => {
+      const child = spawn(process.execPath, [cli, 'wait', '--project', 'one', '--timeout', '0.2'], { env, stdio: 'ignore' });
+      child.on('close', resolve);
+    });
+    expect(timeoutCode).toBe(124);
+    expect(Date.now() - t0).toBeLessThan(2000);
+  }, 15_000);
 });

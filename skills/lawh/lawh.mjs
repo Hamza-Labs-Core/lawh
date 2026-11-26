@@ -2,7 +2,7 @@
 // Lawh agent CLI — single file, zero dependencies, Node >= 22.
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { hostname, homedir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 
@@ -172,7 +172,14 @@ function pickCredentials(flags) {
   die(`Multiple agents match (${matches.map((a) => `${a.name} (${a.client}, ${a.url})`).join(', ')}). Pass --as <name>, --client <program>, or --url <url>.`);
 }
 
-async function apiRequest(cred, method, path, { body, rawBody, idem = false, headers = {} } = {}) {
+class ApiHttpError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
+
+async function apiRequest(cred, method, path, { body, rawBody, idem = false, headers = {}, signal, throwOnHttpError = false } = {}) {
   const reqHeaders = { Authorization: `Bearer ${cred.key}`, ...headers };
   if (idem) reqHeaders['Idempotency-Key'] = randomUUID();
   let payload;
@@ -182,7 +189,7 @@ async function apiRequest(cred, method, path, { body, rawBody, idem = false, hea
     reqHeaders['Content-Type'] = 'application/json';
     payload = JSON.stringify(body);
   }
-  const response = await fetch(`${cred.url}${path}`, { method, headers: reqHeaders, body: payload });
+  const response = await fetch(`${cred.url}${path}`, { method, headers: reqHeaders, body: payload, signal });
   if (response.status === 204) return null;
   const ct = response.headers.get('Content-Type') || '';
   if (!response.ok) {
@@ -191,6 +198,7 @@ async function apiRequest(cred, method, path, { body, rawBody, idem = false, hea
       const err = await response.json();
       if (err && err.message) detail = `${err.code || response.status}: ${err.message}`;
     } catch { /* ignore */ }
+    if (throwOnHttpError) throw new ApiHttpError(response.status, detail);
     die(detail);
   }
   if (ct.includes('application/json')) return response.json();
@@ -575,21 +583,43 @@ function isPidAlive(pid) {
 function acquireLock(cursorFile) {
   const lockFile = `${cursorFile}.lock`;
   mkdirSync(dirname(lockFile), { recursive: true, mode: 0o700 });
+  const payload = `${JSON.stringify({ pid: process.pid, startedAt: Date.now() })}\n`;
   for (let attempt = 0; attempt < 4; attempt++) {
+    // Write PID to a unique temp file and hard-link it into place atomically so lockFile is never observed empty.
+    const tmp = `${lockFile}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     try {
-      const fd = openSync(lockFile, 'wx', 0o600);
-      writeFileSync(fd, `${JSON.stringify({ pid: process.pid, startedAt: Date.now() })}\n`);
-      closeSync(fd);
-      return lockFile;
-    } catch (err) {
-      if (!err || typeof err !== 'object' || !('code' in err) || err.code !== 'EEXIST') throw err;
-      let existingPid = null;
-      try { existingPid = JSON.parse(readFileSync(lockFile, 'utf8'))?.pid ?? null; } catch { /* stale */ }
-      if (existingPid !== null && isPidAlive(existingPid)) {
-        die(`Another process (pid ${existingPid}) is already using this cursor.`);
+      writeFileSync(tmp, payload, { mode: 0o600 });
+      try { chmodSync(tmp, 0o600); } catch { /* Windows */ }
+      try {
+        linkSync(tmp, lockFile);
+        return lockFile;
+      } catch (linkErr) {
+        const code = linkErr && typeof linkErr === 'object' && 'code' in linkErr ? linkErr.code : '';
+        if (code !== 'EEXIST') {
+          // Fallback on filesystems that disallow hard links.
+          const fd = openSync(lockFile, 'wx', 0o600);
+          try { writeFileSync(fd, payload); } finally { closeSync(fd); }
+          return lockFile;
+        }
       }
-      try { unlinkSync(lockFile); } catch { /* raced */ }
+    } finally {
+      try { unlinkSync(tmp); } catch { /* ignore */ }
     }
+
+    let existingPid = null;
+    try { existingPid = JSON.parse(readFileSync(lockFile, 'utf8'))?.pid ?? null; } catch { /* empty or unreadable */ }
+    if (existingPid !== null && isPidAlive(existingPid)) {
+      die(`Another process (pid ${existingPid}) is already using this cursor.`);
+    }
+    if (existingPid === null) {
+      // Do not steal a freshly created lock file that another process may still be populating.
+      try {
+        if (Date.now() - statSync(lockFile).mtimeMs < 5_000) {
+          die('Another process is already using this cursor.');
+        }
+      } catch { /* disappeared; retry */ }
+    }
+    try { unlinkSync(lockFile); } catch { /* raced */ }
   }
   die('Could not acquire cursor lock.');
 }
@@ -600,6 +630,18 @@ function releaseLocks(lockFiles) {
   }
 }
 
+function writeStdoutLine(line) {
+  return new Promise((resolve, reject) => {
+    const onError = (err) => reject(err);
+    process.stdout.once('error', onError);
+    process.stdout.write(line, (err) => {
+      process.stdout.off('error', onError);
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
 function matchesEvent(ev, { agentId, includeAgents, pageId, decisionId }) {
   if (ev.actorType === 'agent' && ev.actorId === agentId) return false;
   if (!includeAgents && ev.actorType === 'agent') return false;
@@ -608,37 +650,28 @@ function matchesEvent(ev, { agentId, includeAgents, pageId, decisionId }) {
   return true;
 }
 
-function runHandlerCommand(command, event) {
+function runHandlerCommand(command, event, onChild) {
   return new Promise((resolve) => {
     const child = spawn(command[0], command.slice(1), {
       shell: false,
       stdio: ['pipe', 'inherit', 'inherit'],
     });
+    onChild?.(child);
     child.on('error', (err) => {
+      onChild?.(null);
       process.stderr.write(`Command error: ${err.message}\n`);
       resolve(1);
     });
-    child.on('close', (code) => resolve(code ?? 1));
+    child.on('close', (code) => {
+      onChild?.(null);
+      resolve(code ?? 1);
+    });
     child.stdin.on('error', () => { /* child closed stdin early */ });
     child.stdin.end(`${JSON.stringify(event)}\n`);
   });
 }
 
 async function cmdWatch(mode, cred, flags, command) {
-  const me = await apiRequest(cred, 'GET', '/v1/me');
-  const agentId = me.agentId;
-  const projects = typeof flags.project === 'string'
-    ? [flags.project]
-    : (me.projects || []).map((p) => p.slug);
-  if (projects.length === 0) die('No accessible projects to watch.');
-
-  const pageId = typeof flags.page === 'string' ? flags.page : null;
-  const decisionId = typeof flags.decision === 'string' ? flags.decision : null;
-  const includeAgents = Boolean(flags.agents);
-  const filterKey = typeof flags.cursor === 'string'
-    ? `named:${flags.cursor}`
-    : JSON.stringify({ pageId, decisionId, includeAgents });
-
   const afterOverride = flags.after !== undefined ? Number(flags.after) : null;
   if (afterOverride !== null && (!Number.isSafeInteger(afterOverride) || afterOverride < 0)) {
     die('--after must be a non-negative integer.');
@@ -647,51 +680,103 @@ async function cmdWatch(mode, cred, flags, command) {
   const catchupMs = Math.max(100, Number(flags['catchup-ms'] || 300_000));
   const timeoutSec = flags.timeout !== undefined ? Number(flags.timeout) : null;
   const once = Boolean(flags.once);
+  const deadline = timeoutSec !== null && Number.isFinite(timeoutSec) ? Date.now() + Math.max(0, timeoutSec * 1000) : null;
 
-  const states = projects.map((slug) => {
-    const file = cursorFilePath(cred, agentId, slug, mode, filterKey);
-    return { slug, file, lockFile: '', seq: 0, ws: null, liveEnabled: true, reconnectAt: 0 };
-  });
+  let stopping = false;
+  let timedOut = false;
+  let exitSignal = null;
+  let activeChild = null;
+  const runAbort = new AbortController();
+  let pendingWake = false;
+  let wakeResolve = null;
+  const wake = () => {
+    if (wakeResolve) {
+      const r = wakeResolve;
+      wakeResolve = null;
+      pendingWake = false;
+      r();
+    } else {
+      pendingWake = true;
+    }
+  };
 
+  let timeoutTimer = null;
+  if (deadline !== null) {
+    timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      stopping = true;
+      runAbort.abort();
+      wake();
+    }, Math.max(0, deadline - Date.now()));
+  }
+
+  let states = [];
   const acquiredLocks = [];
-  const cleanup = () => {
+  const closeSockets = () => {
     for (const s of states) {
       try { s.ws?.close(); } catch { /* ignore */ }
       s.ws = null;
+      s.wsOpen = false;
     }
+  };
+  const cleanup = () => {
+    if (timeoutTimer) { clearTimeout(timeoutTimer); timeoutTimer = null; }
+    closeSockets();
     releaseLocks(acquiredLocks);
   };
 
-  try {
-    for (const s of states) {
-      s.lockFile = acquireLock(s.file);
-      acquiredLocks.push(s.lockFile);
-    }
-  } catch (err) {
-    cleanup();
-    throw err;
-  }
-
-  let stopping = false;
-  const onSignal = () => {
+  const onSignal = (sig) => {
+    exitSignal = sig;
     stopping = true;
-    cleanup();
-    process.exit(0);
+    closeSockets();
+    runAbort.abort();
+    wake();
+    if (activeChild) {
+      try { activeChild.kill(sig); } catch { /* ignore */ }
+    }
   };
   process.on('SIGINT', onSignal);
   process.on('SIGTERM', onSignal);
 
+  let exitCodeOnReturn = 0;
   try {
-    // Initialize cursors: --after overrides; otherwise read saved cursor; first run fetches newest seq without replaying past.
+    const me = await apiRequest(cred, 'GET', '/v1/me', { signal: runAbort.signal, throwOnHttpError: true });
+
+    const agentId = me.agentId;
+    const projects = typeof flags.project === 'string'
+      ? [flags.project]
+      : (me.projects || []).map((p) => p.slug);
+    if (projects.length === 0) die('No accessible projects to watch.');
+
+    const pageId = typeof flags.page === 'string' ? flags.page : null;
+    const decisionId = typeof flags.decision === 'string' ? flags.decision : null;
+    const includeAgents = Boolean(flags.agents);
+    const filterKey = typeof flags.cursor === 'string'
+      ? `named:${flags.cursor}`
+      : JSON.stringify({ pageId, decisionId, includeAgents });
+
+    states = projects.map((slug) => {
+      const file = cursorFilePath(cred, agentId, slug, mode, filterKey);
+      return { slug, file, lockFile: '', seq: 0, ws: null, wsOpen: false, reconnectAt: 0 };
+    });
+
     for (const s of states) {
+      s.lockFile = acquireLock(s.file);
+      acquiredLocks.push(s.lockFile);
+    }
+
+    // Initialize cursors: --after overrides AND persists immediately so a restart after a failed handler never loses the event.
+    for (const s of states) {
+      if (stopping) break;
       if (afterOverride !== null) {
         s.seq = afterOverride;
+        writeSavedCursor(s.file, s.seq);
       } else {
         const saved = readSavedCursor(s.file);
         if (saved !== null) {
           s.seq = saved;
         } else {
-          const head = await apiRequest(cred, 'GET', `/v1/events?project=${encodeURIComponent(s.slug)}`);
+          const head = await apiRequest(cred, 'GET', `/v1/events?project=${encodeURIComponent(s.slug)}`, { signal: runAbort.signal, throwOnHttpError: true });
           s.seq = typeof head?.next === 'number' ? head.next : 0;
           writeSavedCursor(s.file, s.seq);
         }
@@ -699,127 +784,149 @@ async function cmdWatch(mode, cred, flags, command) {
     }
 
     const filterOpts = { agentId, includeAgents, pageId, decisionId };
-    let pendingWake = false;
-    let wakeResolve = null;
-    const wake = () => {
-      if (wakeResolve) {
-        const r = wakeResolve;
-        wakeResolve = null;
-        pendingWake = false;
-        r();
-      } else {
-        pendingWake = true;
-      }
-    };
 
     async function drainProject(s) {
       while (!stopping) {
-        const data = await apiRequest(cred, 'GET', `/v1/events?project=${encodeURIComponent(s.slug)}&after=${s.seq}`);
+        const beforeSeq = s.seq;
+        let data;
+        try {
+          data = await apiRequest(cred, 'GET', `/v1/events?project=${encodeURIComponent(s.slug)}&after=${s.seq}`, { signal: runAbort.signal, throwOnHttpError: true });
+        } catch (err) {
+          if (stopping || timedOut || runAbort.signal.aborted) return 'aborted';
+          if (err instanceof ApiHttpError && err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429) {
+            throw err;
+          }
+          process.stderr.write(`Transient error reading events for ${s.slug}: ${err instanceof Error ? err.message : String(err)}; retrying...\n`);
+          return 'retry';
+        }
         const items = Array.isArray(data?.items) ? data.items : [];
         const nextSeq = typeof data?.next === 'number' ? data.next : s.seq;
 
-        let matchedOnPage = false;
-        let lastMatchedSeq = s.seq;
         for (const ev of items) {
+          if (stopping) return 'aborted';
           if (!matchesEvent(ev, filterOpts)) continue;
-          matchedOnPage = true;
           const out = { project: s.slug, ...ev };
           if (mode === 'wait') {
-            process.stdout.write(`${JSON.stringify(out)}\n`);
+            // Confirm stdout write succeeds BEFORE advancing the saved cursor so broken pipes never drop an event.
+            await writeStdoutLine(`${JSON.stringify(out)}\n`);
             s.seq = ev.seq;
             writeSavedCursor(s.file, s.seq);
             return 'done';
           }
-          const exitCode = await runHandlerCommand(command, out);
+          const exitCode = await runHandlerCommand(command, out, (c) => { activeChild = c; });
           if (exitCode !== 0) {
+            if (stopping) return 'aborted';
             process.stderr.write(`Handler exited with code ${exitCode} on event #${ev.seq}; cursor kept at ${s.seq}.\n`);
             return 'handler_failed';
           }
           s.seq = ev.seq;
-          lastMatchedSeq = ev.seq;
           writeSavedCursor(s.file, s.seq);
           if (once) return 'done';
         }
 
-        // Advance to `next` only when no matching event remains on this page.
-        if (nextSeq > s.seq && (!matchedOnPage || nextSeq > lastMatchedSeq)) {
+        if (nextSeq > s.seq) {
           s.seq = nextSeq;
           writeSavedCursor(s.file, s.seq);
         }
-        if (items.length === 0 || nextSeq <= lastMatchedSeq) break;
+        // Keep draining immediately while the server returned a full page that advanced the cursor.
+        if (items.length === 0 || nextSeq <= beforeSeq) break;
       }
       return 'idle';
     }
 
     async function ensureSocket(s) {
-      if (stopping || !s.liveEnabled || s.ws || typeof globalThis.WebSocket !== 'function') return;
+      if (stopping || s.ws || typeof globalThis.WebSocket !== 'function') return;
       if (Date.now() < s.reconnectAt) return;
       try {
         const res = await fetch(`${cred.url}/v1/events/ticket`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${cred.key}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ project: s.slug }),
+          signal: runAbort.signal,
         });
         if (res.status === 404) {
-          s.liveEnabled = false;
+          // Live switch is currently off; fall back to poll interval and probe again on the next poll tick.
+          s.reconnectAt = Date.now() + Math.max(0, pollMs - 50);
           return;
         }
         if (!res.ok) {
-          s.reconnectAt = Date.now() + 5_000;
+          s.reconnectAt = Date.now() + Math.min(pollMs, 5_000);
           return;
         }
         const { url: wsUrl } = await res.json();
+        if (stopping) return;
         const ws = new WebSocket(wsUrl);
         s.ws = ws;
-        ws.addEventListener('open', () => wake());
+        s.wsOpen = false;
+        ws.addEventListener('open', () => {
+          if (s.ws === ws) s.wsOpen = true;
+          wake();
+        });
         ws.addEventListener('message', () => wake());
         ws.addEventListener('close', () => {
-          if (s.ws === ws) s.ws = null;
-          s.reconnectAt = Date.now() + 1_000;
+          if (s.ws === ws) { s.ws = null; s.wsOpen = false; }
+          s.reconnectAt = Date.now() + Math.min(pollMs, 1_000);
           wake();
         });
         ws.addEventListener('error', () => {
-          if (s.ws === ws) s.ws = null;
-          s.reconnectAt = Date.now() + 5_000;
+          if (s.ws === ws) { s.ws = null; s.wsOpen = false; }
+          s.reconnectAt = Date.now() + Math.min(pollMs, 5_000);
           wake();
         });
       } catch {
-        s.reconnectAt = Date.now() + 5_000;
+        s.reconnectAt = Date.now() + Math.min(pollMs, 5_000);
       }
     }
 
-    const deadline = timeoutSec !== null && Number.isFinite(timeoutSec) ? Date.now() + timeoutSec * 1000 : null;
+    let transientStreak = 0;
     while (!stopping) {
+      let hadTransientError = false;
       for (const s of states) {
         const res = await drainProject(s);
         if (res === 'done') return;
+        if (res === 'aborted') break;
+        if (res === 'retry') hadTransientError = true;
         if (res === 'handler_failed') {
           cleanup();
           process.exit(1);
         }
       }
+      transientStreak = hadTransientError ? transientStreak + 1 : 0;
+      if (stopping) break;
       if (deadline !== null && Date.now() >= deadline) {
-        cleanup();
-        process.exit(124);
+        timedOut = true;
+        break;
       }
       for (const s of states) await ensureSocket(s);
+      if (stopping) break;
       if (pendingWake) {
         pendingWake = false;
         continue;
       }
-      const anyLive = states.some((s) => s.liveEnabled && s.ws !== null);
-      let waitMs = anyLive ? catchupMs : pollMs;
+      const allLiveOpen = states.length > 0 && states.every((s) => s.ws !== null && s.wsOpen);
+      const retryBackoff = Math.min(pollMs, 250 * 2 ** Math.min(Math.max(transientStreak - 1, 0), 4));
+      let waitMs = hadTransientError ? retryBackoff : allLiveOpen ? catchupMs : pollMs;
       if (deadline !== null) waitMs = Math.max(10, Math.min(waitMs, deadline - Date.now()));
       await new Promise((resolve) => {
         const timer = setTimeout(() => { wakeResolve = null; resolve(); }, waitMs);
         wakeResolve = () => { clearTimeout(timer); resolve(); };
       });
     }
+    if (timedOut) exitCodeOnReturn = 124;
+  } catch (err) {
+    if (timedOut) {
+      exitCodeOnReturn = 124;
+    } else if (exitSignal) {
+      exitCodeOnReturn = 0;
+    } else {
+      throw err;
+    }
   } finally {
     process.off('SIGINT', onSignal);
     process.off('SIGTERM', onSignal);
     cleanup();
   }
+  if (exitCodeOnReturn !== 0) process.exit(exitCodeOnReturn);
 }
 
 main().catch((err) => die(err instanceof Error ? err.message : String(err)));

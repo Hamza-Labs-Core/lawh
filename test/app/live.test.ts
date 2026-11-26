@@ -126,7 +126,24 @@ describe('S20 live pings: switch, tickets, Durable Object WebSockets, limits, an
     });
     expect(expMessages).toEqual([]);
 
-    for (const ws of sockets) ws.close();
+    // DO refuses already-expired X-Lawh-Expires-At with 401 (never falls back to +1h).
+    const staleRes = await stub.fetch('https://live/connect', {
+      method: 'GET',
+      headers: {
+        Upgrade: 'websocket',
+        'X-Lawh-Key-Id': 'key_stale',
+        'X-Lawh-Expires-At': String(Date.now() - 5),
+      },
+    });
+    expect(staleRes.status).toBe(401);
+
+    // Turning the live switch off immediately closes established project sockets!
+    const { cookie: owner } = await enter('o');
+    let closedCount = 0;
+    for (const ws of sockets) ws.addEventListener('close', () => { closedCount++; });
+    expect((await api('PUT', '/switches/live', { cookie: owner, body: { on: false } })).status).toBe(200);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(closedCount).toBe(sockets.length);
     expWs.close();
   });
 });
