@@ -7,10 +7,11 @@
   "packageManager": "pnpm@12.18.0",
   "engines": { "node": ">=22.12.0" },
   "scripts": {
-    "check": "pnpm typecheck && pnpm check:schema && pnpm check:api && pnpm build && pnpm test",
+    "check": "pnpm typecheck && pnpm check:schema && pnpm check:api && pnpm check:instance && pnpm build && pnpm test",
     "typecheck": "tsc -p tsconfig.json && tsc -p test/app/tsconfig.json && tsc -p test/content/tsconfig.json && tsc -p src/ui/tsconfig.json && tsc -p test/ui/tsconfig.json && tsc -p test/scripts/tsconfig.json && tsc -p scripts/local/tsconfig.json && tsc -p tsconfig.node.json",
     "check:schema": "python3 docs/spec/checks/query_plans.py && python3 docs/spec/checks/integrity.py && python3 scripts/check_migrations.py",
     "check:api": "REDOCLY_TELEMETRY=off REDOCLY_SUPPRESS_UPDATE_NOTICE=true redocly lint --extends=minimal docs/spec/openapi.yaml",
+    "check:instance": "python3 scripts/check_no_instance.py",
     "build:ui": "node scripts/build-ui.mjs",
     "build": "pnpm build:ui && wrangler deploy --dry-run --outdir .build/app -c wrangler.app.dev.jsonc && wrangler deploy --dry-run --outdir .build/content -c wrangler.content.dev.jsonc",
     "test": "pnpm build:ui && vitest run",
