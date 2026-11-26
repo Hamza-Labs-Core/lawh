@@ -87,6 +87,21 @@ test.describe('S19 Agreement: project setting, progress, and Waiting for others'
     await page.getByRole('button', { name: 'Rename' }).click();
     await page.getByLabel('People who must agree').selectOption('3');
     await expect(page.getByText('Needs 3 people, only 2 can answer.')).toBeVisible();
+    // Simulate another session concurrently renaming the project before this save returns, then reopen editor and change agreement again:
+    // the reopened editor must load the updated name and NOT revert the concurrent rename!
+    projectsState.items[0]!.name = { en: 'One Renamed', ar: 'واحد جديد' };
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByText('3 must agree')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'One Renamed' })).toBeVisible();
+    expect(lastPatchBody).toEqual({ answersNeeded: 3 });
+    await page.getByRole('button', { name: 'Rename' }).click();
+    await page.getByLabel('People who must agree').selectOption('2');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByText('2 must agree')).toBeVisible();
+    expect(lastPatchBody).toEqual({ answersNeeded: 2 });
+    await expect(page.getByRole('heading', { name: 'One Renamed' })).toBeVisible();
+    await page.getByRole('button', { name: 'Rename' }).click();
+    await page.getByLabel('People who must agree').selectOption('3');
     await page.getByRole('button', { name: 'Save' }).click();
     await expect(page.getByText('3 must agree')).toBeVisible();
     expect(lastPatchBody).toEqual({ answersNeeded: 3 });
@@ -96,7 +111,7 @@ test.describe('S19 Agreement: project setting, progress, and Waiting for others'
     // Check Settings → Projects in Arabic RTL as well!
     await page.getByRole('button', { name: 'العربية' }).click();
     await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
-    await expect(page.getByRole('heading', { name: 'واحد' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'واحد جديد' })).toBeVisible();
     expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
     await page.getByRole('button', { name: 'English' }).click();
 

@@ -139,5 +139,12 @@ describe('S19 multi-decider agreement', () => {
     expect(apiOff.answer).toMatchObject({ seq: 3, optionId: 'a' });
     expect(apiOff.agreement.every((a: { answeredBy: { id: string } }) => a.answeredBy.id === 'o')).toBe(true);
     expect(apiOff.history).toHaveLength(4);
+
+    // No-op PATCH requests must not write misleading project.rename or project.agreement audit rows.
+    expect((await api('PUT', '/switches/teams', { cookie: owner, body: { on: true } })).status).toBe(200);
+    const beforeAudit = (await env.DB.prepare("SELECT COUNT(*) n FROM audit WHERE action IN ('project.rename','project.agreement')").first<{ n: number }>())!.n;
+    expect((await api('PATCH', '/projects/one', { cookie: owner, body: { name: { en: 'One', ar: 'واحد' }, answersNeeded: 1 } })).status).toBe(200);
+    const afterAudit = (await env.DB.prepare("SELECT COUNT(*) n FROM audit WHERE action IN ('project.rename','project.agreement')").first<{ n: number }>())!.n;
+    expect(afterAudit).toBe(beforeAudit);
   });
 });

@@ -12,26 +12,46 @@ const pageJson = (project: { slug: string; name_en: string; name_ar: string }, p
 });
 
 export async function listMyProjects(ctx: SignedIn): Promise<Response> {
-  const projects = await visibleProjects(ctx.env, ctx.person);
-  const byProject = new Map<string, Set<string>>();
-  if (projects.length > 0) {
-    const { results } = await ctx.env.DB.prepare(
+  const { env, person } = ctx;
+  const projectsStmt = person.isOwner
+    ? env.DB.prepare("SELECT p.id, p.slug, p.name_en, p.name_ar, p.answers_needed, 5 level FROM projects p WHERE p.slug > '' ORDER BY p.slug LIMIT 1000")
+    : env.DB.prepare('SELECT p.id, p.slug, p.name_en, p.name_ar, p.answers_needed, x.level FROM project_access x JOIN projects p ON p.id = x.project_id WHERE x.member_id = ?').bind(person.memberId);
+  const decidersStmt = person.isOwner
+    ? env.DB.prepare(
       `SELECT tp.project_id, tm.member_id
-       FROM json_each(?) j
-       CROSS JOIN team_projects tp ON tp.project_id = j.value
+       FROM projects p
+       CROSS JOIN team_projects tp ON tp.project_id = p.id
        CROSS JOIN team_members tm ON tm.team_id = tp.team_id AND tm.level >= 3
        CROSS JOIN members m ON m.id = tm.member_id AND m.joined_at IS NOT NULL AND m.removed_at IS NULL
-       WHERE EXISTS (SELECT 1 FROM settings WHERE key = 'teams' AND value_json = 'true')`,
-    ).bind(JSON.stringify(projects.map((p) => p.id))).all<{ project_id: string; member_id: string }>();
-    for (const row of results) {
-      let set = byProject.get(row.project_id);
-      if (!set) { set = new Set(); byProject.set(row.project_id, set); }
-      set.add(row.member_id);
-    }
+       WHERE p.slug > ''
+         AND EXISTS (SELECT 1 FROM settings WHERE key = 'teams' AND value_json = 'true')`,
+    )
+    : env.DB.prepare(
+      `SELECT tp.project_id, tm.member_id
+       FROM project_access x
+       CROSS JOIN team_projects tp ON tp.project_id = x.project_id
+       CROSS JOIN team_members tm ON tm.team_id = tp.team_id AND tm.level >= 3
+       CROSS JOIN members m ON m.id = tm.member_id AND m.joined_at IS NOT NULL AND m.removed_at IS NULL
+       WHERE x.member_id = ?
+         AND EXISTS (SELECT 1 FROM settings WHERE key = 'teams' AND value_json = 'true')`,
+    ).bind(person.memberId);
+
+  const [projRes, decRes] = await env.DB.batch([projectsStmt, decidersStmt]);
+  type Row = { id: string; slug: string; name_en: string; name_ar: string; answers_needed: number; level: number };
+  const best = new Map<string, Row>();
+  for (const row of projRes!.results as Row[]) {
+    if ((best.get(row.id)?.level ?? 0) < row.level) best.set(row.id, row);
   }
+  const byProject = new Map<string, Set<string>>();
+  for (const row of decRes!.results as { project_id: string; member_id: string }[]) {
+    let set = byProject.get(row.project_id);
+    if (!set) { set = new Set(); byProject.set(row.project_id, set); }
+    set.add(row.member_id);
+  }
+  const projects = [...best.values()].sort((a, b) => (a.slug < b.slug ? -1 : 1));
   return Response.json({
     items: projects.map((p) => ({
-      ...projectJson(p),
+      ...projectJson(p as never),
       level: p.level,
       answersNeeded: p.answers_needed,
       answerers: (byProject.get(p.id)?.size ?? 0) + 1,
