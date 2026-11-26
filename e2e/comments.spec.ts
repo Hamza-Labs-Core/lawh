@@ -309,6 +309,9 @@ test('a delayed reply response does not bring back a reply deleted meanwhile', a
   await page.getByRole('textbox', { name: 'Reply' }).fill('New reply');
   await page.getByRole('button', { name: 'Reply', exact: true }).click();
   await got;
+  // Reopen the panel before deleting, so the delayed response belongs to the earlier mount.
+  await opener(page).click();
+  await opener(page).click();
   const old = replies.filter({ hasText: 'Old reply' });
   await old.getByRole('button', { name: 'Delete' }).click();
   await old.getByRole('button', { name: 'Delete' }).click();

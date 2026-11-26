@@ -66,6 +66,8 @@ export async function replyAsAgent(ctx: Context): Promise<Response> {
         .bind(row.id, row.page_id, row.project_id, row.thread_id, row.version_n, caller.agentId, row.body, now, caller.keyId, at),
       mustChange(env),
       eventStatement(env, row.project_id, row.page_id, 'comment.created', row.id, caller.agentId, now),
+      env.DB.prepare("SELECT CASE WHEN EXISTS (SELECT 1 FROM agent_keys WHERE id = ? AND revoked_at IS NULL AND expires_at > CAST(unixepoch('subsec') * 1000 AS INTEGER)) THEN 1 ELSE json('expired') END")
+        .bind(caller.keyId),
     ]);
     return Response.json(stored.json, { status: stored.status });
   } catch (error) {
