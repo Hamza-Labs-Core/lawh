@@ -74,7 +74,7 @@ test('who sees which settings', async ({ page, member, ask }) => {
   await expect(page.getByText('This device')).toBeVisible();
   await db(`UPDATE team_members SET level=4, set_by='o' WHERE member_id='${member}'`);
   await page.reload();
-  await expect(page.locator('.chips a')).toHaveText(['Account', 'Teams', 'Agents and keys', 'Deleted pages']);
+  await expect(page.locator('.chips a')).toHaveText(['Account', 'People', 'Teams', 'Agents and keys', 'Deleted pages']);
   await expect(page.getByText('This device')).toBeVisible();
 });
 
