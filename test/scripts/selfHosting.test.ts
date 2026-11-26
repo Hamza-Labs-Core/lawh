@@ -825,6 +825,33 @@ describe('S15 self-hosting lifecycle (init, upgrade, rollback, destroy)', () => 
 
     // Remove the colliding unrelated Worker, resume init -> succeeds!
     mock.state.workers.delete('lawh-app');
+
+    // Simulate an interrupted deploy that left `appDeploying: true` even though the Worker was never created,
+    // and then an unrelated Worker appears before retry -> must NOT overwrite it!
+    const cfgBeforeResume = JSON.parse(readFileSync(join(ws, 'lawh.config.json'), 'utf8'));
+    cfgBeforeResume.resources.workersCreated.appDeploying = true;
+    writeFileSync(join(ws, 'lawh.config.json'), `${JSON.stringify(cfgBeforeResume, null, 2)}\n`);
+    let injectedCollision = false;
+    await expect(runInit({
+      root: ws,
+      cf,
+      prompt,
+      log: () => {},
+      deployWorker: async (opts: Parameters<ReturnType<typeof mock.createDeployWorker>>[0]) => {
+        if (!injectedCollision && opts.workerName === 'lawh-app') {
+          injectedCollision = true;
+          throw new Error('Transient deploy interruption before upload');
+        }
+        return mock.createDeployWorker()(opts);
+      },
+    })).rejects.toThrow('Transient deploy interruption before upload');
+    // After the pre-upload failure, appDeploying is cleared back to false.
+    expect(JSON.parse(readFileSync(join(ws, 'lawh.config.json'), 'utf8')).resources.workersCreated.appDeploying).toBe(false);
+
+    // Even if appDeploying is manually left true while the Worker is absent, resuming clears it first.
+    const cfgStale = JSON.parse(readFileSync(join(ws, 'lawh.config.json'), 'utf8'));
+    cfgStale.resources.workersCreated.appDeploying = true;
+    writeFileSync(join(ws, 'lawh.config.json'), `${JSON.stringify(cfgStale, null, 2)}\n`);
     const done = await runInit({ root: ws, cf, prompt, log: () => {}, deployWorker: mock.createDeployWorker() });
     expect(done.config.secrets.backend).toBe('worker_secrets');
 
@@ -860,6 +887,17 @@ describe('S15 self-hosting lifecycle (init, upgrade, rollback, destroy)', () => 
     expect(builtManifest.name).toBe('Studio Board · لوحة الاستوديو');
     expect(builtManifest.theme_color).toBe('#f6f4ef');
     expect(builtSvg).toContain('#22aa88');
+
+    // Explicit `#e0b15a` accent also emits the light-mode override so light mode honors it.
+    const defaultAccentCfg = join(uiOut, 'lawh-default-accent.json');
+    writeFileSync(defaultAccentCfg, JSON.stringify({
+      instance: { name: { en: 'Gold Board', ar: 'لوحة' }, accent: '#e0b15a', defaultTheme: 'light' },
+    }));
+    await buildUi({ root: repoRoot, out: join(uiOut, 'dist-gold'), configPath: defaultAccentCfg });
+    const goldHtml = readFileSync(join(uiOut, 'dist-gold/index.html'), 'utf8');
+    const goldCss = /href="\/assets\/(style-[a-f0-9]+\.css)"/.exec(goldHtml);
+    expect(goldCss).not.toBeNull();
+    expect(readFileSync(join(uiOut, 'dist-gold/assets', goldCss![1]!), 'utf8')).toContain(':root,:root[data-mode=light]{--ac:#e0b15a;}');
   });
 
   it('reads Wrangler OAuth token from config file and enforces check_no_instance.py', () => {
