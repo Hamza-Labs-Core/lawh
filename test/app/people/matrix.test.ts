@@ -111,6 +111,7 @@ const MATRIX: MatrixRow[] = [
   // Settings, switches, export (owner only)
   { method: 'GET', pattern: '^/app-api/settings$', request: () => ({ path: '/settings' }), expected: [403, 403, 403, 403, 403, 200] },
   { method: 'PUT', pattern: '^/app-api/settings/retention$', request: () => ({ path: '/settings/retention', body: { keep: 10 } }), expected: [403, 403, 403, 403, 403, 200] },
+  { method: 'PUT', pattern: '^/app-api/switches/live$', request: () => ({ path: '/switches/live', body: { on: true } }), expected: [403, 403, 403, 403, 403, 200] },
   { method: 'PUT', pattern: '^/app-api/switches/webhooks$', request: () => ({ path: '/switches/webhooks', body: { on: true } }), expected: [403, 403, 403, 403, 403, 200] },
   { method: 'PUT', pattern: '^/app-api/settings/webhook-hosts$', request: () => ({ path: '/settings/webhook-hosts', body: { hosts: ['hooks.example.com'] } }), expected: [403, 403, 403, 403, 403, 200] },
   { method: 'GET', pattern: '^/app-api/export$', request: () => ({ path: '/export' }), expected: [403, 403, 403, 403, 403, 200] },
