@@ -2,7 +2,7 @@
 // Lawh agent CLI — single file, zero dependencies, Node >= 22.
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { hostname, homedir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 
@@ -73,25 +73,40 @@ function writeKeychain(data) {
   return false;
 }
 
-function readStore() {
-  const fromChain = readKeychain();
-  if (fromChain && Array.isArray(fromChain.agents)) return fromChain;
+function readFileStore() {
   const file = storeFilePath();
-  if (!existsSync(file)) return { agents: [] };
+  if (!existsSync(file)) return null;
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf8'));
-    return parsed && Array.isArray(parsed.agents) ? parsed : { agents: [] };
+    return parsed && Array.isArray(parsed.agents) ? parsed : null;
   } catch {
-    return { agents: [] };
+    return null;
   }
 }
 
+function readStore() {
+  const fromChain = readKeychain();
+  const validChain = fromChain && Array.isArray(fromChain.agents) ? fromChain : null;
+  const fromFile = readFileStore();
+  if (validChain && fromFile) {
+    const chainTs = typeof validChain.updatedAt === 'number' ? validChain.updatedAt : 0;
+    const fileTs = typeof fromFile.updatedAt === 'number' ? fromFile.updatedAt : 0;
+    return fileTs >= chainTs ? fromFile : validChain;
+  }
+  return validChain ?? fromFile ?? { updatedAt: 0, agents: [] };
+}
+
 function writeStore(store) {
-  if (writeKeychain(store)) return;
+  const stamped = { updatedAt: Date.now(), agents: store.agents };
   const file = storeFilePath();
+  if (writeKeychain(stamped)) {
+    // Remove any older fallback file so keychain and disk never diverge.
+    try { if (existsSync(file)) unlinkSync(file); } catch { /* ignore */ }
+    return;
+  }
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
+  writeFileSync(tmp, `${JSON.stringify(stamped, null, 2)}\n`, { mode: 0o600 });
   try { chmodSync(tmp, 0o600); } catch { /* Windows */ }
   renameSync(tmp, file);
   try { chmodSync(file, 0o600); } catch { /* Windows */ }
@@ -180,11 +195,27 @@ async function apiRequest(cred, method, path, { body, rawBody, idem = false, hea
   return Buffer.from(await response.arrayBuffer());
 }
 
+function safeConnectUrl(rawUrl, baseUrl) {
+  try {
+    const parsed = new URL(rawUrl);
+    const base = new URL(baseUrl);
+    if ((parsed.protocol !== 'https:' && parsed.protocol !== 'http:') || parsed.origin !== base.origin) return null;
+    if (parsed.pathname !== '/connect' || parsed.search || parsed.hash) return null;
+    return `${parsed.origin}/connect`;
+  } catch {
+    return null;
+  }
+}
+
 function openBrowser(url) {
   try {
-    const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
-    const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
-    const child = spawn(cmd, args, { detached: true, stdio: 'ignore' });
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return;
+    const safe = parsed.href;
+    // Never invoke a shell (e.g., cmd /c) so server-supplied URLs cannot be interpreted by cmd.exe.
+    const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'rundll32.exe' : 'xdg-open';
+    const args = process.platform === 'win32' ? ['url.dll,FileProtocolHandler', safe] : [safe];
+    const child = spawn(cmd, args, { detached: true, stdio: 'ignore', shell: false });
     child.on('error', () => { /* headless or missing opener */ });
     child.unref();
   } catch { /* headless */ }
@@ -238,8 +269,9 @@ async function cmdConnect(positional, flags) {
   const started = await startRes.json();
   const fullKey = `lawh_${started.id}_${secret}`;
 
-  process.stderr.write(`Open: ${started.url}\nCode: ${started.code}\nWaiting for approval...\n`);
-  if (!flags['no-open']) openBrowser(started.url);
+  const connectUrl = safeConnectUrl(started.url, baseUrl) ?? `${baseUrl}/connect`;
+  process.stderr.write(`Open: ${connectUrl}\nCode: ${started.code}\nWaiting for approval...\n`);
+  if (!flags['no-open']) openBrowser(connectUrl);
 
   const intervalMs = Math.max(200, Number(flags['poll-ms'] || (started.interval || 3) * 1000));
   while (Date.now() < started.expiresAt + 10_000) {
@@ -404,8 +436,20 @@ Commands:
       const bytes = Buffer.from(await res.arrayBuffer());
       if (asJson) {
         const contentType = res.headers.get('Content-Type') || 'application/octet-stream';
-        const textLike = /^(?:text\/|application\/(?:json|javascript|xml|xhtml\+xml|svg\+xml))/.test(contentType);
-        const encoding = textLike ? 'utf8' : 'base64';
+        const textType = /^(?:text\/|application\/(?:json|javascript|xml|xhtml\+xml|svg\+xml))/.test(contentType);
+        const textExt = /\.(?:html?|css|m?js|cjs|json|txt|md|markdown|csv|tsv|svg|xml|ya?ml)$/i.test(flags.file);
+        let encoding = 'base64';
+        let content = '';
+        if (textType || textExt) {
+          try {
+            content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+            encoding = 'utf8';
+          } catch {
+            content = bytes.toString('base64');
+          }
+        } else {
+          content = bytes.toString('base64');
+        }
         printOut({
           project,
           slug,
@@ -414,7 +458,7 @@ Commands:
           contentType,
           bytes: bytes.byteLength,
           encoding,
-          content: bytes.toString(encoding),
+          content,
         }, true, '');
         return;
       }
