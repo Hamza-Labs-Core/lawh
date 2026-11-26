@@ -11,6 +11,7 @@ export interface SharedEnv {
 export interface WebhookMessage {
   webhookId: string;
   eventSeq: number;
+  token?: string;
 }
 
 export interface AppEnv extends SharedEnv {
