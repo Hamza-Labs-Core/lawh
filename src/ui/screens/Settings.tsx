@@ -51,17 +51,18 @@ export function Settings({ path, search = '', me, onChange }: { path: string; se
 }
 
 /** Shown after a passkey reset so every member — including a current or former manager — can review and revoke all of their own active agent keys. */
-function PostResetReview({ onRevoked }: { onRevoked?: (keyId: string) => void }) {
+function PostResetReview({ revokedIds, onRevoked }: { revokedIds?: Readonly<Record<string, number>>; onRevoked?: (keyId: string) => void }) {
   const t = useText(), { lang } = useSettings();
   const { data, problem, load, set } = useLoad<{ items: MyActiveKey[] }>('/account/keys');
   const [busy, run] = useBusy(), [asking, setAsking] = useState<string | null>(null), [failed, setFailed] = useState<Problem | null>(null);
+  const visible = data ? data.items.filter((k) => !revokedIds || !(k.id in revokedIds)) : null;
   return (
     <section class="card form" role="status">
-      <p>{data && data.items.length > 0 ? t('postResetBanner') : t('postResetDone')}</p>
+      <p>{visible && visible.length > 0 ? t('postResetBanner') : t('postResetDone')}</p>
       {data === null && problem && <Loading problem={problem} load={load} />}
-      {data && data.items.length > 0 && (
+      {visible && visible.length > 0 && (
         <ul class="rows">
-          {data.items.map((key) => (
+          {visible.map((key) => (
             <li key={key.id}>
               <div>
                 <strong><bdi dir="auto">{key.agentName}</bdi>{key.label ? <> — <bdi dir="auto">{key.label}</bdi></> : null}</strong>
@@ -437,30 +438,41 @@ const b64 = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes)).r
 
 function Agents({ me, afterReset = false }: { me: Me; afterReset?: boolean }) {
   const t = useText(), { data, problem, load, set } = useLoad<Listed<Agent>>('/agents'), [making, setMaking] = useState(false), [made, setMade] = useState<string | null>(null);
-  const [busy, run] = useBusy(), [moreFailed, setMoreFailed] = useState<Problem | null>(null);
+  const [busy, run] = useBusy(), [moreFailed, setMoreFailed] = useState<Problem | null>(null), [revoked, setRevoked] = useState<Record<string, number>>({});
   const newKey = useRef<HTMLButtonElement>(null), wasOpen = useRef(false), open = making || made !== null;
   useEffect(() => { if (!open && wasOpen.current) newKey.current?.focus(); wasOpen.current = open; }, [open]);
+  const markRevoked = (id: string) => {
+    const at = Date.now();
+    setRevoked((prev) => (id in prev ? prev : { ...prev, [id]: at }));
+    set((now) => now && { ...now, items: now.items.map((a) => ({ ...a, keys: a.keys.map((k) => (k.id === id ? { ...k, revokedAt: k.revokedAt ?? at } : k)) })) });
+  };
   const off = (agent: Agent, value: boolean) => call('PUT', `/agents/${agent.id}/off`, { off: value }).then(() => set((now) => now && { ...now, items: now.items.map((a) => (a.id === agent.id ? { ...a, disabledAt: value ? Date.now() : null } : a)) }));
-  const revoke = (id: string) => call('DELETE', `/agent-keys/${id}`).then(() => set((now) => now && { ...now, items: now.items.map((a) => ({ ...a, keys: a.keys.map((k) => (k.id === id ? { ...k, revokedAt: Date.now() } : k)) })) }));
+  const revoke = (id: string) => call('DELETE', `/agent-keys/${id}`).then(() => markRevoked(id));
   const takeOver = (agent: Agent) => call<{ id: string; name: string }>('POST', `/agents/${agent.id}/take-over`).then(() => load());
-  if (data === null) return <Loading problem={problem} load={load} />;
+  const items = data ? data.items.map((a) => ({ ...a, keys: a.keys.map((k) => (k.id in revoked && k.revokedAt === null ? { ...k, revokedAt: revoked[k.id]! } : k)) })) : null;
   return (
     <>
-      {afterReset && <PostResetReview onRevoked={(id) => set((now) => now && { items: now.items.map((a) => ({ ...a, keys: a.keys.map((k) => (k.id === id ? { ...k, revokedAt: Date.now() } : k)) })) })} />}
-      {made !== null && <NewKey secret={made} onDone={() => setMade(null)} />}
-      {making && <MakeKey me={me} agents={data.items.filter((a) => a.isMine !== false)} onCancel={() => setMaking(false)} onMade={(secret) => { setMaking(false); setMade(secret); load(); }} />}
-      {!making && made === null && <button ref={newKey} class="primary fit" onClick={() => setMaking(true)}>{t('newKey')}</button>}
-      <p class="muted">{t('newKeyHelp')}</p>
-      {data.items.length === 0 && <div class="card empty"><p>{t('noAgents')}</p></div>}
-      <ul class="grid wide-cards">{data.items.map((agent) => <li key={agent.id}><AgentCard me={me} agent={agent} off={off} revoke={revoke} takeOver={takeOver} /></li>)}</ul>
-      {moreFailed && <Failure>{t(moreFailed)}</Failure>}
-      {data.next && <button class="plain wide" disabled={busy} onClick={() => run(async () => {
-        setMoreFailed(null);
-        try {
-          const next = await call<Listed<Agent>>('GET', `/agents?cursor=${encodeURIComponent(data.next!)}`);
-          set((now) => now && { items: [...now.items, ...next.items], next: next.next });
-        } catch (error) { setMoreFailed(problemIn(error)); }
-      })}>{t('more')}</button>}
+      {afterReset && <PostResetReview revokedIds={revoked} onRevoked={markRevoked} />}
+      {items === null ? (
+        <Loading problem={problem} load={load} />
+      ) : (
+        <>
+          {made !== null && <NewKey secret={made} onDone={() => setMade(null)} />}
+          {making && <MakeKey me={me} agents={items.filter((a) => a.isMine !== false)} onCancel={() => setMaking(false)} onMade={(secret) => { setMaking(false); setMade(secret); load(); }} />}
+          {!making && made === null && <button ref={newKey} class="primary fit" onClick={() => setMaking(true)}>{t('newKey')}</button>}
+          <p class="muted">{t('newKeyHelp')}</p>
+          {items.length === 0 && <div class="card empty"><p>{t('noAgents')}</p></div>}
+          <ul class="grid wide-cards">{items.map((agent) => <li key={agent.id}><AgentCard me={me} agent={agent} off={off} revoke={revoke} takeOver={takeOver} /></li>)}</ul>
+          {moreFailed && <Failure>{t(moreFailed)}</Failure>}
+          {data?.next && <button class="plain wide" disabled={busy} onClick={() => run(async () => {
+            setMoreFailed(null);
+            try {
+              const next = await call<Listed<Agent>>('GET', `/agents?cursor=${encodeURIComponent(data.next!)}`);
+              set((now) => now && { items: [...now.items, ...next.items], next: next.next });
+            } catch (error) { setMoreFailed(problemIn(error)); }
+          })}>{t('more')}</button>}
+        </>
+      )}
     </>
   );
 }

@@ -160,6 +160,32 @@ describe('pnpm lawh owner setup --local', { timeout: 120_000 }, () => {
       }),
     ).rejects.toThrow('unrelated trigger failure');
     expect(promptCalls).toBe(1);
+
+    // Even an agent literally named "malformed JSON importer" echoed in the SQL command must NOT trigger a retry on an unrelated error.
+    query(`INSERT INTO agents(id, member_id, name, created_at) VALUES('agt_mj', '${currentOwner}', 'malformed JSON importer', ${Date.now()});`);
+    let promptCalls2 = 0;
+    await expect(
+      runOwnerTransfer({
+        targetArg: otherMember,
+        sql: (statements: string) => {
+          if (statements.includes('UPDATE members SET role')) {
+            const err = Object.assign(new Error(`Command failed: wrangler d1 execute --command "${statements}"`), {
+              stderr: 'SQLITE_CONSTRAINT: audit trigger blocked',
+              stdout: '',
+            });
+            throw err;
+          }
+          return JSON.parse(execFileSync(process.execPath, [wrangler, 'd1', 'execute', 'DB', '--local', '--persist-to', state, '-c', join(state, 'entry.json'), '--json', '--command', statements], { cwd: root, env: env() }).toString());
+        },
+        prompt: async () => {
+          promptCalls2++;
+          return 'yes';
+        },
+        log: () => {},
+      }),
+    ).rejects.toThrow();
+    expect(promptCalls2).toBe(1);
+    query("DELETE FROM agents WHERE id='agt_mj';");
   });
 });
 

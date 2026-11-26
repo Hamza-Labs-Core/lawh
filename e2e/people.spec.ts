@@ -144,10 +144,15 @@ test.describe('S18 Settings → People, teams switch, and post-reset key review'
       ],
     };
 
+    let failAgents = false;
     await page.route('**/app-api/account/keys', async (route) => {
       await route.fulfill({ json: accountKeysState });
     });
     await page.route('**/app-api/agents*', async (route) => {
+      if (failAgents) {
+        await route.fulfill({ status: 503, json: { code: 'unavailable', message: 'Temporarily down.' } });
+        return;
+      }
       await route.fulfill({ json: agentsState });
     });
     await page.route('**/app-api/agent-keys/*', async (route) => {
@@ -220,7 +225,8 @@ test.describe('S18 Settings → People, teams switch, and post-reset key review'
     await review.getByRole('button', { name: 'Revoke for good' }).click();
     await expect(page.getByText('Revoked')).toBeVisible();
 
-    // Even when /agents returns 200 older agents (without the user's retained key), PostResetReview still shows and revokes the retained key!
+    // Even when /agents returns 503, PostResetReview still mounts and lets the manager revoke retained keys!
+    failAgents = true;
     accountKeysState.items = [
       {
         id: 'key_hidden',
