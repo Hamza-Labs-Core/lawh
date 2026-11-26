@@ -574,24 +574,17 @@ function NewKey({ secret, onDone }: { secret: string; onDone: () => void }) {
 
 function Projects({ me }: { me: Me }) {
   const t = useText(), { data, problem, load, set } = useLoad<Listed<ProjectName>>('/projects');
-  const seq = useRef(0), savedEpoch = useRef<Record<string, number>>({});
+  const seq = useRef(0), itemEpoch = useRef<Record<string, number>>({});
   if (data === null) return <Loading problem={problem} load={load} />;
-  const onSynced = (startedSeq: number, fresh: Listed<ProjectName>) => {
-    set((now) => {
-      if (!now) return fresh;
-      const bySlug = new Map(now.items.map((o) => [o.slug, o]));
-      return {
-        ...fresh,
-        items: fresh.items.map((item) => {
-          const local = bySlug.get(item.slug);
-          return local && (savedEpoch.current[item.slug] ?? 0) > startedSeq ? local : item;
-        }),
-      };
-    });
+  // Only merge the opened project's own item, and only if no newer refresh or save has already updated that slug.
+  const onSynced = (slug: string, startedSeq: number, fresh: ProjectName | undefined) => {
+    if (!fresh || (itemEpoch.current[slug] ?? 0) > startedSeq) return;
+    itemEpoch.current[slug] = startedSeq;
+    set((now) => now && { ...now, items: now.items.map((o) => (o.slug === slug ? { ...o, ...fresh } : o)) });
   };
   return (
     <>
-      <ProjectForm me={me} onSave={async (slug, payload) => { const made = await call<ProjectName>('POST', '/projects', { slug, ...payload }); savedEpoch.current[slug] = ++seq.current; set((now) => now && { ...now, items: [...now.items, made] }); }} />
+      <ProjectForm me={me} onSave={async (slug, payload) => { const made = await call<ProjectName>('POST', '/projects', { slug, ...payload }); itemEpoch.current[slug] = ++seq.current; set((now) => now && { ...now, items: [...now.items, made] }); }} />
       <ul class="grid wide-cards">
         {data.items.map((p) => (
           <li key={p.slug}>
@@ -602,7 +595,7 @@ function Projects({ me }: { me: Me }) {
               onSynced={onSynced}
               onSave={async (slug, payload) => {
                 const next = await call<ProjectName>('PATCH', `/projects/${slug}`, payload);
-                savedEpoch.current[slug] = ++seq.current;
+                itemEpoch.current[slug] = ++seq.current;
                 set((now) => now && { ...now, items: now.items.map((o) => (o.slug === slug ? { ...o, ...next } : o)) });
               }}
             />
@@ -616,7 +609,7 @@ function Projects({ me }: { me: Me }) {
 
 const AGREEMENT_OPTIONS = [1, 2, 3, 4, 5] as const;
 
-function ProjectForm({ me, project, nextSeq, onSynced, onSave }: { me: Me; project?: ProjectName; nextSeq?: () => number; onSynced?: (startedSeq: number, fresh: Listed<ProjectName>) => void; onSave: (slug: string, payload: { name?: { en: string; ar: string }; answersNeeded?: number }) => Promise<void> }) {
+function ProjectForm({ me, project, nextSeq, onSynced, onSave }: { me: Me; project?: ProjectName; nextSeq?: () => number; onSynced?: (slug: string, startedSeq: number, fresh: ProjectName | undefined) => void; onSave: (slug: string, payload: { name?: { en: string; ar: string }; answersNeeded?: number }) => Promise<void> }) {
   const t = useText(), { lang } = useSettings(), id = useId(), [busy, run] = useBusy(), [problem, setProblem] = useState<Problem | null>(null), [done, setDone] = useState(false), [open, setOpen] = useState(false), box = useRef<HTMLDivElement>(null), first = useRef<HTMLInputElement>(null), wasOpen = useRef(false);
   const [refreshState, setRefreshState] = useState<'ready' | 'loading' | 'error'>('ready'), [refreshTry, setRefreshTry] = useState(0);
   const [slug, setSlug] = useState(project?.slug ?? ''), [en, setEn] = useState(project?.name.en ?? ''), [ar, setAr] = useState(project?.name.ar ?? '');
@@ -639,7 +632,7 @@ function ProjectForm({ me, project, nextSeq, onSynced, onSave }: { me: Me; proje
     call<Listed<ProjectName>>('GET', '/projects', undefined, stop.signal).then(
       (fresh) => {
         if (stop.signal.aborted) return;
-        onSynced(startedSeq, fresh);
+        onSynced(project.slug, startedSeq, fresh.items.find((o) => o.slug === project.slug));
         setRefreshState('ready');
       },
       (error: unknown) => {
