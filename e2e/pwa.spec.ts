@@ -4,6 +4,12 @@ import { APP, enter, test } from './people';
 test('manifest, icons, theme-color, and shell-only service worker work across browsers', async ({ page, member, ask }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   const asked = await ask([{ question: 'Which storage?' }], { level: 3 });
+  // Seed caches before signing in (the service worker only registers once signed in), so activation cleanup is deterministic.
+  await page.goto(`${APP}/`);
+  await page.evaluate(async () => {
+    await caches.open('lawh-shell-000000000000');
+    await caches.open('other-origin-cache');
+  });
   await enter(page.context(), member);
   await page.goto(`${APP}/`);
 
@@ -44,18 +50,21 @@ test('manifest, icons, theme-color, and shell-only service worker work across br
   await page.goto(`${APP}/decisions`);
   await expect(page.getByRole('heading', { name: 'Decisions' })).toBeVisible();
 
-  // Cache Storage must hold ONLY the app shell assets — never API responses, page content, or /link.
+  // Cache Storage must hold ONLY the app shell assets (plus the untouched unrelated cache) — never API responses, page content, or /link.
   const cachedUrls = await page.evaluate(async () => {
     const names = await caches.keys();
+    const lawhNames = names.filter((n) => n.startsWith('lawh-shell-'));
     const urls: string[] = [];
-    for (const name of names) {
+    for (const name of lawhNames) {
       const cache = await caches.open(name);
       for (const req of await cache.keys()) urls.push(new URL(req.url).pathname);
     }
-    return { names, urls };
+    return { names, lawhNames, urls };
   });
-  expect(cachedUrls.names.length).toBe(1);
-  expect(cachedUrls.names[0]).toMatch(/^lawh-shell-[0-9a-f]{12}$/);
+  expect(cachedUrls.names).toContain('other-origin-cache');
+  expect(cachedUrls.names).not.toContain('lawh-shell-000000000000');
+  expect(cachedUrls.lawhNames.length).toBe(1);
+  expect(cachedUrls.lawhNames[0]).toMatch(/^lawh-shell-[0-9a-f]{12}$/);
   expect(cachedUrls.urls).toContain('/');
   expect(cachedUrls.urls).toContain('/manifest.webmanifest');
   expect(cachedUrls.urls).toContain('/icon.svg');

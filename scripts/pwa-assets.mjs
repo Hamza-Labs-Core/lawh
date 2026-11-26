@@ -139,13 +139,17 @@ const ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" 
 </svg>
 `;
 
-export function writePwaAssets(out, shellAssetPaths) {
+export function writePwaAssets(out, shellAssetPaths, indexHtml) {
   mkdirSync(join(out, 'icons'), { recursive: true });
+  const icon192 = renderIconPng(192, false);
+  const icon512 = renderIconPng(512, false);
+  const iconMaskable512 = renderIconPng(512, true);
+  const appleTouch = renderIconPng(180, false);
   writeFileSync(join(out, 'icon.svg'), ICON_SVG);
-  writeFileSync(join(out, 'icons/icon-192.png'), renderIconPng(192, false));
-  writeFileSync(join(out, 'icons/icon-512.png'), renderIconPng(512, false));
-  writeFileSync(join(out, 'icons/icon-maskable-512.png'), renderIconPng(512, true));
-  writeFileSync(join(out, 'icons/apple-touch-icon.png'), renderIconPng(180, false));
+  writeFileSync(join(out, 'icons/icon-192.png'), icon192);
+  writeFileSync(join(out, 'icons/icon-512.png'), icon512);
+  writeFileSync(join(out, 'icons/icon-maskable-512.png'), iconMaskable512);
+  writeFileSync(join(out, 'icons/apple-touch-icon.png'), appleTouch);
 
   const manifest = `${JSON.stringify({
     name: 'Lawh · لوح',
@@ -175,7 +179,16 @@ export function writePwaAssets(out, shellAssetPaths) {
     '/icons/apple-touch-icon.png',
   ];
   const precache = ['/', '/manifest.webmanifest', ...staticFiles];
-  const version = createHash('sha256').update(JSON.stringify(precache) + manifest + ICON_SVG).digest('hex').slice(0, 12);
+  const hash = createHash('sha256');
+  hash.update(JSON.stringify(precache));
+  hash.update(manifest);
+  hash.update(ICON_SVG);
+  hash.update(indexHtml);
+  hash.update(icon192);
+  hash.update(icon512);
+  hash.update(iconMaskable512);
+  hash.update(appleTouch);
+  const version = hash.digest('hex').slice(0, 12);
 
   // Shell-only service worker: never caches /app-api/*, /v1/*, /link, or cross-origin content.
   const sw = `const CACHE = ${JSON.stringify(`lawh-shell-${version}`)};
@@ -191,7 +204,7 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key))))
+      .then((keys) => Promise.all(keys.filter((key) => key.startsWith('lawh-shell-') && key !== CACHE).map((key) => caches.delete(key))))
       .then(() => self.clients.claim()),
   );
 });
