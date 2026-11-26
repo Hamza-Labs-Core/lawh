@@ -663,16 +663,89 @@ async function withLockGate(lockFile, fn) {
   }
 }
 
+const FLOCK_HELPER = `
+import fcntl, os, signal, sys
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+path, pid = sys.argv[1], sys.argv[2]
+fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+try:
+    os.chmod(path, 0o600)
+except OSError:
+    pass
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        sys.stderr.write(os.read(fd, 256).decode('utf-8', 'replace'))
+    except OSError:
+        pass
+    sys.exit(2)
+os.ftruncate(fd, 0)
+os.lseek(fd, 0, os.SEEK_SET)
+os.write(fd, f'{{"pid":{pid}}}\\n'.encode('utf-8'))
+os.write(1, b'OK\\n')
+sys.stdin.buffer.read()
+`;
+
+function tryAcquireKernelFlock(lockFile) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const child = spawn('python3', ['-c', FLOCK_HELPER, lockFile, String(process.pid)], {
+      shell: false,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let out = '';
+    let errText = '';
+    child.stdout.on('data', (chunk) => {
+      out += chunk.toString('utf8');
+      if (!settled && out.includes('OK\n')) {
+        settled = true;
+        resolve({ kind: 'flock', child, lockFile });
+      }
+    });
+    child.stderr.on('data', (chunk) => { errText += chunk.toString('utf8'); });
+    child.on('error', () => {
+      if (!settled) {
+        settled = true;
+        resolve(null); // python3 unavailable -> fall back to file lock
+      }
+    });
+    child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      if (code === 2) {
+        let existingPid = null;
+        try { existingPid = JSON.parse(errText.trim())?.pid ?? null; } catch { /* ignore */ }
+        reject(new Error(
+          typeof existingPid === 'number'
+            ? `Another process (pid ${existingPid}) is already using this cursor.`
+            : 'Another process is already using this cursor.',
+        ));
+        return;
+      }
+      resolve(null); // unexpected python3 failure -> fall back to file lock
+    });
+  });
+}
+
 async function acquireLock(cursorFile) {
   const lockFile = `${cursorFile}.lock`;
   mkdirSync(dirname(lockFile), { recursive: true, mode: 0o700 });
+
+  // Prefer real OS kernel flock(2) on the lock inode (never unlinked, zero stale-lock or pathname races, automatically released by kernel on crash/SIGKILL).
+  if (process.env.LAWH_NO_FLOCK !== '1') {
+    const flockLock = await tryAcquireKernelFlock(lockFile);
+    if (flockLock) return flockLock;
+  }
+
+  // Fallback for environments without python3 (e.g. minimal Windows/containers).
   const token = randomBytes(8).toString('hex');
   const payload = `${JSON.stringify({ pid: process.pid, token, startedAt: Date.now() })}\n`;
-
-  // Serialize ALL lock creation and stale-lock recovery through `.gate` so no other caller can claim `lockFile` while stale recovery inspects and replaces it.
   return withLockGate(lockFile, () => {
     if (tryLinkLock(lockFile, payload)) {
-      return { lockFile, token };
+      return { kind: 'file', lockFile, token };
     }
     let shouldUnlink = false;
     let fd = null;
@@ -701,21 +774,35 @@ async function acquireLock(cursorFile) {
       try { unlinkSync(lockFile); } catch { /* owner already exited and unlinked it */ }
     }
     if (tryLinkLock(lockFile, payload)) {
-      return { lockFile, token };
+      return { kind: 'file', lockFile, token };
     }
     throw new Error('Could not acquire cursor lock.');
   });
 }
 
-function releaseLocks(locks) {
-  for (const { lockFile, token } of locks) {
+async function releaseLocks(locks) {
+  const waits = [];
+  for (const lock of locks) {
+    if (lock.kind === 'flock') {
+      const { child } = lock;
+      if (child.exitCode === null && child.signalCode === null) {
+        waits.push(new Promise((resolve) => {
+          const t = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* ignore */ } resolve(); }, 500);
+          child.once('close', () => { clearTimeout(t); resolve(); });
+          try { child.stdin.end(); } catch { /* ignore */ }
+        }));
+      }
+      continue;
+    }
     try {
-      const current = readLockInfo(lockFile);
-      if (current && current.pid === process.pid && current.token === token) {
-        unlinkSync(lockFile);
+      const current = readLockInfo(lock.lockFile);
+      if (current && current.pid === process.pid && current.token === lock.token) {
+        unlinkSync(lock.lockFile);
       }
     } catch { /* ignore */ }
   }
+  locks.length = 0;
+  if (waits.length > 0) await Promise.all(waits);
 }
 
 async function writeStdoutLine(line, signal) {
@@ -819,11 +906,11 @@ async function cmdWatch(mode, cred, flags, command) {
       s.wsOpen = false;
     }
   };
-  const cleanup = () => {
+  const cleanup = async () => {
     if (timeoutTimer) { clearTimeout(timeoutTimer); timeoutTimer = null; }
     runAbort.abort();
     closeSockets();
-    releaseLocks(acquiredLocks);
+    await releaseLocks(acquiredLocks);
   };
 
   const onSignal = (sig) => {
@@ -1020,7 +1107,7 @@ async function cmdWatch(mode, cred, flags, command) {
         if (res === 'aborted') break;
         if (res === 'retry') hadTransientError = true;
         if (res === 'handler_failed') {
-          cleanup();
+          await cleanup();
           process.exit(1);
         }
       }
@@ -1053,7 +1140,7 @@ async function cmdWatch(mode, cred, flags, command) {
   } finally {
     process.off('SIGINT', onSignal);
     process.off('SIGTERM', onSignal);
-    cleanup();
+    await cleanup();
   }
   if (exitCodeOnReturn !== 0) process.exit(exitCodeOnReturn);
 }
