@@ -19,6 +19,7 @@ test.describe('S18 Settings → People, teams switch, and post-reset key review'
           teams: [{ id: 'tem_01', name: 'Design', level: 4 }],
         },
       ],
+      membersNext: null,
       invites: [
         {
           id: 'mem_exp',
@@ -34,6 +35,7 @@ test.describe('S18 Settings → People, teams switch, and post-reset key review'
           canCancel: true,
         },
       ],
+      invitesNext: null,
       teams: [{ id: 'tem_01', name: 'Design' }],
     };
 
@@ -175,11 +177,16 @@ test.describe('S18 Settings → People, teams switch, and post-reset key review'
     expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
     await page.getByRole('button', { name: 'English' }).click();
 
-    // Verify Teams switch in Settings → Data warns about resetting answers_needed to 1.
+    // Verify Teams switch in Settings → Data opens a modal dialog (Escape restores focus) and warns about resetting answers_needed to 1.
     await page.getByRole('link', { name: 'Versions and export' }).click();
     await expect(page.getByText('Teams are on.')).toBeVisible();
-    await page.getByRole('button', { name: 'Turn teams off' }).click();
+    const offBtn = page.getByRole('button', { name: 'Turn teams off' });
+    await offBtn.click();
+    await expect(page.getByRole('dialog', { name: 'Turn teams off' })).toBeVisible();
     await expect(page.getByText(/resets every project’s required agreement count back to 1/)).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(offBtn).toBeFocused();
+    await offBtn.click();
     await page.getByRole('button', { name: 'Turn teams off now' }).click();
     await expect(page.getByText('Teams are off. Only the owner can sign in.')).toBeVisible();
 

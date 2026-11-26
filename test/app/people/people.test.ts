@@ -157,4 +157,80 @@ describe('S18 people lifecycle, invites, resets, removal, and teams switch', () 
     await purge(env, Date.now() + 31 * DAY);
     expect((await one<{ name: string | null }>("SELECT name FROM members WHERE id='m'"))?.name).toBeNull();
   });
+
+  it('keeps unjoined owner safe during 30-day cleanup, blocks in-flight linkRegister when teams turns off, paginates /people, and lets former managers revoke retained keys', async () => {
+    const { cookie: owner } = await enter('o');
+    const { cookie: mona } = await enter('m');
+    await sql("INSERT INTO team_members(team_id, member_id, level, set_by, set_at) VALUES('t1', 'm', 4, 'o', 1)");
+
+    // 1) Unjoined owner >30 days old must NOT fail cleanUpPeople or roll back expired challenge cleanup.
+    await sql(
+      `UPDATE members SET joined_at = NULL, created_at = ${Date.now() - 40 * DAY} WHERE id = 'o'`,
+      `INSERT INTO auth_challenges(id, purpose, member_id, challenge, expires_at) VALUES('cha_old', 'sign_in', NULL, 'c', ${Date.now() - 1000})`,
+    );
+    await cleanUpPeople(env);
+    expect(await count('auth_challenges', "id='cha_old'")).toBe(0);
+    await sql(`UPDATE members SET joined_at = 1 WHERE id = 'o'`);
+
+    // 2) linkOptions distinguishes first-time owner setup (recovery=false) vs member reset (recovery=true),
+    //    and turning teams off before linkRegister's write batch returns 404 feature_off.
+    const inv = await json(await api('POST', '/people/invite', { cookie: owner, body: { name: 'RaceInv', teamId: 't1', level: 1 } }));
+    const invToken = inv.url.split('#')[1]!;
+    const offeredInv = await json(await api('POST', '/link/options', { body: { token: invToken } }));
+    expect(offeredInv.recovery).toBe(false);
+    const resetRes = await json(await api('POST', '/people/r/reset', { cookie: owner }));
+    const resetToken = resetRes.url.split('#')[1]!;
+    expect((await json(await api('POST', '/link/options', { body: { token: resetToken } }))).recovery).toBe(true);
+
+    let armed = true;
+    const toggleOffDb = new Proxy(env.DB, {
+      get(target, key) {
+        if (key === 'batch') {
+          return async (statements: D1PreparedStatement[]) => {
+            if (armed) {
+              armed = false;
+              await sql("UPDATE settings SET value_json='false' WHERE key='teams'");
+            }
+            return target.batch(statements);
+          };
+        }
+        const value = Reflect.get(target, key);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const auth = await Authenticator.make();
+    const raceRes = await api(
+      'POST',
+      '/link',
+      { body: { token: invToken, challengeId: offeredInv.challengeId, response: await auth.register(offeredInv.options.challenge) } },
+      { DB: toggleOffDb },
+    );
+    expect(await code(raceRes)).toEqual([404, 'feature_off']);
+    expect(await count('passkeys', `member_id='${inv.id}'`)).toBe(0);
+    await sql("UPDATE settings SET value_json='true' WHERE key='teams'");
+
+    // 3) Former manager (demoted to viewer) still lists and revokes their retained active agent keys via /account/keys.
+    const monaAgent = 'agt_01FORMER000000000000000001';
+    await sql(`INSERT INTO agents(id, member_id, name, created_at) VALUES('${monaAgent}', 'm', 'former-bot', 1)`);
+    const { id: retainedKeyId } = await makeKey({ agent: monaAgent, projects: ['p1'] });
+    await sql("UPDATE team_members SET level = 1, set_by = 'o' WHERE member_id = 'm'");
+    expect(await code(await api('GET', '/agents', { cookie: mona }))).toEqual([403, 'forbidden']);
+    const mine = (await json(await api('GET', '/account/keys', { cookie: mona }))).items as { id: string; agentName: string }[];
+    expect(mine.find((k) => k.id === retainedKeyId)).toMatchObject({ id: retainedKeyId, agentName: 'former-bot' });
+    expect((await api('DELETE', `/agent-keys/${retainedKeyId}`, { cookie: mona })).status).toBe(204);
+    expect((await json(await api('GET', '/account/keys', { cookie: mona }))).items.some((k: { id: string }) => k.id === retainedKeyId)).toBe(false);
+
+    // 4) /people paginates both members and invites cleanly with cursors.
+    await api('POST', '/people/invite', { cookie: owner, body: { name: 'PageInv2', teamId: 't1', level: 1 } });
+    const p1 = await json(await api('GET', '/people?limit=1', { cookie: owner }));
+    expect(p1.members).toHaveLength(1);
+    expect(p1.membersNext).not.toBeNull();
+    expect(p1.invites).toHaveLength(1);
+    expect(p1.invitesNext).not.toBeNull();
+    const p2 = await json(await api('GET', `/people?limit=1&membersCursor=${encodeURIComponent(p1.membersNext)}&invitesCursor=${encodeURIComponent(p1.invitesNext)}`, { cookie: owner }));
+    expect(p2.members).toHaveLength(1);
+    expect(p2.members[0].id).not.toBe(p1.members[0].id);
+    expect(p2.invites).toHaveLength(1);
+    expect(p2.invites[0].id).not.toBe(p1.invites[0].id);
+  });
 });

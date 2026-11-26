@@ -101,6 +101,39 @@ describe('pnpm lawh owner setup --local', { timeout: 120_000 }, () => {
     expect(query("SELECT revoked_at IS NOT NULL revoked FROM agent_keys WHERE id='key_old_1'")).toEqual([{ revoked: 1 }]);
     expect(query("SELECT COUNT(*) n FROM audit WHERE action='owner.transfer' AND subject_id='mem_mona'")).toEqual([{ n: 1 }]);
   });
+
+  it('re-prompts and moves newly added agents if the agent inventory changes during transfer confirmation', async () => {
+    // @ts-expect-error plain script module
+    const { runOwnerTransfer } = await import('../../scripts/cli/transfer.mjs');
+    const currentOwner = query("SELECT id FROM members WHERE role='owner'")[0]!.id as string;
+    const otherMember = query(`SELECT id FROM members WHERE role='member' AND joined_at IS NOT NULL AND id <> '${currentOwner}'`)[0]!.id as string;
+    const now = Date.now();
+    let promptCalls = 0;
+    const logs: string[] = [];
+
+    const result = await runOwnerTransfer({
+      targetArg: otherMember,
+      sql: (statements: string) =>
+        JSON.parse(execFileSync(process.execPath, [wrangler, 'd1', 'execute', 'DB', '--local', '--persist-to', state, '-c', join(state, 'entry.json'), '--json', '--command', statements], { cwd: root, env: env() }).toString()),
+      prompt: async () => {
+        promptCalls++;
+        if (promptCalls === 1) {
+          // Simulate an agent connecting while the operator is reading the prompt!
+          query(`INSERT INTO agents(id, member_id, name, created_at) VALUES('agt_mid_prompt', '${currentOwner}', 'late-bot', ${now});
+                 INSERT INTO agent_keys(id, agent_id, secret_hmac, scopes_json, all_projects, created_at, expires_at)
+                   VALUES('key_mid_prompt', 'agt_mid_prompt', 'h2', '["pages:read"]', 1, ${now}, ${now + 86_400_000});`);
+        }
+        return 'yes';
+      },
+      log: (line: string) => logs.push(line),
+    });
+
+    expect(promptCalls).toBe(2);
+    expect(logs.join('\n')).toContain('The agent list changed while waiting for confirmation');
+    expect(result.movedAgents.some((a: { id: string }) => a.id === 'agt_mid_prompt')).toBe(true);
+    expect(query(`SELECT COUNT(*) n FROM agents WHERE member_id='${currentOwner}'`)).toEqual([{ n: 0 }]);
+    expect(query("SELECT revoked_at IS NOT NULL revoked FROM agent_keys WHERE id='key_mid_prompt'")).toEqual([{ revoked: 1 }]);
+  });
 });
 
 it('reads JSON with comments', () => {

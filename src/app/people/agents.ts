@@ -38,6 +38,26 @@ function decodeAgentCursor(raw: string): [string, string] {
   throw invalid('cursor is not valid.');
 }
 
+/** GET /app-api/account/keys — any signed-in member (including former managers after a reset) can list their own active keys to review and revoke them. */
+export async function listMyActiveKeys(ctx: SignedIn): Promise<Response> {
+  const { env, person } = ctx, now = Date.now();
+  const { results } = await env.DB.prepare(
+    `SELECT k.id, k.agent_id, a.name agent_name, k.label, k.created_at, k.expires_at, k.last_used_at
+     FROM agents a
+     CROSS JOIN agent_keys k ON k.agent_id = a.id
+     WHERE a.member_id = ? AND k.revoked_at IS NULL AND k.expires_at > ?
+     ORDER BY k.created_at DESC, k.id DESC LIMIT 200`,
+  ).bind(person.memberId, now).all<{
+    id: string; agent_id: string; agent_name: string; label: string | null; created_at: number; expires_at: number; last_used_at: number | null;
+  }>();
+  return Response.json({
+    items: results.map((r) => ({
+      id: r.id, agentId: r.agent_id, agentName: r.agent_name, label: r.label,
+      createdAt: r.created_at, expiresAt: r.expires_at, lastUsedAt: r.last_used_at,
+    })),
+  });
+}
+
 /** Keys that were revoked or ended are listed for 30 days. When teams is on, the owner sees every member's agents too, paginated. */
 export async function listAgents(ctx: SignedIn): Promise<Response> {
   await managesSomething(ctx);

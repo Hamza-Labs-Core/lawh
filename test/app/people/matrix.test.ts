@@ -80,6 +80,7 @@ const MATRIX: MatrixRow[] = [
 
   // Agents & keys (manager+; owner sees/controls all agents; a member can always disable/revoke their own agent/key)
   { method: 'GET', pattern: '^/app-api/agents$', request: () => ({ path: '/agents' }), expected: [403, 403, 403, 403, 200, 200] },
+  { method: 'GET', pattern: '^/app-api/account/keys$', request: () => ({ path: '/account/keys' }), expected: [200, 200, 200, 200, 200, 200] },
   { method: 'PUT', pattern: '^/app-api/agents/(agt_[0-9A-Z]{26})/off$', request: (fx) => ({ path: `/agents/${fx.agentId}/off`, body: { off: true } }), expected: [204, 204, 204, 204, 204, 204] },
   { method: 'POST', pattern: '^/app-api/agents/(agt_[0-9A-Z]{26})/take-over$', request: (fx) => ({ path: `/agents/${fx.agentId}/take-over` }), expected: [403, 403, 403, 403, 403, 200] },
   { method: 'POST', pattern: '^/app-api/agent-keys$', request: () => ({ path: '/agent-keys', body: { agent: 'mx-bot', secretSha256: 'a'.repeat(64), scopes: ['pages:read'], projects: ['one'], days: 30 } }), expected: [403, 403, 403, 403, 201, 201] },
