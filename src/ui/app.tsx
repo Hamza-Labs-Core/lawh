@@ -18,11 +18,16 @@ export function Fill({ text, dir, ...values }: { text: Key; dir?: 'ltr'; [value:
 
 const keep = (key: string, value: string) => { try { localStorage.setItem(key, value); } catch { /* private window */ } };
 
+export const brandName = (lang: Lang): string => {
+  const { brandEn, brandAr } = document.documentElement.dataset;
+  return (lang === 'ar' ? brandAr : brandEn) || translate(lang, 'app');
+};
+
 export function SettingsProvider({ children }: { children: ComponentChildren }) {
   const root = document.documentElement;
   const [lang, setLang] = useState<Lang>(root.lang === 'ar' ? 'ar' : 'en');
   const [mode, setMode] = useState<'dark' | 'light'>(root.dataset.mode === 'light' ? 'light' : 'dark');
-  useEffect(() => { root.lang = lang; root.dir = lang === 'ar' ? 'rtl' : 'ltr'; document.title = translate(lang, 'app'); }, [lang]);
+  useEffect(() => { root.lang = lang; root.dir = lang === 'ar' ? 'rtl' : 'ltr'; document.title = brandName(lang); }, [lang]);
   useEffect(() => {
     root.dataset.mode = mode;
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', mode === 'light' ? '#f6f4ef' : '#12161a');
@@ -47,7 +52,7 @@ export function TopBar({ children }: { children?: ComponentChildren }) {
   const t = useText(), { lang, mode, setLang, setMode } = useSettings();
   return (
     <header class="top">
-      <Link class="logo" to="/">{t('app')}</Link>
+      <Link class="logo" to="/">{brandName(lang)}</Link>
       {children}
       <span class="space" />
       <button class="plain" onClick={() => setMode(mode === 'dark' ? 'light' : 'dark')}>{t(mode === 'dark' ? 'light' : 'dark')}</button>

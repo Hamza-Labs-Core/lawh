@@ -555,8 +555,8 @@ describe('S15 self-hosting lifecycle (init, upgrade, rollback, destroy)', () => 
     const appV1 = mock.state.workers.get('lawh-app')!.deployments[0]!.versions[0]!.version_id;
     const contentV1 = mock.state.workers.get('lawh-content')!.deployments[0]!.versions[0]!.version_id;
 
-    // 2) UPGRADE (with a new additive migration)
-    writeFileSync(join(ws, 'migrations/0004_upgrade_note.sql'), 'CREATE INDEX IF NOT EXISTS audit_at ON audit(at);');
+    // 2) UPGRADE (with a new additive migration ending in a `--` comment without a semicolon)
+    writeFileSync(join(ws, 'migrations/0004_upgrade_note.sql'), 'CREATE INDEX IF NOT EXISTS audit_at ON audit(at)\n-- trailing comment without semicolon');
     const upRes = await runUpgrade({
       root: ws,
       cf,
@@ -757,10 +757,11 @@ describe('S15 self-hosting lifecycle (init, upgrade, rollback, destroy)', () => 
     expect(upLogs.join('\n')).toMatch(/wrangler d1 time-travel restore lawh --bookmark=00000000-/);
     expect(mock.state.workers.get('lawh-app')!.deployments[0]!.versions[0]!.version_id).toBe(appBefore);
 
-    // Export path inside working tree (including child dirs like `..exports` and symlinks pointing inside) is refused!
+    // Export path inside working tree (including child dirs like `..exports`, `..\exports` on POSIX, and symlinks pointing inside) is refused!
     expect(() => assertOutsideRepo(ws, ws)).toThrow(/outside the repository/);
     expect(() => assertOutsideRepo(join(ws, 'exports'), ws)).toThrow(/outside the repository/);
     expect(() => assertOutsideRepo(join(ws, '..exports'), ws)).toThrow(/outside the repository/);
+    if (process.platform !== 'win32') expect(() => assertOutsideRepo(join(ws, '..\\exports'), ws)).toThrow(/outside the repository/);
     const outsideDir = mkdtempSync(join(tmpdir(), 'lawh-s15-sym-'));
     cleanups.push(() => rmSync(outsideDir, { recursive: true, force: true }));
     const linkIntoRepo = join(outsideDir, 'sneaky-link');
@@ -849,8 +850,13 @@ describe('S15 self-hosting lifecycle (init, upgrade, rollback, destroy)', () => 
     const builtManifest = JSON.parse(readFileSync(join(uiOut, 'dist/manifest.webmanifest'), 'utf8'));
     const builtSvg = readFileSync(join(uiOut, 'dist/icon.svg'), 'utf8');
     expect(builtHtml).toContain('<title>Studio Board</title>');
+    expect(builtHtml).toContain('data-brand-en="Studio Board"');
+    expect(builtHtml).toContain('data-brand-ar="لوحة الاستوديو"');
     expect(builtHtml).toContain('data-default-mode="light"');
     expect(builtHtml).toContain('data-default-lang="ar"');
+    const cssMatch = /href="\/assets\/(style-[a-f0-9]+\.css)"/.exec(builtHtml);
+    expect(cssMatch).not.toBeNull();
+    expect(readFileSync(join(uiOut, 'dist/assets', cssMatch![1]!), 'utf8')).toContain(':root{--ac:#22aa88;}');
     expect(builtManifest.name).toBe('Studio Board · لوحة الاستوديو');
     expect(builtManifest.theme_color).toBe('#f6f4ef');
     expect(builtSvg).toContain('#22aa88');
@@ -886,8 +892,9 @@ describe('S15 self-hosting lifecycle (init, upgrade, rollback, destroy)', () => 
     writeFileSync(join(dirtyRepo, '.wrangler/lawh-init-secrets.json'), '{"PEPPER":"secret"}');
     mkdirSync(join(dirtyRepo, 'test'), { recursive: true });
     writeFileSync(join(dirtyRepo, 'test/leak.ts'), `export const u = "${fakeHost}";\n`);
+    writeFileSync(join(dirtyRepo, 'test/probe.yaml'), `url: ${fakeHost}\n`);
     writeFileSync(join(dirtyRepo, 'lawh.config.json'), '{}');
-    execFileSync('git', ['-C', dirtyRepo, 'add', '-f', '.gitignore', 'lawh.config.example.json', '.github/workflows/ci.yml', 'lawh.config.json', '.wrangler/lawh-init-secrets.json', 'test/leak.ts']);
+    execFileSync('git', ['-C', dirtyRepo, 'add', '-f', '.gitignore', 'lawh.config.example.json', '.github/workflows/ci.yml', 'lawh.config.json', '.wrangler/lawh-init-secrets.json', 'test/leak.ts', 'test/probe.yaml']);
 
     const badCheck = spawnSync('python3', [join(repoRoot, 'scripts/check_no_instance.py'), '--root', dirtyRepo], { encoding: 'utf8' });
     expect(badCheck.status).toBe(1);
@@ -896,6 +903,7 @@ describe('S15 self-hosting lifecycle (init, upgrade, rollback, destroy)', () => 
     expect(badCheck.stdout).toContain('default Lawh instance names');
     expect(badCheck.stdout).toContain('placeholder host');
     expect(badCheck.stdout).toContain('test/leak.ts contains a real workers.dev host URL');
+    expect(badCheck.stdout).toContain('test/probe.yaml contains a real workers.dev host URL');
     expect(badCheck.stdout).toContain('references GitHub secrets');
   });
 });

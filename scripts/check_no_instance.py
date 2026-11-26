@@ -111,9 +111,10 @@ def check_repo(root: pathlib.Path) -> list[str]:
             hosts = example.get("hosts", {})
             if hosts.get("mode") != "workers.dev":
                 bad.append(f"lawh.config.example.json must keep hosts.mode='workers.dev' (got {hosts.get('mode')!r})")
+            placeholder_host = re.compile(r"^https://[a-z0-9-]+\.<your-subdomain>\.workers\.dev$")
             for host_key in ("app", "content"):
                 host_val = str(hosts.get(host_key, ""))
-                if REAL_WORKERS_DEV.search(host_val) or "<your-subdomain>.workers.dev" not in host_val:
+                if REAL_WORKERS_DEV.search(host_val) or not placeholder_host.fullmatch(host_val):
                     bad.append(f"lawh.config.example.json hosts.{host_key} must use a placeholder host (got {host_val!r})")
             raw_example = example_path.read_text(encoding="utf-8")
             if HEX32.search(raw_example) or UUID_RE.search(raw_example):
@@ -125,8 +126,8 @@ def check_repo(root: pathlib.Path) -> list[str]:
         if CI_SECRET_RE.search(ci_path.read_text(encoding="utf-8")):
             bad.append(".github/workflows/ci.yml references GitHub secrets (breaks fork CI)")
 
-    # 5) Scan all tracked text files (including tests) for leaked Cloudflare resource IDs, real workers.dev hosts, or private keys.
-    skip_suffixes = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".woff2", ".zip", ".pdf", ".yaml"}
+    # 5) Scan all tracked text files (including tests and YAML) for leaked Cloudflare resource IDs, real workers.dev hosts, or private keys.
+    skip_suffixes = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".woff2", ".zip", ".pdf"}
     for rel in tracked:
         if rel in ("pnpm-lock.yaml",) or pathlib.PurePosixPath(rel).suffix.lower() in skip_suffixes:
             continue

@@ -29,8 +29,9 @@ export async function applyPendingMigrations(cf, accountId, dbId, migrationsDir,
   const applied = [];
   for (const name of pending) {
     if (!MIGRATION_FILE.test(name)) throw new Error(`Invalid migration filename: ${name}`);
-    const sql = readFileSync(join(migrationsDir, name), 'utf8').trim();
-    const withRecord = `${sql.replace(/;\s*$/, '')};\nINSERT INTO d1_migrations(name) VALUES('${name}');`;
+    const sql = readFileSync(join(migrationsDir, name), 'utf8').trimEnd();
+    // Place the separator on a new line so a trailing `-- comment` without a semicolon cannot swallow it.
+    const withRecord = `${sql}\n;\nINSERT INTO d1_migrations(name) VALUES('${name}');`;
     try {
       // Submit migration SQL and its d1_migrations record in one atomic D1 query batch so a mid-run stop never leaves an unrecorded applied migration.
       await cf.queryD1(accountId, dbId, withRecord);
