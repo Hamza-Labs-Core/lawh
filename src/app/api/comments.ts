@@ -55,11 +55,11 @@ export async function replyAsAgent(ctx: Context): Promise<Response> {
   };
   try {
     const stored = await writeOnce(env, caller, idem, { status: 201, json: commentJson(row) }, [
-      // Recheck key, agent, member and project access inside the write transaction.
+      // Recheck key (including live expiry), agent, member and project access inside the write transaction.
       env.DB.prepare(`INSERT INTO comments(id, page_id, project_id, thread_id, version_n, agent_id, body, created_at)
         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
         FROM agent_keys k JOIN agents a ON a.id = k.agent_id JOIN members m ON m.id = a.member_id
-        WHERE k.id = ?9 AND k.revoked_at IS NULL AND k.expires_at > ?10 AND a.disabled_at IS NULL AND m.removed_at IS NULL
+        WHERE k.id = ?9 AND k.revoked_at IS NULL AND k.expires_at > MAX(?10, CAST(unixepoch('subsec') * 1000 AS INTEGER)) AND a.disabled_at IS NULL AND m.removed_at IS NULL
           AND ((m.role = 'owner' AND (k.all_projects = 1 OR EXISTS (SELECT 1 FROM agent_key_projects kp WHERE kp.key_id = k.id AND kp.project_id = ?3)))
             OR (EXISTS (SELECT 1 FROM agent_key_projects kp WHERE kp.key_id = k.id AND kp.project_id = ?3)
               AND EXISTS (SELECT 1 FROM project_access x WHERE x.member_id = m.id AND x.project_id = ?3 AND x.level = 4)))`)

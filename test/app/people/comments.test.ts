@@ -61,7 +61,10 @@ describe('writing', () => {
     expect(await code(await add(owner, 1, { section: { id: 's-1', title: 'One' } }))).toEqual([409, 'conflict']);
     expect(await code(await add(cookie, 1))).toEqual([409, 'conflict']);
     expect(await code(await reply(owner, 1, 1))).toEqual([409, 'conflict']);
-    await reply(cookie, 1, 2); await reply(cookie, 1, 2);
+    await reply(cookie, 1, 2);
+    // Publishing a new page version does not break an identical retry of a reply.
+    await sql("INSERT INTO page_versions VALUES('va3','a',3,'index.html','',1,1,'a','k',1)");
+    expect((await reply(cookie, 1, 2)).status).toBe(200);
     expect(await code(await add(cookie, 2, { body: 'Body 2' }))).toEqual([409, 'conflict']);
     expect([await count('comments'), await count('events')]).toEqual([2, 2]);
   });

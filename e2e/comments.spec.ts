@@ -289,6 +289,35 @@ test('earlier replies with equal timestamps and concurrent new replies are all k
   await expect(replies).toHaveCount(57);
 });
 
+test('a delayed reply response does not bring back a reply deleted meanwhile', async ({ page, member, ask }) => {
+  await wide(page);
+  const asked = await ask([], { like: 'good' }), first = await write(asked, member, 'Root', { level: 3, at: 1 });
+  await write(asked, member, 'Old reply', { in: first, level: 3, at: 2 });
+  await open(page, member, asked.path); await ready(page); await opener(page).click();
+  const replies = page.locator('.replies .one');
+  await expect(replies).toHaveCount(1);
+  let release!: () => void, fetched!: () => void;
+  const gate = new Promise<void>((done) => { release = done; }), got = new Promise<void>((done) => { fetched = done; });
+  await page.route('**/comments/*/replies', async (route) => {
+    if (route.request().method() === 'POST') {
+      const response = await route.fetch({ headers: { ...await route.request().allHeaders(), origin: APP, 'sec-fetch-site': 'same-origin' } });
+      fetched();
+      await gate;
+      await route.fulfill({ response });
+    } else await route.continue();
+  });
+  await page.getByRole('textbox', { name: 'Reply' }).fill('New reply');
+  await page.getByRole('button', { name: 'Reply', exact: true }).click();
+  await got;
+  const old = replies.filter({ hasText: 'Old reply' });
+  await old.getByRole('button', { name: 'Delete' }).click();
+  await old.getByRole('button', { name: 'Delete' }).click();
+  await expect(replies).toHaveCount(0);
+  release();
+  await expect(replies.filter({ hasText: 'New reply' })).toHaveCount(1);
+  await expect(replies.filter({ hasText: 'Old reply' })).toHaveCount(0);
+});
+
 test('switching tabs keeps the chosen section and on a phone submitting keeps focus off Close', async ({ page, member, ask }) => {
   await page.setViewportSize({ width: 320, height: 568 });
   const asked = await ask([{ question: 'Which?' }], { like: 'good' });
