@@ -60,7 +60,9 @@ describe('what a person sees', () => {
       // In manage.test.ts, at every level.
       '/projects/one', '/projects/one/pages/a/status', '/deleted', `/deleted/pag_${'0'.repeat(26)}/restore`, '/agents', `/agents/agt_${'0'.repeat(26)}/off`, '/agent-keys', `/agent-keys/key_${'0'.repeat(26)}`, '/settings', '/settings/retention', '/export', '/export/rows', '/export/files',
       // In comments.test.ts, at every level.
-      '/comments', '/projects/one/pages/a/comments', `/comments/cmt_${'0'.repeat(26)}`, `/comments/cmt_${'0'.repeat(26)}/replies`, `/comments/cmt_${'0'.repeat(26)}/resolved`];
+      '/comments', '/projects/one/pages/a/comments', `/comments/cmt_${'0'.repeat(26)}`, `/comments/cmt_${'0'.repeat(26)}/replies`, `/comments/cmt_${'0'.repeat(26)}/resolved`,
+      // In webhooks.test.ts, at every level.
+      '/switches/webhooks', '/settings/webhook-hosts', '/webhooks', `/webhooks/whk_${'0'.repeat(26)}`, `/webhooks/whk_${'0'.repeat(26)}/deliveries/1/resend`];
     for (const route of peopleRoutes.filter((r) => r.who === 'person')) {
       expect([...paths, ...without].some((p) => route.path.test(`/app-api${p.split('?')[0]!}`)), route.path.source).toBe(true);
     }

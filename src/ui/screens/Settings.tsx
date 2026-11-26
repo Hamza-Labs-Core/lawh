@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'preact/hooks';
-import { type Agent, call, CallError, type DeletedPage, type Listed, type Me, problemOf, type ProjectName } from '../api';
+import { type Agent, call, CallError, type DeletedPage, type FailedDelivery, type Listed, type Me, problemOf, type ProjectName, type WebhookItem } from '../api';
 import { Failure, Fill, Heading, Link, useBusy, useSettings, useText } from '../app';
 import { day, digits, type Key } from '../i18n';
 import { Account } from './Account';
@@ -25,13 +25,13 @@ function Loading({ problem, load }: { problem: 'offline' | 'wait' | 'failed' | n
   return problem ? <><Failure>{t(problem)}</Failure><button class="plain" onClick={load}>{t('retry')}</button></> : <p class="muted" role="status">{t('loading')}</p>;
 }
 
-const PARTS: [path: string, title: Key, who: 'all' | 'managers' | 'owner'][] = [
-  ['/settings', 'account', 'all'], ['/settings/agents', 'agents', 'managers'], ['/settings/projects', 'projects', 'owner'], ['/settings/deleted', 'deletedPages', 'managers'], ['/settings/data', 'data', 'owner'],
+const PARTS: [path: string, title: Key, who: 'all' | 'managers' | 'owner', need?: 'webhooks'][] = [
+  ['/settings', 'account', 'all'], ['/settings/agents', 'agents', 'managers'], ['/settings/projects', 'projects', 'owner'], ['/settings/deleted', 'deletedPages', 'managers'], ['/settings/webhooks', 'webhooks', 'managers', 'webhooks'], ['/settings/data', 'data', 'owner'],
 ];
 
 export function Settings({ path, me, onChange }: { path: string; me: Me; onChange: () => void }) {
   const t = useText();
-  const parts = PARTS.filter(([, , who]) => who === 'all' || me.isOwner || (who === 'managers' && me.manages));
+  const parts = PARTS.filter(([, , who, need]) => (!need || me[need]) && (who === 'all' || me.isOwner || (who === 'managers' && me.manages)));
   const now = parts.find(([p]) => p === path) ?? parts[0]!;
   return (
     <>
@@ -41,7 +41,8 @@ export function Settings({ path, me, onChange }: { path: string; me: Me; onChang
       {now[0] === '/settings/agents' && <Agents me={me} />}
       {now[0] === '/settings/projects' && <Projects />}
       {now[0] === '/settings/deleted' && <Deleted />}
-      {now[0] === '/settings/data' && <Data />}
+      {now[0] === '/settings/webhooks' && <Webhooks />}
+      {now[0] === '/settings/data' && <Data onChange={onChange} />}
     </>
   );
 }
@@ -230,16 +231,144 @@ function Deleted() {
   );
 }
 
+// ---- Webhooks
+
+const EVENTS = ['page.published', 'page.status', 'decision.answered', 'decision.vote', 'decision.stale', 'comment.created', 'comment.resolved'] as const;
+
+function Webhooks() {
+  const t = useText(), { lang } = useSettings(), { data, problem, load, set } = useLoad<{ hosts: string[]; items: WebhookItem[]; failed: FailedDelivery[] }>('/webhooks');
+  const [making, setMaking] = useState(false), [secret, setSecret] = useState<string | null>(null), [resent, setResent] = useState(false);
+  const [busy, run] = useBusy(), [failed, setFailed] = useState<Problem | null>(null), [asking, setAsking] = useState<string | null>(null);
+  const newBtn = useRef<HTMLButtonElement>(null), wasOpen = useRef(false), open = making || secret !== null;
+  useEffect(() => { if (!open && wasOpen.current) newBtn.current?.focus(); wasOpen.current = open; }, [open]);
+  if (data === null) return <Loading problem={problem} load={load} />;
+  const act = (what: () => Promise<void>) => run(async () => { setFailed(null); setResent(false); try { await what(); setAsking(null); } catch (error) { setFailed(problemIn(error)); } });
+  return (
+    <>
+      <p class="muted">{t('webhooksHelp')}</p>
+      {secret !== null && <NewSecret secret={secret} onDone={() => setSecret(null)} />}
+      {making && <MakeWebhook hosts={data.hosts} onCancel={() => setMaking(false)} onMade={(nextSecret) => { setMaking(false); setSecret(nextSecret); load(); }} />}
+      {!making && secret === null && (data.hosts.length > 0
+        ? <button ref={newBtn} class="primary fit" onClick={() => setMaking(true)}>{t('newWebhook')}</button>
+        : <p class="muted">{t('noAllowedHosts')}</p>)}
+      {data.items.length === 0 && <div class="card empty"><p>{t('noWebhooks')}</p></div>}
+      <ul class="grid wide-cards">
+        {data.items.map((w) => (
+          <li key={w.id} class="card">
+            <h2><bdi>{w.project.name[lang]}</bdi> <span class={w.enabled ? 'status decided' : 'status'}>{t(w.enabled ? 'webhookOn' : 'webhookOff')}</span></h2>
+            <p class="address" dir="ltr">{w.url}</p>
+            <p class="muted">{w.eventTypes.map((e) => t(`event ${e}` as Key)).join(lang === 'ar' ? '، ' : ', ')}</p>
+            <p class="muted"><Fill text="createdBy" name={w.createdBy ?? t('formerMember')} />{lang === 'ar' ? '، ' : ', '}{day(lang, w.createdAt)}</p>
+            <div class="row">
+              <button class="plain" disabled={busy} onClick={() => act(async () => {
+                await call('PATCH', `/webhooks/${w.id}`, { enabled: !w.enabled });
+                set((now) => now && { ...now, items: now.items.map((o) => (o.id === w.id ? { ...o, enabled: !w.enabled } : o)) });
+              })}>{t(w.enabled ? 'pauseWebhook' : 'resumeWebhook')}</button>
+              {asking === w.id
+                ? <><button class="plain danger" disabled={busy} onClick={() => act(async () => {
+                  await call('DELETE', `/webhooks/${w.id}`);
+                  set((now) => now && { ...now, items: now.items.filter((o) => o.id !== w.id), failed: now.failed.filter((f) => f.webhookId !== w.id) });
+                })}>{t('deleteWebhookSure')}</button><button class="plain" disabled={busy} onClick={() => setAsking(null)}>{t('cancel')}</button></>
+                : <button class="plain" disabled={busy} onClick={() => setAsking(w.id)}>{t('deleteWebhook')}</button>}
+            </div>
+          </li>
+        ))}
+      </ul>
+      {data.failed.length > 0 && (
+        <section class="card form">
+          <h2>{t('failedDeliveries')}</h2>
+          <div aria-live="polite">{resent && <p class="done">{t('resent')}</p>}</div>
+          <ul class="rows">
+            {data.failed.map((f) => (
+              <li key={`${f.webhookId}:${f.eventSeq}`}>
+                <div>
+                  <strong>{t(`event ${f.eventType}` as Key)}</strong>
+                  <p class="muted"><bdi>{f.project.name[lang]}</bdi>{lang === 'ar' ? '، ' : ', '}{f.lastCode === null ? t('networkError') : <Fill text="httpCode" code={digits(lang, f.lastCode)} />}{lang === 'ar' ? '، ' : ', '}{day(lang, f.updatedAt)}</p>
+                </div>
+                <button class="plain" disabled={busy} onClick={() => act(async () => {
+                  await call('POST', `/webhooks/${f.webhookId}/deliveries/${f.eventSeq}/resend`);
+                  set((now) => now && { ...now, failed: now.failed.filter((o) => !(o.webhookId === f.webhookId && o.eventSeq === f.eventSeq)) });
+                  setResent(true);
+                })}>{t('resend')}</button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {failed && <Failure>{t(failed)}</Failure>}
+    </>
+  );
+}
+
+function MakeWebhook({ hosts, onCancel, onMade }: { hosts: string[]; onCancel: () => void; onMade: (secret: string) => void }) {
+  const t = useText(), { lang } = useSettings(), id = useId(), first = useRef<HTMLInputElement>(null);
+  const { data: projects, problem: projectsProblem, load } = useLoad<Listed<ProjectName & { level: number }>>('/projects');
+  const [busy, run] = useBusy(), [problem, setProblem] = useState<Problem | null>(null);
+  const [project, setProject] = useState(''), [url, setUrl] = useState(''), [events, setEvents] = useState<string[]>([...EVENTS]);
+  useEffect(() => first.current?.focus(), []);
+  const managed = projects?.items.filter((p) => p.level >= 4) ?? [];
+  const chosenProject = project || managed[0]?.slug || '';
+  const toggle = (value: string) => setEvents((list) => (list.includes(value) ? list.filter((v) => v !== value) : [...list, value]));
+  const ready = chosenProject !== '' && url.trim().startsWith('https://') && events.length > 0;
+  const save = () => run(async () => {
+    setProblem(null);
+    try {
+      const made = await call<{ secret: string }>('POST', '/webhooks', { project: chosenProject, url: url.trim(), eventTypes: events });
+      onMade(made.secret);
+    } catch (error) { setProblem(problemIn(error)); }
+  });
+  return (
+    <form class="card form" onSubmit={(event) => { event.preventDefault(); if (ready) save(); }}>
+      <h2>{t('newWebhook')}</h2>
+      {projects === null && <Loading problem={projectsProblem} load={load} />}
+      {managed.length > 0 && (
+        <>
+          <label class="muted" for={`${id}-p`}>{t('projects')}</label>
+          <select id={`${id}-p`} class="field" value={chosenProject} onChange={(event) => setProject(event.currentTarget.value)}>
+            {managed.map((p) => <option key={p.slug} value={p.slug} selected={p.slug === chosenProject}>{p.name[lang]}</option>)}
+          </select>
+        </>
+      )}
+      <label class="muted" for={`${id}-u`}>{t('webhookUrl')}</label>
+      <input ref={first} id={`${id}-u`} class="field" dir="ltr" maxLength={500} placeholder={`https://${hosts[0] ?? 'hooks.example.com'}/lawh`} autocomplete="off" value={url} onInput={(event) => setUrl(event.currentTarget.value)} />
+      <p class="muted" dir="ltr">{hosts.join(', ')}</p>
+      <fieldset class="checks"><legend class="muted">{t('webhookEvents')}</legend>
+        {EVENTS.map((e) => <label key={e} class="check"><input type="checkbox" checked={events.includes(e)} onChange={() => toggle(e)} /><span>{t(`event ${e}` as Key)}</span></label>)}
+      </fieldset>
+      {problem && <Failure>{t(problem)}</Failure>}
+      <button class="primary" type="submit" disabled={!ready || busy}>{t('save')}</button>
+      <button class="plain wide" type="button" disabled={busy} onClick={onCancel}>{t('cancel')}</button>
+    </form>
+  );
+}
+
+function NewSecret({ secret, onDone }: { secret: string; onDone: () => void }) {
+  const t = useText(), [copied, setCopied] = useState<boolean | null>(null), box = useRef<HTMLDivElement>(null);
+  useEffect(() => box.current?.focus(), []);
+  return (
+    <div class="card form" ref={box} tabIndex={-1}>
+      <h2>{t('webhookSecret')}</h2>
+      <p>{t('webhookSecretOnce')}</p>
+      <p class="address" dir="ltr">{secret}</p>
+      <div aria-live="polite">{copied !== null && <p class={copied ? 'done' : 'failure'}>{t(copied ? 'copied' : 'notCopied')}</p>}</div>
+      <button class="primary" onClick={() => { navigator.clipboard.writeText(secret).then(() => setCopied(true), () => setCopied(false)); }}>{t('copy')}</button>
+      <button class="plain wide" onClick={onDone}>{t('keySaved')}</button>
+    </div>
+  );
+}
+
 // ---- What the copy keeps, and taking it along
 
 const KEEP = [null, 100, 50, 20, 10, 5, 1] as const;
 
-function Data() {
-  const t = useText(), { lang } = useSettings(), id = useId(), { data, problem, load, set } = useLoad<{ retention: number | null }>('/settings'), [busy, run] = useBusy(), [failed, setFailed] = useState<Problem | null>(null), [choice, setChoice] = useState<string | null>(null), [done, setDone] = useState(false);
+function Data({ onChange }: { onChange: () => void }) {
+  const t = useText(), { lang } = useSettings(), id = useId(), { data, problem, load, set } = useLoad<{ retention: number | null; webhooks: boolean; webhookHosts: string[] }>('/settings'), [busy, run] = useBusy(), [failed, setFailed] = useState<Problem | null>(null), [choice, setChoice] = useState<string | null>(null), [done, setDone] = useState(false);
+  const [hostsDraft, setHostsDraft] = useState<string | null>(null), [hostsDone, setHostsDone] = useState(false);
   const [parts, setParts] = useState<{ after: string; last: string; files: number; bytes: number }[] | null>(null);
   if (data === null) return <Loading problem={problem} load={load} />;
-  const act = (what: () => Promise<void>) => run(async () => { setFailed(null); setDone(false); try { await what(); } catch (error) { setFailed(problemIn(error)); } });
+  const act = (what: () => Promise<void>) => run(async () => { setFailed(null); setDone(false); setHostsDone(false); try { await what(); } catch (error) { setFailed(problemIn(error)); } });
   const now = data.retention === null ? '' : String(data.retention), value = choice ?? now, options = [...new Set([...KEEP, data.retention])];
+  const hostsText = hostsDraft ?? data.webhookHosts.join('\n');
   // Fewer than now: versions go for good, so it is asked.
   const fewer = value !== '' && (now === '' || Number(value) < Number(now));
   return (
@@ -250,7 +379,28 @@ function Data() {
         <select id={id} class="field" value={value} onChange={(event) => { setChoice(event.currentTarget.value); setDone(false); }}>{options.map((n) => <option key={String(n)} value={n === null ? '' : String(n)} selected={value === (n === null ? '' : String(n))}>{n === null ? t('keepAll') : digits(lang, n)}</option>)}</select>
         {value !== now && fewer && <p class="failure">{t('retentionWarn')}</p>}
         <div aria-live="polite">{done && <p class="done">{t('saved')}</p>}</div>
-        <button class="primary" disabled={busy || value === now} onClick={() => act(async () => { set(await call('PUT', '/settings/retention', { keep: value === '' ? null : Number(value) })); setChoice(null); setDone(true); })}>{t('save')}</button>
+        <button class="primary" disabled={busy || value === now} onClick={() => act(async () => { const next = await call<{ retention: number | null }>('PUT', '/settings/retention', { keep: value === '' ? null : Number(value) }); set((cur) => cur && { ...cur, retention: next.retention }); setChoice(null); setDone(true); })}>{t('save')}</button>
+      </section>
+      <section class="card form">
+        <h2>{t('webhooks')}</h2>
+        <p class="muted">{t('webhooksHelp')}</p>
+        <p>{t(data.webhooks ? 'webhooksOn' : 'webhooksOff')}</p>
+        <button class="plain wide" disabled={busy} onClick={() => act(async () => {
+          const next = await call<{ webhooks: boolean }>('PUT', '/switches/webhooks', { on: !data.webhooks });
+          set((cur) => cur && { ...cur, webhooks: next.webhooks });
+          onChange();
+        })}>{t(data.webhooks ? 'turnWebhooksOff' : 'turnWebhooksOn')}</button>
+        <label class="muted" for={`${id}-h`}>{t('allowedHosts')}</label>
+        <textarea id={`${id}-h`} class="field notes" dir="ltr" value={hostsText} onInput={(event) => { setHostsDraft(event.currentTarget.value); setHostsDone(false); }} />
+        <p class="muted">{t('allowedHostsHelp')}</p>
+        <div aria-live="polite">{hostsDone && <p class="done">{t('saved')}</p>}</div>
+        <button class="primary" disabled={busy || hostsDraft === null} onClick={() => act(async () => {
+          const list = hostsText.split(/[\n,\s]+/).map((s) => s.trim()).filter(Boolean);
+          const next = await call<{ webhookHosts: string[] }>('PUT', '/settings/webhook-hosts', { hosts: list });
+          set((cur) => cur && { ...cur, webhookHosts: next.webhookHosts });
+          setHostsDraft(null);
+          setHostsDone(true);
+        })}>{t('save')}</button>
       </section>
       <section class="card form">
         <h2>{t('export')}</h2>

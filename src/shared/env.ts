@@ -8,10 +8,19 @@ export interface SharedEnv {
   CONTENT_KEY: SecretsStoreSecret | string;
 }
 
+export interface WebhookMessage {
+  webhookId: string;
+  eventSeq: number;
+}
+
 export interface AppEnv extends SharedEnv {
   LIVE: DurableObjectNamespace;
   /** For the HMACs of agent keys, device codes and session handles. */
   PEPPER: SecretsStoreSecret | string;
+  /** Encrypts webhook signing secrets at rest (AES-256-GCM). */
+  WEBHOOK_KEY: SecretsStoreSecret | string;
+  /** Outbound webhook delivery queue. */
+  WEBHOOKS: Queue<WebhookMessage>;
   /** Requests for each agent key. */
   KEY_LIMIT: RateLimit;
   /** Failed sign-ins with a key, for each address. */

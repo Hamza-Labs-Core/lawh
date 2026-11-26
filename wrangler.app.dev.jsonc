@@ -11,7 +11,15 @@
     "APP_ORIGIN": "http://localhost:8787",
     "CONTENT_ORIGIN": "http://127.0.0.1:8787",
     "PEPPER": "local-development-pepper-not-a-secret",
-    "CONTENT_KEY": "local-development-content-key-not-a-secret"
+    "CONTENT_KEY": "local-development-content-key-not-a-secret",
+    "WEBHOOK_KEY": "local-development-webhook-key-not-a-secret"
+  },
+  "queues": {
+    "producers": [{ "binding": "WEBHOOKS", "queue": "lawh-webhooks" }],
+    "consumers": [
+      { "queue": "lawh-webhooks", "max_batch_size": 10, "max_retries": 5, "dead_letter_queue": "lawh-webhooks-dlq" },
+      { "queue": "lawh-webhooks-dlq", "max_batch_size": 10 }
+    ]
   },
   "ratelimits": [
     { "name": "KEY_LIMIT", "namespace_id": "1001", "simple": { "limit": 1200, "period": 60 } },

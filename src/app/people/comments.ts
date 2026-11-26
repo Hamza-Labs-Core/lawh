@@ -5,6 +5,7 @@ import { findPage } from '../api/pages';
 import { type CommentRow, commentJson, DECIDER, findComment, openThreadsStatement, readThreads, repliesBefore, type Thread } from '../comments/read';
 import { encodeCursor, pageLimit, readCursor } from '../pages/list';
 import { levelOn, openProject, visibleProjects } from './access';
+import { dispatchOutbox } from '../webhooks/deliver';
 import type { SignedIn } from './router';
 
 const COMMENTER = 2, MANAGER = 4;
@@ -80,6 +81,7 @@ async function write(ctx: SignedIn, comment: New): Promise<void> {
       env.DB.prepare("INSERT INTO events(project_id, page_id, type, subject_id, created_at, actor_type, actor_id) VALUES(?,?,'comment.created',?,?,'person',?)")
         .bind(comment.projectId, comment.pageId, comment.id, comment.at, person.memberId),
     ]);
+    ctx.ctx.waitUntil(dispatchOutbox(env).catch(() => undefined));
   } catch (error) {
     const text = String(error);
     if (text.includes('UNIQUE constraint failed: comments.id')) {
@@ -169,6 +171,7 @@ export async function setResolved(ctx: SignedIn): Promise<Response> {
     if (!mayResolve(latest.comment, latest.level, ctx)) throw new ApiError('forbidden', 'Your level does not allow this.');
     throw conflict('The page or the thread changed meanwhile.');
   }
+  if (body.resolved) ctx.ctx.waitUntil(dispatchOutbox(ctx.env).catch(() => undefined));
   return answer(ctx, comment.id);
 }
 

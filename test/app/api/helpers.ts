@@ -78,13 +78,14 @@ export const start = (token: string, body: unknown, page = 'one/pages/page', ide
   call(`/v1/projects/${page}/versions`, { method: 'POST', token, json: body, idem });
 export const put = async (token: string, uploadId: string, content: string | Uint8Array, hash?: string) =>
   call(`/v1/uploads/${uploadId}/blobs/${hash ?? (await sha(content))}`, { method: 'PUT', token, body: content });
-export const commit = (token: string, uploadId: string, idem = `c${count++}`) => call(`/v1/uploads/${uploadId}/commit`, { method: 'POST', token, idem });
+export const commit = (token: string, uploadId: string, idem = `c${count++}`, bindings: Partial<Cloudflare.Env> = {}) =>
+  call(`/v1/uploads/${uploadId}/commit`, { method: 'POST', token, idem }, bindings);
 
 /** Start, send what is missing, commit. */
-export async function publish(token: string, files: Files, extra: Record<string, unknown> = {}, page = 'one/pages/page'): Promise<Response> {
+export async function publish(token: string, files: Files, extra: Record<string, unknown> = {}, page = 'one/pages/page', bindings: Partial<Cloudflare.Env> = {}): Promise<Response> {
   const started = await start(token, await manifest(files, extra), page);
   if (started.status !== 201) return started;
   const { uploadId, missing } = await json(started);
   for (const content of Object.values(files)) if (missing.includes(await sha(content))) await put(token, uploadId, content);
-  return commit(token, uploadId);
+  return commit(token, uploadId, `c${count++}`, bindings);
 }

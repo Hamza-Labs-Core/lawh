@@ -3,6 +3,7 @@ import { ApiError, notFound } from '../../shared/errors';
 import { authenticate, type Caller, needScope, type Scope } from './auth';
 import { listComments, listProjectThreads, replyAsAgent } from './comments';
 import { getDecision, listDecisions } from './decisions';
+import { listEvents } from './events';
 import { getPage, getVersion, listPages, listProjects, listVersions, me, readFile, updatePage } from './pages';
 import { commitPublish, putBlob, startPublish } from './publish';
 
@@ -42,6 +43,7 @@ export const routes: Route[] = [
   route('GET', '/comments', 'comments:read', listProjectThreads),
   route('GET', `/pages/${ID}/comments`, 'comments:read', listComments),
   route('POST', `/comments/${ID}/replies`, 'comments:write', replyAsAgent),
+  route('GET', '/events', 'any', listEvents),
 ];
 
 /** The agent API. The key is checked before anything else, so an unknown path tells nothing without one. */

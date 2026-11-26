@@ -9,7 +9,8 @@ import { addKey, listAgents, revokeKey, setAgentOff } from './agents';
 import { exportFiles, exportPlan, exportRows } from './exportData';
 import { deletePage, listDeleted, restorePage, setStatus } from './manage';
 import { addProject, renameProject } from './projects';
-import { readSettings, setRetention } from './settings';
+import { readSettings, setRetention, setWebhookHosts, setWebhooksSwitch } from './settings';
+import { addWebhook, deleteWebhook, listWebhooks, resendDelivery, updateWebhook } from './webhooks';
 import { approveDevice, claimDevice, lookAtDevice, startDevice } from './devices';
 import { addPasskey, addPasskeyOptions, linkOptions, linkRegister, listPasskeys, removePasskey, signIn, signInOptions } from './passkeys';
 import { checkSameOrigin, findPerson, type Person } from './session';
@@ -62,6 +63,13 @@ export const peopleRoutes: PeopleRoute[] = [
   person('DELETE', '/agent-keys/(key_[0-9A-Z]{26})', false, revokeKey),
   person('GET', '/settings', false, readSettings),
   person('PUT', '/settings/retention', false, setRetention),
+  person('PUT', '/switches/webhooks', false, setWebhooksSwitch),
+  person('PUT', '/settings/webhook-hosts', false, setWebhookHosts),
+  person('GET', '/webhooks', false, listWebhooks),
+  person('POST', '/webhooks', false, addWebhook),
+  person('PATCH', '/webhooks/(whk_[0-9A-Z]{26})', false, updateWebhook),
+  person('DELETE', '/webhooks/(whk_[0-9A-Z]{26})', false, deleteWebhook),
+  person('POST', '/webhooks/(whk_[0-9A-Z]{26})/deliveries/([1-9][0-9]{0,18})/resend', false, resendDelivery),
   person('GET', '/export', false, exportPlan),
   person('GET', '/export/rows', false, exportRows),
   person('GET', '/export/files', false, exportFiles),

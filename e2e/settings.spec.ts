@@ -156,10 +156,10 @@ test('the owner sets how many versions are kept, warned before any go, and downl
   await enterOwner(page.context());
   // The setting is the whole copy's, so it isn't changed here.
   let keep: number | null = null;
-  await page.route('**/app-api/settings', (route) => route.fulfill({ json: { retention: keep } }));
+  await page.route('**/app-api/settings', (route) => route.fulfill({ json: { retention: keep, webhooks: false, webhookHosts: [] } }));
   await page.route('**/app-api/settings/retention', (route) => { keep = (route.request().postDataJSON() as { keep: number | null }).keep; return route.fulfill({ json: { retention: keep } }); });
   await page.goto(`${APP}/settings/data`);
-  const select = page.getByLabel('How many versions each page keeps'), save = page.getByRole('button', { name: 'Save' });
+  const select = page.getByLabel('How many versions each page keeps'), save = page.locator('.card').filter({ hasText: 'Versions kept' }).getByRole('button', { name: 'Save' });
   await expect(save).toBeDisabled();
   await select.selectOption('20');
   await expect(page.getByText(/removed for good/)).toBeVisible();

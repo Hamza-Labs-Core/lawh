@@ -6,6 +6,7 @@ import { PURGE_AFTER } from '../housekeeping';
 import { STATUSES, encodeCursor, pageLimit, readCursor, tagsOf } from '../pages/list';
 import { indexStatements, statusStatements, unindexStatements } from '../search';
 import { entryTextOf } from '../search/entry';
+import { dispatchOutbox } from '../webhooks/deliver';
 import { levelOn, openProject, visibleProjects } from './access';
 import type { SignedIn } from './router';
 import { auditStatement } from './session';
@@ -51,6 +52,7 @@ export async function setStatus(ctx: SignedIn): Promise<Response> {
     }
     throw error;
   }
+  ctx.ctx.waitUntil(dispatchOutbox(env).catch(() => undefined));
   return Response.json({ status });
 }
 

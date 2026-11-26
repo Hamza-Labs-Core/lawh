@@ -6,6 +6,7 @@ import { projectById, projectBySlug } from './auth';
 import { onlyKeys, readJson, text } from './body';
 import { idempotent, mustChange, replay, writeOnce } from './idempotency';
 import { eventStatement } from './pages';
+import { dispatchOutbox } from '../webhooks/deliver';
 import type { Context } from './router';
 
 export const MAX_BODY = 10_000;
@@ -69,6 +70,7 @@ export async function replyAsAgent(ctx: Context): Promise<Response> {
       env.DB.prepare("SELECT CASE WHEN EXISTS (SELECT 1 FROM agent_keys WHERE id = ? AND revoked_at IS NULL AND expires_at > CAST(unixepoch('subsec') * 1000 AS INTEGER)) THEN 1 ELSE json('expired') END")
         .bind(caller.keyId),
     ]);
+    ctx.ctx.waitUntil(dispatchOutbox(env).catch(() => undefined));
     return Response.json(stored.json, { status: stored.status });
   } catch (error) {
     const text = String(error);

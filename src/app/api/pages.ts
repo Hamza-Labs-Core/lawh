@@ -6,6 +6,7 @@ import { encodeCursor, listPageRows, pageLimit, readCursor, tagsOf } from '../pa
 import { type Project, projectBySlug, projectJson, usableProjects } from './auth';
 import { detailStatements, indexStatements } from '../search';
 import { entryTextOf } from '../search/entry';
+import { dispatchOutbox } from '../webhooks/deliver';
 import { onlyKeys, oneOf, readJson, text } from './body';
 import { idempotent, mustChange, replay, writeOnce } from './idempotency';
 import type { Context } from './router';
@@ -124,6 +125,7 @@ export async function updatePage(ctx: Context): Promise<Response> {
   ];
   try {
     const stored = await writeOnce(env, caller, idem, { status: 200, json: pageJson(ctx, project, changed, [...tags].sort()) }, statements);
+    if (changed.status !== page.status) ctx.ctx.waitUntil(dispatchOutbox(env).catch(() => undefined));
     return Response.json(stored.json, { status: stored.status });
   } catch (error) {
     if (String(error).includes('malformed JSON')) throw conflict('The page changed meanwhile. Read it again.');
