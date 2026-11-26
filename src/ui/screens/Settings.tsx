@@ -53,6 +53,8 @@ const b64 = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes)).r
 
 function Agents({ me }: { me: Me }) {
   const t = useText(), { data, problem, load, set } = useLoad<{ items: Agent[] }>('/agents'), [making, setMaking] = useState(false), [made, setMade] = useState<string | null>(null);
+  const newKey = useRef<HTMLButtonElement>(null), wasOpen = useRef(false), open = making || made !== null;
+  useEffect(() => { if (!open && wasOpen.current) newKey.current?.focus(); wasOpen.current = open; }, [open]);
   const off = (agent: Agent, value: boolean) => call('PUT', `/agents/${agent.id}/off`, { off: value }).then(() => set((now) => now && { items: now.items.map((a) => (a.id === agent.id ? { ...a, disabledAt: value ? Date.now() : null } : a)) }));
   const revoke = (id: string) => call('DELETE', `/agent-keys/${id}`).then(() => set((now) => now && { items: now.items.map((a) => ({ ...a, keys: a.keys.map((k) => (k.id === id ? { ...k, revokedAt: Date.now() } : k)) })) }));
   if (data === null) return <Loading problem={problem} load={load} />;
@@ -60,7 +62,7 @@ function Agents({ me }: { me: Me }) {
     <>
       {made !== null && <NewKey secret={made} onDone={() => setMade(null)} />}
       {making && <MakeKey me={me} agents={data.items} onCancel={() => setMaking(false)} onMade={(secret) => { setMaking(false); setMade(secret); load(); }} />}
-      {!making && made === null && <button class="primary fit" onClick={() => setMaking(true)}>{t('newKey')}</button>}
+      {!making && made === null && <button ref={newKey} class="primary fit" onClick={() => setMaking(true)}>{t('newKey')}</button>}
       <p class="muted">{t('newKeyHelp')}</p>
       {data.items.length === 0 && <div class="card empty"><p>{t('noAgents')}</p></div>}
       <ul class="grid wide-cards">{data.items.map((agent) => <li key={agent.id}><AgentCard agent={agent} off={off} revoke={revoke} /></li>)}</ul>
