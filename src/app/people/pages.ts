@@ -13,15 +13,15 @@ const pageJson = (project: { slug: string; name_en: string; name_ar: string }, p
 
 export async function listMyProjects(ctx: SignedIn): Promise<Response> {
   const projects = await visibleProjects(ctx.env, ctx.person);
-  const needCounts = ctx.person.isOwner || projects.some((p) => p.answers_needed > 1);
   const byProject = new Map<string, Set<string>>();
-  if (needCounts && projects.length > 0) {
+  if (projects.length > 0) {
     const { results } = await ctx.env.DB.prepare(
       `SELECT tp.project_id, tm.member_id
        FROM json_each(?) j
        CROSS JOIN team_projects tp ON tp.project_id = j.value
        CROSS JOIN team_members tm ON tm.team_id = tp.team_id AND tm.level >= 3
-       CROSS JOIN members m ON m.id = tm.member_id AND m.joined_at IS NOT NULL AND m.removed_at IS NULL`,
+       CROSS JOIN members m ON m.id = tm.member_id AND m.joined_at IS NOT NULL AND m.removed_at IS NULL
+       WHERE EXISTS (SELECT 1 FROM settings WHERE key = 'teams' AND value_json = 'true')`,
     ).bind(JSON.stringify(projects.map((p) => p.id))).all<{ project_id: string; member_id: string }>();
     for (const row of results) {
       let set = byProject.get(row.project_id);
@@ -34,7 +34,7 @@ export async function listMyProjects(ctx: SignedIn): Promise<Response> {
       ...projectJson(p),
       level: p.level,
       answersNeeded: p.answers_needed,
-      ...(needCounts ? { answerers: (byProject.get(p.id)?.size ?? 0) + 1 } : {}),
+      answerers: (byProject.get(p.id)?.size ?? 0) + 1,
     })),
   });
 }

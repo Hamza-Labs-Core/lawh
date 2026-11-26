@@ -39,10 +39,11 @@ export async function readDecisions(env: AppEnv, ids: string[], history = false)
       FROM json_each(?) j CROSS JOIN decisions d ON d.id = j.value CROSS JOIN pages g ON g.id = d.page_id AND g.deleted_at IS NULL CROSS JOIN projects p ON p.id = d.project_id
       CROSS JOIN decision_revisions r ON r.decision_id = d.id AND r.revision = d.revision`).bind(list),
     env.DB.prepare(`${ANSWER} FROM json_each(?) j CROSS JOIN decisions d ON d.id = j.value CROSS JOIN decision_answers a ON a.decision_id = d.id AND a.seq = d.decided_seq ${WORDED}`).bind(list),
-    // Each person's newest answer to this wording, of those who may still answer.
+    // Each person's newest answer to this wording, of those who may still answer (when teams is off, only the owner may answer).
     env.DB.prepare(`${ANSWER} FROM json_each(?) j CROSS JOIN decisions d ON d.id = j.value CROSS JOIN decision_answers a ON a.decision_id = d.id AND a.revision = d.revision ${WORDED}
       WHERE NOT EXISTS (SELECT 1 FROM decision_answers b WHERE b.decision_id = a.decision_id AND b.member_id = a.member_id AND b.seq > a.seq)
-      AND (m.role = 'owner' OR EXISTS (SELECT 1 FROM project_access x WHERE x.member_id = a.member_id AND x.project_id = d.project_id AND x.level >= 3))`).bind(list),
+      AND (m.role = 'owner' OR (EXISTS (SELECT 1 FROM settings WHERE key = 'teams' AND value_json = 'true')
+        AND EXISTS (SELECT 1 FROM project_access x WHERE x.member_id = a.member_id AND x.project_id = d.project_id AND x.level >= 3)))`).bind(list),
     ...(history ? [env.DB.prepare(`${ANSWER} FROM decision_answers a ${WORDED} WHERE a.decision_id = ? ORDER BY a.seq DESC LIMIT ${MAX_HISTORY}`).bind(ids[0]!)] : []),
   ]);
   const answers = (result: D1Result | undefined, id: string) => ((result?.results ?? []) as AnswerRow[]).filter((a) => a.decision_id === id).sort((a, b) => a.seq - b.seq).map(answerJson);
@@ -95,9 +96,10 @@ export function answeredStatement(env: AppEnv, project: string | null, before: P
     ORDER BY d.updated_at DESC, d.id DESC LIMIT ?`).bind(...(project === null ? [] : [project]), ...before, limit);
 }
 
-/** How many people may answer on a project: each once, however many teams they are in, and the owner. */
+/** How many people may answer on a project: each once, however many teams they are in, and the owner. While teams is off, only the owner can answer. */
 export async function answerers(env: AppEnv, projectId: string): Promise<number> {
   const { results } = await env.DB.prepare(`SELECT tm.member_id FROM team_projects tp CROSS JOIN team_members tm ON tm.team_id = tp.team_id AND tm.level >= 3
-    CROSS JOIN members m ON m.id = tm.member_id AND m.joined_at IS NOT NULL AND m.removed_at IS NULL WHERE tp.project_id = ?`).bind(projectId).all<{ member_id: string }>();
+    CROSS JOIN members m ON m.id = tm.member_id AND m.joined_at IS NOT NULL AND m.removed_at IS NULL
+    WHERE tp.project_id = ? AND EXISTS (SELECT 1 FROM settings WHERE key = 'teams' AND value_json = 'true')`).bind(projectId).all<{ member_id: string }>();
   return new Set(results.map((r) => r.member_id)).size + 1;
 }
