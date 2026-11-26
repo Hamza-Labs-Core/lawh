@@ -59,24 +59,30 @@ const IMPLICIT_CLOSE = new Map<string, Set<string>>([
 ]);
 const GENERAL_SCOPE = ['applet', 'caption', 'html', 'marquee', 'math', 'object', 'svg', 'table', 'td', 'th', 'template'];
 const TABLE_SCOPE = new Set(['table', 'template', 'html']);
-const SCOPE_STOP = new Map<string, Set<string>>([
-  ['p', new Set([...GENERAL_SCOPE, 'button'])],
-  ['li', new Set([...GENERAL_SCOPE, 'ol', 'ul', 'menu'])],
-  ['dt', new Set([...GENERAL_SCOPE, 'dl'])],
-  ['dd', new Set([...GENERAL_SCOPE, 'dl'])],
-  ['option', new Set([...GENERAL_SCOPE, 'select', 'datalist'])],
-  ['optgroup', new Set([...GENERAL_SCOPE, 'select', 'datalist'])],
-  ['rt', new Set([...GENERAL_SCOPE, 'ruby'])],
-  ['rp', new Set([...GENERAL_SCOPE, 'ruby'])],
-  ['thead', TABLE_SCOPE],
-  ['tbody', TABLE_SCOPE],
-  ['tfoot', TABLE_SCOPE],
-  ['tr', TABLE_SCOPE],
-  ['td', TABLE_SCOPE],
-  ['th', TABLE_SCOPE],
-  ['caption', TABLE_SCOPE],
-  ['head', new Set(['html'])],
+// WHATWG §13.2.4.2 special elements excluding address, div, and p (the barrier for li/dt/dd implicit closing).
+const SPECIAL_STOP = new Set(
+  'applet area article aside base basefont bgsound blockquote body br button caption center col colgroup dd details dir dl dt embed fieldset figcaption figure footer form frame frameset h1 h2 h3 h4 h5 h6 head header hgroup hr html iframe img input keygen li link listing main marquee math menu meta nav noembed noframes noscript object ol param plaintext pre script search section select source style summary svg table tbody td template textarea tfoot th thead title tr track ul wbr xmp'.split(' '),
+);
+const SELECT_SCOPE = new Set([...GENERAL_SCOPE, 'select', 'datalist']);
+const RUBY_SCOPE = new Set([...GENERAL_SCOPE, 'ruby']);
+const HEAD_SCOPE = new Set(['html']);
+const P_SCOPE = new Set([...GENERAL_SCOPE, 'button']);
+// Bit index per closable group so element() skips implicit-close scans in O(1) whenever nothing closable is open.
+const CLOSABLE_BIT = new Map<string, number>([
+  ['p', 0], ['li', 1], ['dt', 2], ['dd', 2], ['option', 3], ['optgroup', 4],
+  ['rt', 5], ['rp', 5], ['thead', 6], ['tbody', 6], ['tfoot', 6], ['tr', 7],
+  ['td', 8], ['th', 8], ['caption', 9], ['head', 10],
 ]);
+const GROUP_STOP: Set<string>[] = [
+  P_SCOPE, SPECIAL_STOP, SPECIAL_STOP, SELECT_SCOPE, SELECT_SCOPE,
+  RUBY_SCOPE, TABLE_SCOPE, TABLE_SCOPE, TABLE_SCOPE, TABLE_SCOPE, HEAD_SCOPE,
+];
+const CLOSER_MASK = new Map<string, number>();
+for (const [target, closers] of IMPLICIT_CLOSE) {
+  const bit = 1 << CLOSABLE_BIT.get(target)!;
+  for (const closer of closers) CLOSER_MASK.set(closer, (CLOSER_MASK.get(closer) ?? 0) | bit);
+}
+
 const DISPLAY_OUTSIDE = new Set(['block', 'inline', 'run-in']);
 const DISPLAY_INSIDE = new Set(['flow', 'flow-root', 'table', 'flex', 'grid', 'ruby']);
 const DISPLAY_SINGLE = new Set([
@@ -88,8 +94,43 @@ const DISPLAY_SINGLE = new Set([
   '-webkit-box', '-webkit-inline-box', '-webkit-flex', '-webkit-inline-flex',
 ]);
 
-function isValidDisplay(value: string): boolean {
-  const tokens = value.toLowerCase().split(/\s+/).filter(Boolean);
+const isCssSpace = (ch: string) => ch === ' ' || ch === '\t' || ch === '\n' || ch === '\f' || ch === '\r';
+const isHex = (ch: string) => (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
+
+/** Tokenize a CSS property or value per CSS Syntax Level 3 (ASCII whitespace only, CSS escapes, `!` delimiter). */
+function cssTokens(raw: string): string[] | null {
+  const out: string[] = [];
+  let cur = '';
+  const flush = () => { if (cur) { out.push(cur.toLowerCase()); cur = ''; } };
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]!;
+    if (isCssSpace(ch)) { flush(); continue; }
+    if (ch === '!') { flush(); out.push('!'); continue; }
+    if (ch === '\\') {
+      if (i + 1 >= raw.length) { cur += '\uFFFD'; continue; }
+      const next = raw[i + 1]!;
+      if (next === '\n' || next === '\f' || next === '\r') return null;
+      if (isHex(next)) {
+        let j = i + 1;
+        while (j < raw.length && j - (i + 1) < 6 && isHex(raw[j]!)) j++;
+        const code = Number.parseInt(raw.slice(i + 1, j), 16);
+        cur += code === 0 || code > 0x10FFFF || (code >= 0xD800 && code <= 0xDFFF) ? '\uFFFD' : String.fromCodePoint(code);
+        if (j < raw.length && raw[j] === '\r' && raw[j + 1] === '\n') j += 2;
+        else if (j < raw.length && isCssSpace(raw[j]!)) j++;
+        i = j - 1;
+      } else {
+        cur += next;
+        i++;
+      }
+      continue;
+    }
+    cur += ch;
+  }
+  flush();
+  return out;
+}
+
+function isValidDisplay(tokens: string[]): boolean {
   if (tokens.length === 1) return DISPLAY_SINGLE.has(tokens[0]!);
   if (tokens.length < 2 || tokens.length > 3) return false;
   let outside = false, inside: string | null = null, listItem = false;
@@ -102,19 +143,27 @@ function isValidDisplay(value: string): boolean {
   return !listItem || inside === null || inside === 'flow' || inside === 'flow-root';
 }
 
+const MATCH_CLOSE: Record<string, string> = { '(': ')', '[': ']', '{': '}' };
+
 function isDisplayNone(style: string | null): boolean {
   if (!style) return false;
-  let hidden = false, important = false, buf = '', quote = '', parens = 0;
+  let hidden = false, important = false, buf = '', quote = '';
+  const blocks: string[] = [];
   const check = (decl: string) => {
     const colon = decl.indexOf(':');
     if (colon < 0) return;
-    if (decl.slice(0, colon).trim().toLowerCase() !== 'display') return;
-    let value = decl.slice(colon + 1).trim();
-    const imp = /\s*!\s*important$/i.test(value);
-    if (imp) value = value.replace(/\s*!\s*important$/i, '').trim();
-    if (!isValidDisplay(value)) return;
+    const prop = cssTokens(decl.slice(0, colon));
+    if (!prop || prop.length !== 1 || prop[0] !== 'display') return;
+    const tokens = cssTokens(decl.slice(colon + 1));
+    if (!tokens || tokens.length === 0) return;
+    let imp = false;
+    if (tokens.length >= 2 && tokens[tokens.length - 2] === '!' && tokens[tokens.length - 1] === 'important') {
+      imp = true;
+      tokens.length -= 2;
+    }
+    if (!isValidDisplay(tokens)) return;
     if (imp || !important) {
-      hidden = value.toLowerCase() === 'none';
+      hidden = tokens.length === 1 && tokens[0] === 'none';
       if (imp) important = true;
     }
   };
@@ -126,6 +175,7 @@ function isDisplayNone(style: string | null): boolean {
       if (ch === quote) quote = '';
       continue;
     }
+    if (ch === '\\' && i + 1 < style.length) { buf += ch + style[++i]!; continue; }
     if (ch === '/' && style[i + 1] === '*') {
       const end = style.indexOf('*/', i + 2);
       buf += ' ';
@@ -134,12 +184,12 @@ function isDisplayNone(style: string | null): boolean {
       continue;
     }
     if (ch === '"' || ch === "'") { quote = ch; buf += ch; continue; }
-    if (ch === '(') { parens++; buf += ch; continue; }
-    if (ch === ')') { if (parens > 0) parens--; buf += ch; continue; }
-    if (ch === ';' && parens === 0) { check(buf); buf = ''; continue; }
+    if (Object.hasOwn(MATCH_CLOSE, ch)) { blocks.push(MATCH_CLOSE[ch]!); buf += ch; continue; }
+    if (blocks.length > 0 && ch === blocks[blocks.length - 1]) { blocks.pop(); buf += ch; continue; }
+    if (ch === ';' && blocks.length === 0) { check(buf); buf = ''; continue; }
     buf += ch;
   }
-  if (!quote && buf) check(buf);
+  if (!quote && blocks.length === 0 && buf) check(buf);
   return hidden;
 }
 
@@ -152,11 +202,14 @@ function cutBytes(text: string, max: number): string {
   return decoder.decode(encoded.subarray(0, n)).trimEnd();
 }
 
+const INCOMPLETE_ENTITY = /^&(?:#(?:[0-9]+|[xX][0-9a-fA-F]*)?|[a-zA-Z][a-zA-Z0-9]{0,31})?$/;
+
 /** What a person would read in an HTML file, up to 200 KB of UTF-8 text, from its first 3 MB. */
 export async function visibleText(html: ReadableStream<Uint8Array>): Promise<string> {
-  let seen = 0, bytes = 0, seq = 0, hiddenCount = 0, hadSpace = true, pending = '';
+  let seen = 0, bytes = 0, seq = 0, hiddenCount = 0, closableMask = 0, hadSpace = true, pending = '';
   const parts: string[] = [];
-  const open: { id: number; tag: string; hidden: boolean }[] = [];
+  const counts = new Int32Array(GROUP_STOP.length);
+  const open: { id: number; tag: string; hidden: boolean; bit: number }[] = [];
   const add = (text: string) => {
     if (bytes >= MAX_BYTES) return;
     const collapsed = text.replace(/\s+/g, ' ');
@@ -166,29 +219,27 @@ export async function visibleText(html: ReadableStream<Uint8Array>): Promise<str
     parts.push(out);
     bytes += encoder.encode(out).byteLength;
   };
-  const popTo = (index: number) => {
-    while (open.length > index) if (open.pop()!.hidden) hiddenCount--;
+  const popOne = () => {
+    const entry = open.pop()!;
+    if (entry.hidden) hiddenCount--;
+    if (entry.bit >= 0 && --counts[entry.bit]! === 0) closableMask &= ~(1 << entry.bit);
   };
   const closeTo = (id: number) => {
-    while (open.length > 0 && open[open.length - 1]!.id >= id) if (open.pop()!.hidden) hiddenCount--;
+    while (open.length > 0 && open[open.length - 1]!.id >= id) popOne();
   };
-  const popImplicit = (tag: string) => {
-    const between = new Set<string>();
-    for (let i = open.length - 1; i >= 0; i--) {
+  const popImplicit = (tag: string, mask: number) => {
+    let remaining = closableMask & mask;
+    for (let i = open.length - 1; i >= 0 && remaining !== 0; i--) {
       const entry = open[i]!;
-      const closers = IMPLICIT_CLOSE.get(entry.tag);
-      if (closers?.has(tag)) {
-        const stop = SCOPE_STOP.get(entry.tag)!;
-        let blocked = false;
-        for (const ancestor of between) if (stop.has(ancestor)) { blocked = true; break; }
-        if (!blocked) {
-          popTo(i);
-          between.clear();
-          continue;
-        }
+      const bit = entry.bit;
+      if (bit >= 0 && (remaining & (1 << bit)) !== 0 && IMPLICIT_CLOSE.get(entry.tag)?.has(tag)) {
+        while (open.length > i) popOne();
+        remaining &= closableMask;
+        continue;
       }
-      between.add(entry.tag);
-      if (TABLE_SCOPE.has(entry.tag)) break;
+      for (let b = 0; b < GROUP_STOP.length; b++) {
+        if ((remaining & (1 << b)) !== 0 && GROUP_STOP[b]!.has(entry.tag)) remaining &= ~(1 << b);
+      }
     }
   };
   const limited = html.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
@@ -203,7 +254,8 @@ export async function visibleText(html: ReadableStream<Uint8Array>): Promise<str
   rewriter.on('*', {
     element(el) {
       const tag = el.tagName.toLowerCase();
-      popImplicit(tag);
+      const mask = CLOSER_MASK.get(tag) ?? 0;
+      if ((closableMask & mask) !== 0) popImplicit(tag, mask);
       const hide = HIDDEN.has(tag)
         || (el.hasAttribute('hidden') && el.getAttribute('hidden')?.toLowerCase() !== 'until-found')
         || isDisplayNone(el.getAttribute('style'));
@@ -213,8 +265,10 @@ export async function visibleText(html: ReadableStream<Uint8Array>): Promise<str
       const id = ++seq;
       const ok = end(el, () => { closeTo(id); if (block && hiddenCount === 0) add(' '); });
       if (ok) {
-        open.push({ id, tag, hidden: hide });
+        const bit = CLOSABLE_BIT.get(tag) ?? -1;
+        open.push({ id, tag, hidden: hide, bit });
         if (hide) hiddenCount++;
+        if (bit >= 0 && counts[bit]!++ === 0) closableMask |= (1 << bit);
       }
     },
   });
@@ -228,9 +282,13 @@ export async function visibleText(html: ReadableStream<Uint8Array>): Promise<str
       pending = '';
       if (!chunk.lastInTextNode) {
         const cut = flush.lastIndexOf('&');
-        if (cut >= 0 && flush.length - cut <= 64 && !/[;\s]/.test(flush.slice(cut))) {
-          pending = flush.slice(cut);
-          flush = flush.slice(0, cut);
+        if (cut >= 0) {
+          const tail = flush.slice(cut);
+          if (INCOMPLETE_ENTITY.test(tail)) {
+            // Collapse arbitrarily long leading-zero runs in numeric references so pending stays tiny.
+            pending = tail.replace(/^(&#[xX]?)0+/, '$10');
+            flush = flush.slice(0, cut);
+          }
         }
       }
       if (flush) add(decode(flush));

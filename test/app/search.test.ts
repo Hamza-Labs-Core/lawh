@@ -29,10 +29,12 @@ describe('text', () => {
     ['<div hidden><p hidden>a<p>b</p></div>c', 'c'],
     ['<ul><li hidden>a<li>b</ul><dl><dt hidden>x<dd>y</dl><div><p hidden>z</div>w', 'b y w'],
     ['<ul><li hidden><ul><li>secret</li></ul></li><li>visible</li></ul>', 'visible'],
+    ['<ul><li hidden><button><li>secret</li></button></li><li>visible</li></ul>', 'visible'],
+    ['<ul><li hidden><section><li>secret</li></section></li><li>visible</li></ul>', 'visible'],
     ['<table><tr><td hidden><table><tr><td>secret</td></tr></table></td><td>visible</td></tr></table>', 'visible'],
     ['<constructor hidden><span>x</span></constructor>ok', 'ok'],
     ['<img hidden src="x">shown<input hidden value="1">too', 'shown too'],
-    ['<p style="display:none; display:block">shown</p><p style="display:none; display:bogus">gone</p><p style="display:no/**/ne">kept</p><p style="display:none !important; display:block">gone</p><p style="display:none !important; display:flex !important">back</p><p style="content: \'; display: none\'">lit</p>', 'shown kept back lit'],
+    ['<p style="display:none; display:block">shown</p><p style="display:none; display:bogus">gone</p><p style="display:none; display:block\u00A0flow">gone2</p><p style="display:none; display:bl\\6f ck">esc</p><p style="--x:[; display:none]">prop</p><p style="display:no/**/ne">kept</p><p style="display:none !important; display:block">gone</p><p style="display:none !important; display:flex !important">back</p><p style="content: \'; display: none\'">lit</p>', 'shown esc prop kept back lit'],
     ['Caf&eacute; h&aacute;&ccaron;ek &frac12; &notit; &#000000065; &#128; Tom &amp; Jerry &lt;3 &#1605;&#x631;&nbsp;x &unknown; &toString; &#0; &#xD800;', 'Café háček ½ ¬it; A € Tom & Jerry <3 مر x &unknown; &toString;'], ['<title>T</title><h1>H</h1>', 'T H'], ['<svg><style/><text>in a chart</text></svg> after', 'in a chart after'], ['<!-- no -->yes', 'yes'],
     ['<div><script>1</script>a<script>2</script>b</div>', 'ab'], ['<p title="no">x', 'x'], ['', ''],
   ])('reads %s as %s', async (source, expected) => { expect(await text(source)).toBe(expected); });
@@ -57,6 +59,8 @@ describe('text', () => {
     expect((await visibleText(new ReadableStream({ pull(c) { const next = split.shift(); if (next) c.enqueue(next); else c.close(); } }))).endsWith('a& tail')).toBe(true);
     const longPad = 'a'.repeat(65_520), longSplit = [`<p>${longPad}&CounterClockwise`, 'ContourIntegral; end</p>'].map((part) => new TextEncoder().encode(part));
     expect((await visibleText(new ReadableStream({ pull(c) { const next = longSplit.shift(); if (next) c.enqueue(next); else c.close(); } }))).endsWith('a∳ end')).toBe(true);
+    const numPad = 'a'.repeat(65_500), numSplit = [`<p>${numPad}&#${'0'.repeat(80)}`, '65; tail</p>'].map((part) => new TextEncoder().encode(part));
+    expect((await visibleText(new ReadableStream({ pull(c) { const next = numSplit.shift(); if (next) c.enqueue(next); else c.close(); } }))).endsWith('aA tail')).toBe(true);
   });
 
   it('makes words of a search, keeping every word typed', () => {
