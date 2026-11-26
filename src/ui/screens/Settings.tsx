@@ -8,16 +8,31 @@ type Problem = 'offline' | 'wait' | 'failed' | 'notAllowed' | 'taken' | 'agreeme
 const problemIn = (error: unknown): Problem =>
   error instanceof CallError && error.status === 403 ? 'notAllowed' : error instanceof CallError && error.code === 'secret_found' ? 'secretComment' : error instanceof CallError && error.status === 422 ? 'badInput' : problemOf(error);
 
-/** Loads once, and again on request. */
-function useLoad<T>(path: string): { data: T | null; problem: 'offline' | 'wait' | 'failed' | null; load: () => void; set: (next: T | ((prev: T | null) => T | null)) => void } {
-  const [data, set] = useState<T | null>(null), [problem, setProblem] = useState<'offline' | 'wait' | 'failed' | null>(null), [tries, setTries] = useState(0);
-  useEffect(() => {
+/** Loads once, and again on request. Any local `set` invalidates older in-flight GETs so late responses never overwrite saved state. */
+function useLoad<T>(path: string): { data: T | null; problem: 'offline' | 'wait' | 'failed' | null; load: () => void; refresh: () => Promise<void>; set: (next: T | ((prev: T | null) => T | null)) => void } {
+  const [data, setData] = useState<T | null>(null), [problem, setProblem] = useState<'offline' | 'wait' | 'failed' | null>(null), [tries, setTries] = useState(0);
+  const epoch = useRef(0), inflight = useRef<AbortController | null>(null);
+  const runGet = (): Promise<void> => {
+    inflight.current?.abort();
     const stop = new AbortController();
+    inflight.current = stop;
+    const mine = ++epoch.current;
     setProblem(null);
-    call<T>('GET', path, undefined, stop.signal).then(set, (error: unknown) => { if (!stop.signal.aborted) setProblem(problemOf(error)); });
-    return () => stop.abort();
+    return call<T>('GET', path, undefined, stop.signal).then(
+      (res) => { if (!stop.signal.aborted && epoch.current === mine) setData(res); },
+      (error: unknown) => { if (!stop.signal.aborted && epoch.current === mine) setProblem(problemOf(error)); },
+    );
+  };
+  useEffect(() => {
+    void runGet();
+    return () => { inflight.current?.abort(); };
   }, [path, tries]);
-  return { data, problem, load: () => setTries((n) => n + 1), set };
+  const set = (next: T | ((prev: T | null) => T | null)) => {
+    epoch.current++;
+    inflight.current?.abort();
+    setData(next);
+  };
+  return { data, problem, load: () => setTries((n) => n + 1), refresh: runGet, set };
 }
 
 function Loading({ problem, load }: { problem: 'offline' | 'wait' | 'failed' | null; load: () => void }) {
@@ -573,7 +588,7 @@ function NewKey({ secret, onDone }: { secret: string; onDone: () => void }) {
 // ---- Projects
 
 function Projects({ me }: { me: Me }) {
-  const t = useText(), { data, problem, load, set } = useLoad<Listed<ProjectName>>('/projects');
+  const t = useText(), { data, problem, load, refresh, set } = useLoad<Listed<ProjectName>>('/projects');
   if (data === null) return <Loading problem={problem} load={load} />;
   return (
     <>
@@ -584,7 +599,7 @@ function Projects({ me }: { me: Me }) {
             <ProjectForm
               me={me}
               project={p}
-              onOpen={load}
+              onOpen={refresh}
               onSave={async (slug, payload) => {
                 const next = await call<ProjectName>('PATCH', `/projects/${slug}`, payload);
                 set((now) => now && { ...now, items: now.items.map((o) => (o.slug === slug ? { ...o, ...next } : o)) });
@@ -600,8 +615,8 @@ function Projects({ me }: { me: Me }) {
 
 const AGREEMENT_OPTIONS = [1, 2, 3, 4, 5] as const;
 
-function ProjectForm({ me, project, onOpen, onSave }: { me: Me; project?: ProjectName; onOpen?: () => void; onSave: (slug: string, payload: { name?: { en: string; ar: string }; answersNeeded?: number }) => Promise<void> }) {
-  const t = useText(), { lang } = useSettings(), id = useId(), [busy, run] = useBusy(), [problem, setProblem] = useState<Problem | null>(null), [done, setDone] = useState(false), [open, setOpen] = useState(false), box = useRef<HTMLDivElement>(null), first = useRef<HTMLInputElement>(null), wasOpen = useRef(false);
+function ProjectForm({ me, project, onOpen, onSave }: { me: Me; project?: ProjectName; onOpen?: () => Promise<void>; onSave: (slug: string, payload: { name?: { en: string; ar: string }; answersNeeded?: number }) => Promise<void> }) {
+  const t = useText(), { lang } = useSettings(), id = useId(), [busy, run] = useBusy(), [problem, setProblem] = useState<Problem | null>(null), [done, setDone] = useState(false), [open, setOpen] = useState(false), [refreshing, setRefreshing] = useState(false), box = useRef<HTMLDivElement>(null), first = useRef<HTMLInputElement>(null), wasOpen = useRef(false);
   const [slug, setSlug] = useState(project?.slug ?? ''), [en, setEn] = useState(project?.name.en ?? ''), [ar, setAr] = useState(project?.name.ar ?? '');
   const currentNeeded = project?.answersNeeded ?? 1;
   const [needed, setNeeded] = useState(currentNeeded);
@@ -616,8 +631,9 @@ function ProjectForm({ me, project, onOpen, onSave }: { me: Me; project?: Projec
   const nameChanged = !project || en.trim() !== project.name.en || ar.trim() !== project.name.ar;
   const neededChanged = Boolean(project && me.teams && needed !== currentNeeded);
   const changed = nameChanged || neededChanged;
-  const ready = /^[a-z0-9][a-z0-9-]{0,79}$/.test(slug) && en.trim() !== '' && ar.trim() !== '' && changed;
+  const ready = /^[a-z0-9][a-z0-9-]{0,79}$/.test(slug) && en.trim() !== '' && ar.trim() !== '' && changed && !refreshing;
   const save = () => run(async () => {
+    if (refreshing) return;
     setProblem(null); setDone(false);
     const payload: { name?: { en: string; ar: string }; answersNeeded?: number } = {};
     if (nameChanged) payload.name = { en: en.trim(), ar: ar.trim() };
@@ -634,7 +650,12 @@ function ProjectForm({ me, project, onOpen, onSave }: { me: Me; project?: Projec
             <p class="muted" dir="ltr">{project.slug}</p>
             {currentNeeded > 1 && <p class="muted"><Fill text="agreementCount" n={digits(lang, currentNeeded)} /></p>}
             {tooFew && <p class="failure"><Fill text="needsMoreAnswerers" n={digits(lang, currentNeeded)} can={digits(lang, project.answerers!)} /></p>}
-            <button class="plain wide" onClick={() => { touched.current = { en: false, ar: false, needed: false }; setEn(project.name.en); setAr(project.name.ar); setNeeded(currentNeeded); setOpen(true); setDone(false); onOpen?.(); }}>{t('rename')}</button>
+            <button class="plain wide" onClick={() => {
+              touched.current = { en: false, ar: false, needed: false };
+              setEn(project.name.en); setAr(project.name.ar); setNeeded(currentNeeded);
+              setOpen(true); setDone(false);
+              if (onOpen) { setRefreshing(true); void onOpen().finally(() => setRefreshing(false)); }
+            }}>{t('rename')}</button>
           </>
         ) : <button class="primary fit" onClick={() => { setOpen(true); setDone(false); }}>{t('newProject')}</button>}
         <div aria-live="polite">{done && <p class="done">{t('saved')}</p>}</div>
