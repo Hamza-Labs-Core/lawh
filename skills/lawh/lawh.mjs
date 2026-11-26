@@ -579,38 +579,34 @@ import fcntl, json, os, signal, sys
 signal.signal(signal.SIGINT, signal.SIG_IGN)
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
 path, pid = sys.argv[1], sys.argv[2]
-fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
-try:
-    os.chmod(path, 0o600)
-except OSError:
-    pass
-try:
-    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-except BlockingIOError:
+fd = None
+for _ in range(10):
+    cand = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        os.lseek(fd, 0, os.SEEK_SET)
-        sys.stderr.write(os.read(fd, 256).decode('utf-8', 'replace'))
+        os.chmod(path, 0o600)
     except OSError:
         pass
-    sys.exit(2)
-# Also honor any still-alive legacy file-lock record (with a token field) so mixed-version watchers cannot overlap.
-try:
-    os.lseek(fd, 0, os.SEEK_SET)
-    raw = os.read(fd, 256).decode('utf-8', 'replace').strip()
-    if raw:
-        existing = json.loads(raw)
-        if isinstance(existing, dict) and 'token' in existing and isinstance(existing.get('pid'), int) and existing['pid'] > 0:
-            try:
-                os.kill(existing['pid'], 0)
-                sys.stderr.write(raw)
-                sys.exit(2)
-            except PermissionError:
-                sys.stderr.write(raw)
-                sys.exit(2)
-            except ProcessLookupError:
-                pass
-except Exception:
-    pass
+    try:
+        fcntl.flock(cand, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        try:
+            os.lseek(cand, 0, os.SEEK_SET)
+            sys.stderr.write(os.read(cand, 256).decode('utf-8', 'replace'))
+        except OSError:
+            pass
+        os.close(cand)
+        sys.exit(2)
+    try:
+        st_path = os.stat(path)
+        st_fd = os.fstat(cand)
+        if st_path.st_ino == st_fd.st_ino and st_path.st_dev == st_fd.st_dev:
+            fd = cand
+            break
+    except FileNotFoundError:
+        pass
+    os.close(cand)
+if fd is None:
+    sys.exit(3)
 os.ftruncate(fd, 0)
 os.lseek(fd, 0, os.SEEK_SET)
 os.write(fd, f'{{"pid":{pid}}}\\n'.encode('utf-8'))
@@ -864,7 +860,14 @@ async function cmdWatch(mode, cred, flags, command) {
       runAbort.abort();
       wake();
       if (activeChild) {
-        try { activeChild.kill('SIGTERM'); } catch { /* ignore */ }
+        const childToStop = activeChild;
+        try { childToStop.kill('SIGTERM'); } catch { /* ignore */ }
+        // Escalate to SIGKILL if a handler ignores SIGTERM after cursor lock loss.
+        setTimeout(() => {
+          if (childToStop.exitCode === null && childToStop.signalCode === null) {
+            try { childToStop.kill('SIGKILL'); } catch { /* ignore */ }
+          }
+        }, 250).unref();
       }
     };
 
@@ -920,6 +923,7 @@ async function cmdWatch(mode, cred, flags, command) {
             return 'done';
           }
           const exitCode = await runHandlerCommand(command, out, (c) => { activeChild = c; });
+          if (lostLock) return 'aborted';
           if (exitCode !== 0) {
             if (stopping) return 'aborted';
             process.stderr.write(`Handler exited with code ${exitCode} on event #${ev.seq}; cursor kept at ${s.seq}.\n`);
