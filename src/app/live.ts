@@ -17,6 +17,8 @@ interface SocketMeta {
  * Carries only `{ seq }` numbers, ignores incoming client messages, and closes expired sockets on alarm or ping.
  */
 export class LiveProject extends DurableObject<AppEnv> {
+  private closeGeneration = 0;
+
   private readMeta(ws: WebSocket): SocketMeta {
     try {
       const att = ws.deserializeAttachment() as Partial<SocketMeta> | null;
@@ -77,6 +79,7 @@ export class LiveProject extends DurableObject<AppEnv> {
     }
 
     if (request.method === 'POST' && url.pathname === '/close') {
+      this.closeGeneration++;
       for (const ws of this.ctx.getWebSockets()) {
         this.closeSocket(ws, 1000, 'live_off');
       }
@@ -88,8 +91,9 @@ export class LiveProject extends DurableObject<AppEnv> {
       if ((request.headers.get('Upgrade') ?? '').toLowerCase() !== 'websocket') {
         return errorResponse('invalid', 'WebSocket upgrade required.');
       }
-      // Recheck the live switch inside the single-threaded DO so an in-flight upgrade paused across `live = false` cannot open a socket after `/close`.
-      if (!(await isOn(this.env.DB, 'live'))) {
+      // Recheck the live switch AND track closeGeneration across the external D1 await so `/close` interleaving during input-gate suspension can never accept a socket.
+      const genBefore = this.closeGeneration;
+      if (!(await isOn(this.env.DB, 'live')) || this.closeGeneration !== genBefore) {
         return errorResponse('feature_off', 'This feature is off.');
       }
       const keyId = request.headers.get('X-Lawh-Key-Id')?.trim() ?? '';
