@@ -44,7 +44,62 @@ describe('pnpm lawh owner setup --local', { timeout: 120_000 }, () => {
   });
 
   it('explains its use', () => {
-    for (const args of [[], ['owner'], ['owner', 'setup', '--nope'], ['x', 'setup']]) expect(run('', ...args).status).toBe(2);
+    for (const args of [[], ['owner'], ['owner', 'setup', '--nope'], ['owner', 'transfer'], ['owner', 'transfer', 'a', 'b'], ['x', 'setup']]) {
+      expect(run('', ...args).status).toBe(2);
+    }
+  });
+
+  it('transfers ownership in one transaction, disambiguates colliding agent names, revokes old keys, and cleans teams/links/invites', () => {
+    // Seed owner joined, member Mona joined, unjoined invitee Lina, a team, unused links, and colliding agents + keys.
+    const ownerId = query("SELECT id FROM members WHERE role='owner'")[0]!.id as string;
+    const now = Date.now();
+    query(`
+      UPDATE members SET joined_at = ${now} WHERE id = '${ownerId}';
+      INSERT INTO teams(id, name, created_at) VALUES('t_tr', 'Core', ${now});
+      INSERT INTO members(id, name, role, created_by, created_at) VALUES('mem_mona', 'Mona', 'member', '${ownerId}', ${now});
+      UPDATE members SET joined_at = ${now} WHERE id = 'mem_mona';
+      INSERT INTO team_members(team_id, member_id, level, set_by, set_at) VALUES('t_tr', 'mem_mona', 4, '${ownerId}', ${now});
+      INSERT INTO members(id, name, role, created_by, created_at) VALUES('mem_unjoined', 'Unjoined', 'member', '${ownerId}', ${now});
+      INSERT INTO access_links(token_sha256, kind, member_id, created_by, created_at, expires_at, team_id, level)
+        VALUES('${'1'.repeat(64)}', 'invite', 'mem_unjoined', '${ownerId}', ${now}, ${now + 86_400_000}, 't_tr', 2);
+      INSERT INTO agents(id, member_id, name, created_at) VALUES('agt_old_1', '${ownerId}', 'shared-bot', ${now});
+      INSERT INTO agents(id, member_id, name, created_at) VALUES('agt_old_2', '${ownerId}', 'solo-bot', ${now});
+      INSERT INTO agents(id, member_id, name, created_at) VALUES('agt_new_1', 'mem_mona', 'shared-bot', ${now});
+      INSERT INTO agent_keys(id, agent_id, secret_hmac, scopes_json, all_projects, created_at, expires_at)
+        VALUES('key_old_1', 'agt_old_1', 'h1', '["pages:read"]', 1, ${now}, ${now + 86_400_000});
+    `);
+
+    // Unjoined member is refused.
+    const unjoinedRes = run('yes\n', 'owner', 'transfer', 'mem_unjoined', '--local');
+    expect(unjoinedRes.status).toBe(1);
+    expect(unjoinedRes.stderr).toContain('has not joined');
+
+    // Declining confirmation changes nothing.
+    const declined = run('no\n', 'owner', 'transfer', 'mem_mona', '--local');
+    expect(declined.status).toBe(1);
+    expect(declined.stdout).toContain('Both people leave every team');
+    expect(declined.stdout).toContain('shared-bot -> shared-bot (agt_old_1)');
+    expect(query("SELECT id FROM members WHERE role='owner'")).toEqual([{ id: ownerId }]);
+
+    // Confirming with exact "yes" executes the transfer atomically.
+    const done = run('yes\n', 'owner', 'transfer', 'mem_mona', '--local');
+    expect(done.status, done.stderr + done.stdout).toBe(0);
+    expect(query("SELECT id, role FROM members WHERE id IN ('mem_mona', '" + ownerId + "') ORDER BY id")).toEqual(
+      [
+        { id: ownerId, role: 'member' },
+        { id: 'mem_mona', role: 'owner' },
+      ].sort((a, b) => (a.id < b.id ? -1 : 1)),
+    );
+    // Both left every team; unused links deleted; pending invitee canceled; agents moved & disambiguated; old keys revoked; audit written.
+    expect(query('SELECT COUNT(*) n FROM team_members')).toEqual([{ n: 0 }]);
+    expect(query('SELECT COUNT(*) n FROM access_links WHERE used_at IS NULL')).toEqual([{ n: 0 }]);
+    expect(query("SELECT removed_at IS NOT NULL canceled FROM members WHERE id='mem_unjoined'")).toEqual([{ canceled: 1 }]);
+    expect(query("SELECT id, member_id, name FROM agents WHERE id IN ('agt_old_1','agt_old_2') ORDER BY id")).toEqual([
+      { id: 'agt_old_1', member_id: 'mem_mona', name: 'shared-bot (agt_old_1)' },
+      { id: 'agt_old_2', member_id: 'mem_mona', name: 'solo-bot' },
+    ]);
+    expect(query("SELECT revoked_at IS NOT NULL revoked FROM agent_keys WHERE id='key_old_1'")).toEqual([{ revoked: 1 }]);
+    expect(query("SELECT COUNT(*) n FROM audit WHERE action='owner.transfer' AND subject_id='mem_mona'")).toEqual([{ n: 1 }]);
   });
 });
 

@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'preact/hooks';
-import { type Agent, call, CallError, type DeletedPage, type FailedDelivery, type Listed, type Me, problemOf, type ProjectName, type TeamItem, type TeamsResponse, type WebhookItem } from '../api';
+import { type Agent, call, CallError, type DeletedPage, type FailedDelivery, type Listed, type Me, type PeopleResponse, problemOf, type ProjectName, type TeamItem, type TeamsResponse, type WebhookItem } from '../api';
 import { Failure, Fill, Heading, Link, useBusy, useSettings, useText } from '../app';
 import { day, digits, type Key } from '../i18n';
 import { Account } from './Account';
@@ -26,24 +26,178 @@ function Loading({ problem, load }: { problem: 'offline' | 'wait' | 'failed' | n
 }
 
 const PARTS: [path: string, title: Key, who: 'all' | 'managers' | 'teamManagers' | 'owner', need?: 'webhooks' | 'teams'][] = [
-  ['/settings', 'account', 'all'], ['/settings/teams', 'teams', 'teamManagers', 'teams'], ['/settings/agents', 'agents', 'managers'], ['/settings/projects', 'projects', 'owner'], ['/settings/deleted', 'deletedPages', 'managers'], ['/settings/webhooks', 'webhooks', 'managers', 'webhooks'], ['/settings/data', 'data', 'owner'],
+  ['/settings', 'account', 'all'], ['/settings/people', 'people', 'teamManagers', 'teams'], ['/settings/teams', 'teams', 'teamManagers', 'teams'], ['/settings/agents', 'agents', 'managers'], ['/settings/projects', 'projects', 'owner'], ['/settings/deleted', 'deletedPages', 'managers'], ['/settings/webhooks', 'webhooks', 'managers', 'webhooks'], ['/settings/data', 'data', 'owner'],
 ];
 
-export function Settings({ path, me, onChange }: { path: string; me: Me; onChange: () => void }) {
+export function Settings({ path, search = '', me, onChange }: { path: string; search?: string; me: Me; onChange: () => void }) {
   const t = useText();
+  const afterReset = new URLSearchParams(search).get('reset') === '1';
   const parts = PARTS.filter(([, , who, need]) => (!need || me[need]) && (who === 'all' || me.isOwner || (who === 'managers' && me.manages) || (who === 'teamManagers' && me.managesTeam)));
   const now = parts.find(([p]) => p === path) ?? parts[0]!;
   return (
     <>
       <Heading>{t('settings')}</Heading>
       <nav class="chips" aria-label={t('settings')}>{parts.map(([p, title]) => <Link key={p} class="chip" to={p} current={p === now[0]}>{t(title)}</Link>)}</nav>
-      {now[0] === '/settings' && <Account me={me} onChange={onChange} inside />}
+      {now[0] === '/settings' && <>{afterReset && <div class="card" role="status"><p>{t('postResetDone')}</p></div>}<Account me={me} onChange={onChange} inside /></>}
+      {now[0] === '/settings/people' && <People me={me} />}
       {now[0] === '/settings/teams' && <Teams me={me} />}
-      {now[0] === '/settings/agents' && <Agents me={me} />}
+      {now[0] === '/settings/agents' && <Agents me={me} afterReset={afterReset} />}
       {now[0] === '/settings/projects' && <Projects />}
       {now[0] === '/settings/deleted' && <Deleted />}
       {now[0] === '/settings/webhooks' && <Webhooks />}
       {now[0] === '/settings/data' && <Data onChange={onChange} />}
+    </>
+  );
+}
+
+// ---- People
+
+interface ReadyLink { kind: 'invite' | 'reset'; name: string; url: string; expiresAt: number }
+
+function OneTimeLink({ ready, onDone }: { ready: ReadyLink; onDone: () => void }) {
+  const t = useText(), { lang } = useSettings(), [copied, setCopied] = useState<boolean | null>(null), box = useRef<HTMLDivElement>(null);
+  useEffect(() => box.current?.focus(), []);
+  return (
+    <div class="card form" ref={box} tabIndex={-1}>
+      <h2>{t(ready.kind === 'invite' ? 'inviteLinkReady' : 'resetLinkReady')}</h2>
+      <p><Fill text={ready.kind === 'invite' ? 'inviteLinkOnce' : 'resetLinkOnce'} name={ready.name} date={day(lang, ready.expiresAt)} /></p>
+      <p class="address" dir="ltr">{ready.url}</p>
+      <div aria-live="polite">{copied !== null && <p class={copied ? 'done' : 'failure'}>{t(copied ? 'copied' : 'notCopied')}</p>}</div>
+      <button class="primary" onClick={() => { navigator.clipboard.writeText(ready.url).then(() => setCopied(true), () => setCopied(false)); }}>{t('copy')}</button>
+      <button class="plain wide" onClick={onDone}>{t('linkSaved')}</button>
+    </div>
+  );
+}
+
+function People({ me }: { me: Me }) {
+  const t = useText(), { lang } = useSettings(), id = useId();
+  const { data, problem, load } = useLoad<PeopleResponse>('/people');
+  const [busy, run] = useBusy(), [failed, setFailed] = useState<Problem | null>(null);
+  const [inviting, setInviting] = useState(false), [readyLink, setReadyLink] = useState<ReadyLink | null>(null);
+  const [inviteName, setInviteName] = useState(''), [inviteTeam, setInviteTeam] = useState(''), [inviteLevel, setInviteLevel] = useState(1);
+  const [asking, setAsking] = useState<string | null>(null);
+  const inviteBtn = useRef<HTMLButtonElement>(null), nameInput = useRef<HTMLInputElement>(null), wasOpen = useRef(false);
+  const open = inviting || readyLink !== null;
+  useEffect(() => {
+    if (inviting) nameInput.current?.focus();
+    else if (!open && wasOpen.current) inviteBtn.current?.focus();
+    wasOpen.current = open;
+  }, [inviting, open]);
+
+  if (data === null) return <Loading problem={problem} load={load} />;
+  const allowedLevels = me.isOwner ? LEVELS : ([1, 2, 3] as const);
+  const chosenTeam = inviteTeam && data.teams.some((tm) => tm.id === inviteTeam) ? inviteTeam : (data.teams[0]?.id ?? '');
+
+  const act = (what: () => Promise<void>) => run(async () => {
+    setFailed(null);
+    try { await what(); setAsking(null); }
+    catch (error) { setFailed(problemIn(error)); }
+  });
+
+  const submitInvite = () => act(async () => {
+    const res = await call<{ id: string; name: string; url: string; expiresAt: number }>('POST', '/people/invite', {
+      name: inviteName.trim(),
+      teamId: chosenTeam,
+      level: inviteLevel,
+    });
+    setInviteName('');
+    setInviting(false);
+    setReadyLink({ kind: 'invite', name: res.name, url: res.url, expiresAt: res.expiresAt });
+    load();
+  });
+
+  return (
+    <>
+      <p class="muted">{t('peopleHelp')}</p>
+      {readyLink && <OneTimeLink ready={readyLink} onDone={() => setReadyLink(null)} />}
+      {!inviting && !readyLink && (data.teams.length > 0
+        ? <button ref={inviteBtn} class="primary fit" onClick={() => setInviting(true)}>{t('invitePerson')}</button>
+        : <p class="muted">{t('noTeamsForInvite')}</p>)}
+      {inviting && (
+        <form class="card form" onSubmit={(event) => { event.preventDefault(); if (inviteName.trim() && chosenTeam) submitInvite(); }}>
+          <h2>{t('invitePerson')}</h2>
+          <label class="muted" for={`${id}-pn`}>{t('personName')}</label>
+          <input ref={nameInput} id={`${id}-pn`} class="field" dir="auto" maxLength={80} autocomplete="off" value={inviteName} onInput={(event) => setInviteName(event.currentTarget.value)} />
+          <label class="muted" for={`${id}-pt`}>{t('team')}</label>
+          <select id={`${id}-pt`} class="field" value={chosenTeam} onChange={(event) => setInviteTeam(event.currentTarget.value)}>
+            {data.teams.map((tm) => <option key={tm.id} value={tm.id} selected={tm.id === chosenTeam}>{tm.name}</option>)}
+          </select>
+          <label class="muted" for={`${id}-pl`}>{t('level')}</label>
+          <select id={`${id}-pl`} class="field" value={String(inviteLevel)} onChange={(event) => setInviteLevel(Number(event.currentTarget.value))}>
+            {allowedLevels.map((lvl) => <option key={lvl} value={String(lvl)} selected={lvl === inviteLevel}>{t(`level${lvl}` as Key)}</option>)}
+          </select>
+          {failed && <Failure>{t(failed)}</Failure>}
+          <button class="primary" type="submit" disabled={!inviteName.trim() || !chosenTeam || busy}>{t('makeInvite')}</button>
+          <button class="plain wide" type="button" disabled={busy} onClick={() => { setInviting(false); setFailed(null); setInviteName(''); }}>{t('cancel')}</button>
+        </form>
+      )}
+
+      <section class="card form">
+        <h2>{t('pendingInvites')}</h2>
+        {data.invites.length === 0 && <p class="muted">{t('noPendingInvites')}</p>}
+        <ul class="rows">
+          {data.invites.map((inv) => (
+            <li key={inv.id}>
+              <div>
+                <strong><bdi dir="auto">{inv.name}</bdi></strong>{' '}
+                {inv.level !== null && <span class="status">{t(`level${inv.level}` as Key)}</span>}{' '}
+                {inv.expired && <span class="status">{t('inviteExpired')}</span>}
+                <p class="muted">
+                  {inv.teamName && <><bdi dir="auto">{inv.teamName}</bdi>{lang === 'ar' ? '، ' : ', '}</>}
+                  <Fill text="invitedBy" name={inv.inviter ?? t('former')} />
+                  {inv.expiresAt !== null && <>{lang === 'ar' ? '، ' : ', '}<Fill text={inv.expired ? 'endedOn' : 'endsOn'} date={day(lang, inv.expiresAt)} /></>}
+                </p>
+              </div>
+              <div class="row">
+                {inv.canRenew && (
+                  <button class="plain" disabled={busy} onClick={() => act(async () => {
+                    const res = await call<{ url: string; expiresAt: number }>('POST', `/people/${inv.id}/invite-link`);
+                    setReadyLink({ kind: 'invite', name: inv.name, url: res.url, expiresAt: res.expiresAt });
+                    load();
+                  })}>{t('newInviteLink')}</button>
+                )}
+                {inv.canCancel && (asking === `inv:${inv.id}`
+                  ? <><button class="plain danger" disabled={busy} onClick={() => act(async () => { await call('DELETE', `/people/${inv.id}/invite`); load(); })}>{t('cancelInviteSure')}</button><button class="plain" disabled={busy} onClick={() => setAsking(null)}>{t('cancel')}</button></>
+                  : <button class="plain" disabled={busy} onClick={() => setAsking(`inv:${inv.id}`)}>{t('cancelInvite')}</button>)}
+              </div>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      {me.isOwner && (
+        <section class="card form">
+          <h2>{t('joinedMembers')}</h2>
+          {data.members.length === 0 && <p class="muted">{t('noJoinedMembers')}</p>}
+          <ul class="rows">
+            {data.members.map((m) => (
+              <li key={m.id}>
+                <div>
+                  <strong><bdi dir="auto">{m.name}</bdi></strong>
+                  <p class="muted">
+                    {m.teams.length === 0
+                      ? t('noTeamsAssigned')
+                      : m.teams.map((tm, i) => <span key={tm.id}>{i > 0 && (lang === 'ar' ? '، ' : ', ')}<bdi dir="auto">{tm.name}</bdi> ({t(`level${tm.level}` as Key)})</span>)}
+                  </p>
+                </div>
+                <div class="row">
+                  {asking === `rst:${m.id}`
+                    ? <><button class="plain" disabled={busy} onClick={() => act(async () => {
+                      const res = await call<{ url: string; expiresAt: number }>('POST', `/people/${m.id}/reset`);
+                      setReadyLink({ kind: 'reset', name: m.name, url: res.url, expiresAt: res.expiresAt });
+                      load();
+                    })}>{t('makeResetLinkSure')}</button><button class="plain" disabled={busy} onClick={() => setAsking(null)}>{t('cancel')}</button></>
+                    : <button class="plain" disabled={busy} onClick={() => setAsking(`rst:${m.id}`)}>{t('makeResetLink')}</button>}
+                  {asking === `rm:${m.id}`
+                    ? <><button class="plain danger" disabled={busy} onClick={() => act(async () => { await call('DELETE', `/people/${m.id}`); load(); })}>{t('removeMemberSure')}</button><button class="plain" disabled={busy} onClick={() => setAsking(null)}>{t('cancel')}</button></>
+                    : <button class="plain" disabled={busy} onClick={() => setAsking(`rm:${m.id}`)}>{t('removeMember')}</button>}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {failed && !inviting && <Failure>{t(failed)}</Failure>}
     </>
   );
 }
@@ -232,7 +386,7 @@ function TeamCard({
 const SCOPES = ['pages:read', 'pages:write', 'decisions:read', 'comments:read', 'comments:write'] as const;
 const b64 = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes)).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
 
-function Agents({ me }: { me: Me }) {
+function Agents({ me, afterReset = false }: { me: Me; afterReset?: boolean }) {
   const t = useText(), { data, problem, load, set } = useLoad<Listed<Agent>>('/agents'), [making, setMaking] = useState(false), [made, setMade] = useState<string | null>(null);
   const [busy, run] = useBusy(), [moreFailed, setMoreFailed] = useState<Problem | null>(null);
   const newKey = useRef<HTMLButtonElement>(null), wasOpen = useRef(false), open = making || made !== null;
@@ -243,6 +397,7 @@ function Agents({ me }: { me: Me }) {
   if (data === null) return <Loading problem={problem} load={load} />;
   return (
     <>
+      {afterReset && <div class="card" role="status"><p>{t('postResetBanner')}</p></div>}
       {made !== null && <NewKey secret={made} onDone={() => setMade(null)} />}
       {making && <MakeKey me={me} agents={data.items.filter((a) => a.isMine !== false)} onCancel={() => setMaking(false)} onMade={(secret) => { setMaking(false); setMade(secret); load(); }} />}
       {!making && made === null && <button ref={newKey} class="primary fit" onClick={() => setMaking(true)}>{t('newKey')}</button>}
@@ -566,8 +721,9 @@ function NewSecret({ secret, onDone }: { secret: string; onDone: () => void }) {
 const KEEP = [null, 100, 50, 20, 10, 5, 1] as const;
 
 function Data({ onChange }: { onChange: () => void }) {
-  const t = useText(), { lang } = useSettings(), id = useId(), { data, problem, load, set } = useLoad<{ retention: number | null; webhooks: boolean; webhookHosts: string[] }>('/settings'), [busy, run] = useBusy(), [failed, setFailed] = useState<Problem | null>(null), [choice, setChoice] = useState<string | null>(null), [done, setDone] = useState(false);
+  const t = useText(), { lang } = useSettings(), id = useId(), { data, problem, load, set } = useLoad<{ retention: number | null; webhooks: boolean; webhookHosts: string[]; teams: boolean }>('/settings'), [busy, run] = useBusy(), [failed, setFailed] = useState<Problem | null>(null), [choice, setChoice] = useState<string | null>(null), [done, setDone] = useState(false);
   const [hostsDraft, setHostsDraft] = useState<string | null>(null), [hostsDone, setHostsDone] = useState(false);
+  const [askingTeamsOff, setAskingTeamsOff] = useState(false);
   const [parts, setParts] = useState<{ after: string; last: string; files: number; bytes: number }[] | null>(null);
   if (data === null) return <Loading problem={problem} load={load} />;
   const act = (what: () => Promise<void>) => run(async () => { setFailed(null); setDone(false); setHostsDone(false); try { await what(); } catch (error) { setFailed(problemIn(error)); } });
@@ -577,6 +733,32 @@ function Data({ onChange }: { onChange: () => void }) {
   const fewer = value !== '' && (now === '' || Number(value) < Number(now));
   return (
     <>
+      <section class="card form">
+        <h2>{t('teamsSwitchTitle')}</h2>
+        <p class="muted">{t(data.teams ? 'teamsSwitchOn' : 'teamsSwitchOff')}</p>
+        {data.teams ? (askingTeamsOff ? (
+          <>
+            <p class="failure">{t('turnTeamsOffWarn')}</p>
+            <div class="row">
+              <button class="plain danger" disabled={busy} onClick={() => act(async () => {
+                const next = await call<{ teams: boolean }>('PUT', '/switches/teams', { on: false });
+                set((cur) => cur && { ...cur, teams: next.teams });
+                setAskingTeamsOff(false);
+                onChange();
+              })}>{t('turnTeamsOffSure')}</button>
+              <button class="plain" disabled={busy} onClick={() => setAskingTeamsOff(false)}>{t('cancel')}</button>
+            </div>
+          </>
+        ) : (
+          <button class="plain wide" disabled={busy} onClick={() => setAskingTeamsOff(true)}>{t('turnTeamsOff')}</button>
+        )) : (
+          <button class="plain wide" disabled={busy} onClick={() => act(async () => {
+            const next = await call<{ teams: boolean }>('PUT', '/switches/teams', { on: true });
+            set((cur) => cur && { ...cur, teams: next.teams });
+            onChange();
+          })}>{t('turnTeamsOn')}</button>
+        )}
+      </section>
       <section class="card form">
         <h2>{t('retention')}</h2>
         <label class="muted" for={id}>{t('retentionHelp')}</label>

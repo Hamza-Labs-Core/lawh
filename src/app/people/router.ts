@@ -10,7 +10,8 @@ import { answerConnect, lookAtConnect } from './connect';
 import { exportFiles, exportPlan, exportRows } from './exportData';
 import { deletePage, listDeleted, restorePage, setStatus } from './manage';
 import { addProject, renameProject } from './projects';
-import { readSettings, setRetention, setWebhookHosts, setWebhooksSwitch } from './settings';
+import { cancelInvite, invitePerson, listPeople, makeResetLink, removePerson, renewInviteLink } from './people';
+import { readSettings, setRetention, setTeamsSwitch, setWebhookHosts, setWebhooksSwitch } from './settings';
 import { addTeam, addTeamMember, addTeamProject, deleteTeam, listTeams, removeTeamMember, removeTeamProject, renameTeam, setTeamMemberLevel } from './teams';
 import { addWebhook, deleteWebhook, listWebhooks, resendDelivery, updateWebhook } from './webhooks';
 import { approveDevice, claimDevice, lookAtDevice, startDevice } from './devices';
@@ -73,8 +74,15 @@ export const peopleRoutes: PeopleRoute[] = [
   person('DELETE', '/teams/([a-zA-Z0-9_-]{1,64})/members/([a-zA-Z0-9_-]{1,64})', false, removeTeamMember),
   person('POST', '/teams/([a-zA-Z0-9_-]{1,64})/projects', false, addTeamProject),
   person('DELETE', `/teams/([a-zA-Z0-9_-]{1,64})/projects/${SLUG}`, false, removeTeamProject),
+  person('GET', '/people', false, listPeople),
+  person('POST', '/people/invite', false, invitePerson),
+  person('POST', '/people/([a-zA-Z0-9_-]{1,64})/invite-link', false, renewInviteLink),
+  person('DELETE', '/people/([a-zA-Z0-9_-]{1,64})/invite', false, cancelInvite),
+  person('POST', '/people/([a-zA-Z0-9_-]{1,64})/reset', false, makeResetLink),
+  person('DELETE', '/people/([a-zA-Z0-9_-]{1,64})', false, removePerson),
   person('GET', '/settings', false, readSettings),
   person('PUT', '/settings/retention', false, setRetention),
+  person('PUT', '/switches/teams', false, setTeamsSwitch),
   person('PUT', '/switches/webhooks', false, setWebhooksSwitch),
   person('PUT', '/settings/webhook-hosts', false, setWebhookHosts),
   person('GET', '/webhooks', false, listWebhooks),

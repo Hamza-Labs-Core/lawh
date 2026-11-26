@@ -96,7 +96,8 @@ describe('clean-up and pages', () => {
   it('removes what is over and keeps the rest', async () => {
     const { cookie } = await enter('o');
     await ask(); await api('POST', '/sign-in/options');
-    await sql("INSERT INTO access_links(token_sha256,kind,member_id,created_by,created_at,expires_at,team_id,level) VALUES('inv','invite','x','o',1,2,'t1',1)",
+    await sql(`UPDATE members SET created_at=${Date.now()} WHERE id='x'`,
+      "INSERT INTO access_links(token_sha256,kind,member_id,created_by,created_at,expires_at,team_id,level) VALUES('inv','invite','x','o',1,2,'t1',1)",
       "INSERT INTO access_links(token_sha256,kind,member_id,created_by,created_at,expires_at) VALUES('old','reset','m','o',1,2)");
     await cleanUpPeople(env);
     expect([await count('auth_challenges'), await count('device_approvals'), await count('sessions')]).toEqual([1, 1, 1]);

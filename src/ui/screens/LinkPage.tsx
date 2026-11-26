@@ -7,7 +7,7 @@ import type { Key } from '../i18n';
 interface Offer { challengeId: string; options: Parameters<typeof startRegistration>[0]['optionsJSON']; link: { kind: 'owner' | 'invite' | 'reset'; name: string; team: string | null; level: number | null; inviter: string | null } }
 
 /** Setup, invite and reset links. The token is after the `#`, so it never reaches a server in an address. */
-export function LinkPage({ token, onDone }: { token: string; onDone: () => void }) {
+export function LinkPage({ token, onDone }: { token: string; onDone: (kind: 'owner' | 'invite' | 'reset') => void }) {
   const t = useText(), [busy, run] = useBusy(), [link, setLink] = useState<Offer['link'] | 'bad' | 'offline' | 'wait' | 'failed' | null>(null), [problem, setProblem] = useState<string | null>(null);
   const fetchOffer = () => call<Offer>('POST', '/link/options', { token });
   const load = async () => {
@@ -25,7 +25,7 @@ export function LinkPage({ token, onDone }: { token: string; onDone: () => void 
       // A challenge made now: one from when the page opened may be old or used, and the new passkey would be lost.
       const { challengeId, options } = await fetchOffer();
       await call('POST', '/link', { token, challengeId, response: await startRegistration({ optionsJSON: options }) });
-      onDone();
+      onDone(link.kind);
     } catch (error) {
       if (error instanceof CallError && error.status === 404) setLink('bad');
       // Closing the browser's own window is no failure to show.
