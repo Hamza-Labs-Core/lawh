@@ -381,7 +381,13 @@ export async function runInit({
     const createdKey = kind === 'app' ? 'app' : 'content';
     const deployingKey = kind === 'app' ? 'appDeploying' : 'contentDeploying';
     if (cfg.resources.workersCreated[createdKey]) return;
-    if (!cfg.resources.workersCreated[deployingKey] && (await cf.workerExists(accountId, workerName))) {
+    const existedBeforeBuild = await cf.workerExists(accountId, workerName);
+    if (cfg.resources.workersCreated[deployingKey] && !existedBeforeBuild) {
+      // Earlier interrupted deploy never created the Worker — clear the stale marker before building or deploying.
+      cfg.resources.workersCreated[deployingKey] = false;
+      writeConfig(root, cfg);
+    }
+    if (!cfg.resources.workersCreated[deployingKey] && existedBeforeBuild) {
       throw new Error(`Worker "${workerName}" already exists in this account. Choose a different worker name or remove it first.`);
     }
     let skipBuild = false;
