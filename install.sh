@@ -256,20 +256,16 @@ cleanup() {
   else
     # Committed cleanly: prune ONLY the pre-resolved real target strictly inside real $LAWH_HOME/releases/.
     if [ "$PREV_IS_SYMLINK" = "1" ] && [ -n "$PREV_REAL_DIR" ] && [ ! -L "$LAWH_HOME/releases" ]; then
-      local prune_target=""
-      prune_target="$(node -e '
+      node -e '
         const fs = require("node:fs"), path = require("node:path");
         const [releasesDir, prevReal, currentRelease] = process.argv.slice(1);
-        if (!fs.existsSync(prevReal) || !fs.statSync(prevReal).isDirectory()) process.exit(1);
+        if (!fs.existsSync(prevReal) || !fs.statSync(prevReal).isDirectory()) process.exit(0);
         const base = fs.realpathSync.native(releasesDir) + path.sep;
         const target = fs.realpathSync.native(prevReal);
         const current = fs.realpathSync.native(currentRelease);
-        if (target === current || !target.startsWith(base)) process.exit(1);
-        process.stdout.write(target);
-      ' -- "$LAWH_HOME/releases" "$PREV_REAL_DIR" "$RELEASE_DIR" 2>/dev/null || true)"
-      if [ -n "$prune_target" ]; then
-        rm -rf "$prune_target" 2>/dev/null || true
-      fi
+        if (target === current || !target.startsWith(base)) process.exit(0);
+        fs.rmSync(target, { recursive: true, force: true });
+      ' -- "$LAWH_HOME/releases" "$PREV_REAL_DIR" "$RELEASE_DIR" 2>/dev/null || true
     fi
     if [ -n "$PREV_MIGRATED_DIR" ] && [ -d "$PREV_MIGRATED_DIR" ]; then
       rm -rf "$PREV_MIGRATED_DIR" 2>/dev/null || true
@@ -414,16 +410,19 @@ LIVE_APP_DIR=""
 if [ -L "$LAWH_HOME/app" ]; then
   HAD_LIVE_APP=1
   PREV_IS_SYMLINK=1
-  PREV_SYMLINK_TARGET="$(node -e 'process.stdout.write(require("node:fs").readlinkSync(process.argv[1]))' -- "$LAWH_HOME/app")"
+  # Append sentinel 'x' so Bash command substitution preserves any trailing newlines in symlink targets.
+  PREV_SYMLINK_TARGET="$(node -e 'process.stdout.write(require("node:fs").readlinkSync(process.argv[1]) + "x")' -- "$LAWH_HOME/app")"
+  PREV_SYMLINK_TARGET="${PREV_SYMLINK_TARGET%x}"
   PREV_REAL_DIR="$(node -e '
     const fs = require("node:fs");
     try {
       const real = fs.realpathSync.native(process.argv[1]);
-      if (fs.statSync(real).isDirectory()) process.stdout.write(real);
+      if (fs.statSync(real).isDirectory()) process.stdout.write(real + "x");
     } catch {}
   ' -- "$LAWH_HOME/app")"
-  if [ -n "$PREV_REAL_DIR" ]; then
-    LIVE_APP_DIR="$PREV_REAL_DIR"
+  PREV_REAL_DIR="${PREV_REAL_DIR%x}"
+  if [ -d "$LAWH_HOME/app" ]; then
+    LIVE_APP_DIR="$LAWH_HOME/app"
   fi
 elif [ -d "$LAWH_HOME/app" ]; then
   HAD_LIVE_APP=1

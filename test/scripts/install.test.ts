@@ -379,6 +379,27 @@ describe('no-clone installer (install.sh) and lawh CLI', { timeout: 30_000 }, ()
     unlinkSync(join(lawhHome, 'releases/extlink'));
     rmSync(decoyRel, { recursive: true, force: true });
 
+    // A release target directory whose name ends with a trailing newline must copy config from the live dir and prune only that dir (not a sibling without the newline).
+    const siblingNoNl = join(lawhHome, 'releases/rel.nl');
+    const targetWithNl = join(lawhHome, 'releases/rel.nl\n');
+    mkdirSync(siblingNoNl, { recursive: true });
+    mkdirSync(targetWithNl, { recursive: true });
+    writeFileSync(join(siblingNoNl, 'lawh.config.json'), '{"from":"wrong-sibling"}\n', { mode: 0o600 });
+    writeFileSync(join(targetWithNl, 'lawh.config.json'), '{"from":"live-newline"}\n', { mode: 0o600 });
+    unlinkSync(join(lawhHome, 'app'));
+    symlinkSync('releases/rel.nl\n', join(lawhHome, 'app'));
+    const resNl = spawnSync('bash', [installerPath], {
+      cwd: tmpdir(),
+      encoding: 'utf8',
+      env: { ...process.env, LAWH_HOME: lawhHome, LAWH_BIN_DIR: binDir, LAWH_VERSION: 'v1.0.1', LAWH_TARBALL_URL: `file://${validTar}`, LAWH_SKIP_INSTALL_DEPS: '1' },
+    });
+    expect(resNl.status, resNl.stdout + resNl.stderr).toBe(0);
+    expect(readFileSync(join(lawhHome, 'app/lawh.config.json'), 'utf8')).toContain('live-newline');
+    expect(existsSync(targetWithNl)).toBe(false);
+    expect(existsSync(siblingNoNl)).toBe(true);
+    rmSync(siblingNoNl, { recursive: true, force: true });
+    unlinkSync(join(lawhHome, 'app/lawh.config.json'));
+
     // Symlinked $LAWH_HOME/releases is rejected before touching any external directory.
     const symReleasesHome = join(work, 'sym-rel-home');
     const externalReleases = join(work, 'external-releases');
