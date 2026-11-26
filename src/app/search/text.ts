@@ -94,18 +94,19 @@ const DISPLAY_SINGLE = new Set([
   '-webkit-box', '-webkit-inline-box', '-webkit-flex', '-webkit-inline-flex',
 ]);
 
+const BANG = Symbol('!');
 const isCssSpace = (ch: string) => ch === ' ' || ch === '\t' || ch === '\n' || ch === '\f' || ch === '\r';
 const isHex = (ch: string) => (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
 
-/** Tokenize a CSS property or value per CSS Syntax Level 3 (ASCII whitespace only, CSS escapes, `!` delimiter). */
-function cssTokens(raw: string): string[] | null {
-  const out: string[] = [];
+/** Tokenize a CSS property or value per CSS Syntax Level 3 (ASCII whitespace only, CSS escapes, unescaped `!` delimiter). */
+function cssTokens(raw: string): (string | typeof BANG)[] | null {
+  const out: (string | typeof BANG)[] = [];
   let cur = '';
   const flush = () => { if (cur) { out.push(cur.toLowerCase()); cur = ''; } };
   for (let i = 0; i < raw.length; i++) {
     const ch = raw[i]!;
     if (isCssSpace(ch)) { flush(); continue; }
-    if (ch === '!') { flush(); out.push('!'); continue; }
+    if (ch === '!') { flush(); out.push(BANG); continue; }
     if (ch === '\\') {
       if (i + 1 >= raw.length) { cur += '\uFFFD'; continue; }
       const next = raw[i + 1]!;
@@ -130,11 +131,12 @@ function cssTokens(raw: string): string[] | null {
   return out;
 }
 
-function isValidDisplay(tokens: string[]): boolean {
-  if (tokens.length === 1) return DISPLAY_SINGLE.has(tokens[0]!);
+function isValidDisplay(tokens: (string | typeof BANG)[]): boolean {
+  if (tokens.length === 1) return typeof tokens[0] === 'string' && DISPLAY_SINGLE.has(tokens[0]);
   if (tokens.length < 2 || tokens.length > 3) return false;
   let outside = false, inside: string | null = null, listItem = false;
   for (const token of tokens) {
+    if (typeof token !== 'string') return false;
     if (DISPLAY_OUTSIDE.has(token)) { if (outside) return false; outside = true; }
     else if (DISPLAY_INSIDE.has(token)) { if (inside !== null) return false; inside = token; }
     else if (token === 'list-item') { if (listItem) return false; listItem = true; }
@@ -157,7 +159,7 @@ function isDisplayNone(style: string | null): boolean {
     const tokens = cssTokens(decl.slice(colon + 1));
     if (!tokens || tokens.length === 0) return;
     let imp = false;
-    if (tokens.length >= 2 && tokens[tokens.length - 2] === '!' && tokens[tokens.length - 1] === 'important') {
+    if (tokens.length >= 2 && tokens[tokens.length - 2] === BANG && tokens[tokens.length - 1] === 'important') {
       imp = true;
       tokens.length -= 2;
     }
