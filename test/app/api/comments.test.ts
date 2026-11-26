@@ -115,6 +115,18 @@ describe('replying', () => {
     expect(await one("SELECT COUNT(*) n FROM events WHERE type='comment.created'")).toEqual({ n: 0 });
   });
 
+  it('a key that expires before the write commits cannot reply', async () => {
+    await write(1);
+    const { token: shortKey } = await makeKey({ agent: 'am', projects: ['p1'], expiresAt: Date.now() + 80 });
+    const DB = new Proxy(env.DB, { get: (target, key) => {
+      if (key !== 'batch') { const value = Reflect.get(target, key) as unknown; return typeof value === 'function' ? (value as () => void).bind(target) : value; }
+      return async (statements: D1PreparedStatement[]) => { await new Promise((done) => setTimeout(done, 120)); return target.batch(statements); };
+    } });
+    expect(await code(await call(`/v1/comments/${ID(1)}/replies`, { method: 'POST', token: shortKey, json: { body: 'x' }, idem: 'expired' }, { DB }))).toEqual([404, 'not_found']);
+    expect(await one("SELECT COUNT(*) n FROM comments WHERE agent_id IS NOT NULL")).toEqual({ n: 0 });
+    expect(await one("SELECT COUNT(*) n FROM events WHERE type='comment.created'")).toEqual({ n: 0 });
+  });
+
   it.each([[{}], [{ body: '' }], [{ body: '  ' }], [{ body: 5 }], [{ body: 'x'.repeat(10_001) }], [{ body: 'x', resolved: true }]])('refuses %j', async (body) => {
     await write(1);
     expect(await code(await reply(1, body))).toEqual([422, 'invalid']);

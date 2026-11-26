@@ -84,8 +84,9 @@ async function write(ctx: SignedIn, comment: New): Promise<void> {
     const text = String(error);
     if (text.includes('UNIQUE constraint failed: comments.id')) {
       const same = await findComment(env, comment.id);
-      if (same && mine(same, ctx) && same.thread_id === comment.threadId && same.page_id === comment.pageId && same.body === comment.body
-        && same.version_n === comment.versionN && same.section_id === (comment.section?.id ?? null) && same.section_title === (comment.section?.title ?? null) && same.quote === (comment.section?.quote ?? null)) return;
+      // Replies only send id and body; new threads also pin versionN and section.
+      const sameAnchor = comment.id !== comment.threadId || (same?.version_n === comment.versionN && same.section_id === (comment.section?.id ?? null) && same.section_title === (comment.section?.title ?? null) && same.quote === (comment.section?.quote ?? null));
+      if (same && mine(same, ctx) && same.thread_id === comment.threadId && same.page_id === comment.pageId && same.body === comment.body && sameAnchor) return;
       throw conflict('That id is taken.');
     }
     if (text.includes('comment conflict')) throw conflict('The page or the thread was deleted meanwhile.');

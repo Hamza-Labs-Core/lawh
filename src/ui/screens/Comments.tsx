@@ -61,7 +61,7 @@ function One({ comment, me, onDelete }: { comment: Comment; me: Me; onDelete: ()
 export interface ThreadChange { change: (id: string, update: (now: Thread) => Thread) => void; remove: (id: string) => void }
 
 export function ThreadCard({ thread, me, change, remove, title }: { thread: Thread; me: Me; title?: preact.ComponentChildren } & ThreadChange) {
-  const t = useText(), [busy, run] = useBusy(), [problem, setProblem] = useState<Problem | null>(null), box = useRef<HTMLElement>(null);
+  const t = useText(), [busy, run] = useBusy(), [problem, setProblem] = useState<Problem | null>(null), box = useRef<HTMLElement>(null), deleted = useRef(new Set<string>());
   const act = (what: () => Promise<void>) => {
     box.current?.focus();
     return run(async () => { setProblem(null); try { await what(); } catch (error) { setProblem(problemIn(error)); } });
@@ -72,15 +72,15 @@ export function ThreadCard({ thread, me, change, remove, title }: { thread: Thre
       const next = await call<Listed<Comment>>('GET', `/comments/${thread.id}/replies?cursor=${cursor}`);
       change(thread.id, (now) => {
         const have = new Set(now.replies.map((c) => c.id));
-        return { ...now, replies: [...next.items.filter((c) => !have.has(c.id)), ...now.replies], moreReplies: next.next };
+        return { ...now, replies: [...next.items.filter((c) => !have.has(c.id) && !deleted.current.has(c.id)), ...now.replies], moreReplies: next.next };
       });
     });
   };
-  // The server's newest 50, and what was already shown before them (ordered by createdAt, id).
+  // The server's newest 50, and what was already shown before them (ordered by createdAt, id), excluding replies deleted meanwhile.
   const take = (next: Thread) => change(thread.id, (now) => {
-    const first = next.replies[0], have = new Set(next.replies.map((c) => c.id));
-    const older = next.moreReplies === null || !first ? [] : now.replies.filter((c) => !have.has(c.id) && (c.createdAt < first.createdAt || (c.createdAt === first.createdAt && c.id < first.id)));
-    return { ...next, replies: [...older, ...next.replies], moreReplies: older.length > 0 ? now.moreReplies : next.moreReplies };
+    const fresh = next.replies.filter((c) => !deleted.current.has(c.id)), first = fresh[0], have = new Set(fresh.map((c) => c.id));
+    const older = next.moreReplies === null || !first ? [] : now.replies.filter((c) => !have.has(c.id) && !deleted.current.has(c.id) && (c.createdAt < first.createdAt || (c.createdAt === first.createdAt && c.id < first.id)));
+    return { ...next, replies: [...older, ...fresh], moreReplies: older.length > 0 ? now.moreReplies : next.moreReplies };
   });
   const resolve = thread.mayResolve && <button class="plain" type="button" disabled={busy} onClick={() => act(async () => { take(await call<Thread>('PUT', `/comments/${thread.id}/resolved`, { resolved: thread.resolvedAt === null })); box.current?.focus(); })}>{t(thread.resolvedAt === null ? 'resolve' : 'reopen')}</button>;
   return (
@@ -90,7 +90,7 @@ export function ThreadCard({ thread, me, change, remove, title }: { thread: Thre
       <One comment={thread} me={me} onDelete={async () => { await call('DELETE', `/comments/${thread.id}`); remove(thread.id); }} />
       {thread.moreReplies && <button class="plain wide" disabled={busy} onClick={earlier}>{t('earlierReplies')}</button>}
       <div class="replies">
-        {thread.replies.map((c) => <One key={c.id} comment={c} me={me} onDelete={async () => { await call('DELETE', `/comments/${c.id}`); change(thread.id, (now) => ({ ...now, replies: now.replies.filter((o) => o.id !== c.id) })); box.current?.focus(); }} />)}
+        {thread.replies.map((c) => <One key={c.id} comment={c} me={me} onDelete={async () => { await call('DELETE', `/comments/${c.id}`); deleted.current.add(c.id); change(thread.id, (now) => ({ ...now, replies: now.replies.filter((o) => o.id !== c.id) })); box.current?.focus(); }} />)}
       </div>
       {thread.mayReply ? <Write beside={resolve} place={`${me.id} ${thread.id}`} label={t('reply')} action={t('reply')} send={async (id, body) => take(await call<Thread>('POST', `/comments/${thread.id}/replies`, { id, body }))} /> : resolve}
       {problem && <Failure>{t(problem)}</Failure>}
