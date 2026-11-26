@@ -179,16 +179,19 @@ describe('S17 teams API, caps, highest-level-wins, and managers’ agents', () =
     expect(seen).toEqual(expect.arrayContaining(['bot-1', 'bot-2', 'bot-3']));
     expect(new Set(seen).size).toBe(seen.length);
 
-    // Takeover still succeeds even when the owner already uses BOTH the original name AND the first `<name> (<id>)` fallback!
+    // Takeover still succeeds even when the owner already uses the original name AND all deterministic fallbacks!
     const colId = 'agt_01COL000000000000000000001';
     await sql(
       `INSERT INTO agents(id, member_id, name, created_at) VALUES('${colId}', 'm', 'dup', 1)`,
       `INSERT INTO agents(id, member_id, name, created_at) VALUES('agt_01COL000000000000000000002', 'o', 'dup', 1)`,
       `INSERT INTO agents(id, member_id, name, created_at) VALUES('agt_01COL000000000000000000003', 'o', 'dup (${colId})', 1)`,
+      `INSERT INTO agents(id, member_id, name, created_at) VALUES('agt_01COL000000000000000000004', 'o', 'dup (${colId}-2)', 1)`,
+      `INSERT INTO agents(id, member_id, name, created_at) VALUES('agt_01COL000000000000000000005', 'o', 'dup (${colId}-3)', 1)`,
+      `INSERT INTO agents(id, member_id, name, created_at) VALUES('agt_01COL000000000000000000006', 'o', 'dup (${colId}-4)', 1)`,
     );
     const taken = await json(await api('POST', `/agents/${colId}/take-over`, { cookie: owner }));
     expect(taken.id).toBe(colId);
-    expect(taken.name).toBe(`dup (${colId}-2)`);
+    expect(taken.name).toMatch(/^dup \(agt_01COL000-[0-9a-f]{16}\)$/);
 
     // Deleting a team concurrently before addTeamProject's INSERT returns 404 (not 500).
     const { env } = await import('cloudflare:workers');
