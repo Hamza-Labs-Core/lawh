@@ -68,11 +68,14 @@ test('who sees which settings', async ({ page, member, ask }) => {
   await ask([], { level: 3 });
   await open(page, member, '/settings');
   await expect(page.locator('.chips a')).toHaveText(['Account']);
+  await expect(page.getByText('This device')).toBeVisible();
   await page.goto(`${APP}/settings/data`);
   await expect(page.getByRole('heading', { name: 'Signed in as Mona' })).toBeVisible();
+  await expect(page.getByText('This device')).toBeVisible();
   await db(`UPDATE team_members SET level=4, set_by='o' WHERE member_id='${member}'`);
   await page.reload();
   await expect(page.locator('.chips a')).toHaveText(['Account', 'Agents and keys', 'Deleted pages']);
+  await expect(page.getByText('This device')).toBeVisible();
 });
 
 test('a manager changes a page’s status, deletes it after a second press, and brings it back', async ({ page, member, ask }) => {
@@ -110,6 +113,7 @@ test('below manager, a page has no such controls', async ({ page, member, ask })
 test('a device is signed out from another, and the last passkey stays', async ({ page, member, browser }) => {
   await wide(page);
   await open(page, member, '/settings');
+  await expect(page.getByText('This device')).toBeVisible();
   const token = randomBytes(32).toString('base64url'), hash = (await import('node:crypto')).createHash('sha256').update(token).digest('hex');
   await db(`INSERT INTO sessions(token_sha256,member_id,label,created_at,last_seen_at,expires_at,passkey_id) SELECT '${hash}','${member}','Old phone',1,${Date.now()},${Date.now() + 600_000},credential_id FROM passkeys WHERE member_id='${member}'`);
   await page.reload();
