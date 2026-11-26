@@ -12,7 +12,7 @@ describe('messages from a page', () => {
   });
 
   it('takes the three kinds, copying only known fields', () => {
-    expect(read({ type: 'lawh:outline', items: [item({ html: '<b>' })], answer: 'x' })).toEqual({ type: 'outline', items: [item()] });
+    expect(read({ type: 'lawh:outline', items: [item({ html: '<b>' }), item({ title: 'Dup' })], answer: 'x' })).toEqual({ type: 'outline', items: [item()] });
     expect(read({ type: 'lawh:open-link', url: 'https://example.com/a' })).toEqual({ type: 'open-link', url: 'https://example.com/a' });
     expect(read({ type: 'lawh:scroll-state', top: 0, height: 5, view: 2 })).toEqual({ type: 'scroll-state', top: 0, height: 5, view: 2 });
   });

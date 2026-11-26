@@ -5,8 +5,10 @@ import { Failure, Fill, Heading, Link, useBusy, useSettings, useText } from '../
 import type { Section } from '../bridgeHost';
 import { digits, moment } from '../i18n';
 
-/** What was written but not sent. In memory only. With its id: sent again after a lost reply, it is written once. */
+/** What was written but not sent. In memory only, cleared on sign-out. With its id: sent again after a lost reply, it is written once. */
 const drafts = new Map<string, { text: string; id: string }>();
+const sections = new Map<string, string>();
+addEventListener('lawh:signed-out', () => { drafts.clear(); sections.clear(); });
 
 type Problem = 'offline' | 'wait' | 'failed' | 'commentGone' | 'commentNot' | 'secretComment';
 const problemIn = (error: unknown): Problem =>
@@ -14,17 +16,22 @@ const problemIn = (error: unknown): Problem =>
 
 /** A field and its button. What is written stays until it is sent. */
 function Write({ place, label, action, send, children, beside }: { place: string; label: string; action: string; send: (id: string, body: string) => Promise<void>; children?: preact.ComponentChildren; beside?: preact.ComponentChildren }) {
-  const t = useText(), [draft, setDraft] = useState(drafts.get(place) ?? { text: '', id: '' }), [busy, run] = useBusy(), [problem, setProblem] = useState<Problem | null>(null), field = useRef<HTMLTextAreaElement>(null);
+  const t = useText(), [draft, setDraft] = useState(() => drafts.get(place) ?? { text: '', id: '' }), [busy, run] = useBusy(), [problem, setProblem] = useState<Problem | null>(null), field = useRef<HTMLTextAreaElement>(null);
   const write = (text: string) => { const next = { text, id: newId('cmt') }; drafts.set(place, next); setDraft(next); };
-  const submit = () => run(async () => {
-    setProblem(null);
-    try {
-      await send(draft.id, draft.text);
-      drafts.delete(place);
-      setDraft({ text: '', id: '' });
-    } catch (error) { setProblem(problemIn(error)); }
+  const submit = () => {
+    // Before the button disables, so focus stays inside the sheet while sending.
     field.current?.focus();
-  });
+    const id = drafts.get(place)?.id || draft.id;
+    return run(async () => {
+      setProblem(null);
+      try {
+        await send(id, draft.text);
+        drafts.delete(place);
+        setDraft({ text: '', id: '' });
+      } catch (error) { setProblem(problemIn(error)); }
+      field.current?.focus();
+    });
+  };
   return (
     <form class="write" onSubmit={(event) => { event.preventDefault(); if (draft.text.trim() !== '') submit(); }}>
       {children}
@@ -45,26 +52,36 @@ function One({ comment, me, onDelete }: { comment: Comment; me: Me; onDelete: ()
       <p class="lines" dir="auto">{comment.body}</p>
       {problem && <Failure>{t(problem)}</Failure>}
       {comment.mayDelete && (asking
-        ? <div class="row"><button class="plain" disabled={busy} onClick={() => run(async () => { setProblem(null); try { await onDelete(); } catch (error) { setProblem(problemIn(error)); } })}>{t(comment.id === comment.threadId ? 'deleteThread' : 'deleteIt')}</button><button class="plain" disabled={busy} onClick={() => { setAsking(false); box.current?.focus(); }}>{t('cancel')}</button></div>
-        : <button class="text muted" onClick={() => setAsking(true)}>{t('delete')}</button>)}
+        ? <div class="row"><button class="plain" disabled={busy} onClick={() => { box.current?.focus(); void run(async () => { setProblem(null); try { await onDelete(); } catch (error) { setProblem(problemIn(error)); } }); }}>{t(comment.id === comment.threadId ? 'deleteThread' : 'deleteIt')}</button><button class="plain" disabled={busy} onClick={() => { setAsking(false); box.current?.focus(); }}>{t('cancel')}</button></div>
+        : <button class="text muted" onClick={() => { setAsking(true); box.current?.focus(); }}>{t('delete')}</button>)}
     </div>
   );
 }
 
-export interface ThreadChange { change: (next: Thread) => void; remove: (id: string) => void }
+export interface ThreadChange { change: (id: string, update: (now: Thread) => Thread) => void; remove: (id: string) => void }
 
 export function ThreadCard({ thread, me, change, remove, title }: { thread: Thread; me: Me; title?: preact.ComponentChildren } & ThreadChange) {
   const t = useText(), [busy, run] = useBusy(), [problem, setProblem] = useState<Problem | null>(null), box = useRef<HTMLElement>(null);
-  const act = (what: () => Promise<void>) => run(async () => { setProblem(null); try { await what(); } catch (error) { setProblem(problemIn(error)); } });
-  const earlier = () => act(async () => {
-    const next = await call<Listed<Comment>>('GET', `/comments/${thread.id}/replies?cursor=${thread.moreReplies!}`);
-    change({ ...thread, replies: [...next.items, ...thread.replies], moreReplies: next.next });
-  });
-  // The server's newest 50, and what was already shown before them.
-  const take = (next: Thread) => {
-    const from = next.replies[0]?.createdAt ?? Infinity, older = next.moreReplies === null ? [] : thread.replies.filter((c) => c.createdAt < from);
-    change({ ...next, replies: [...older, ...next.replies], moreReplies: older.length > 0 ? thread.moreReplies : next.moreReplies });
+  const act = (what: () => Promise<void>) => {
+    box.current?.focus();
+    return run(async () => { setProblem(null); try { await what(); } catch (error) { setProblem(problemIn(error)); } });
   };
+  const earlier = () => {
+    const cursor = thread.moreReplies!;
+    return act(async () => {
+      const next = await call<Listed<Comment>>('GET', `/comments/${thread.id}/replies?cursor=${cursor}`);
+      change(thread.id, (now) => {
+        const have = new Set(now.replies.map((c) => c.id));
+        return { ...now, replies: [...next.items.filter((c) => !have.has(c.id)), ...now.replies], moreReplies: next.next };
+      });
+    });
+  };
+  // The server's newest 50, and what was already shown before them (ordered by createdAt, id).
+  const take = (next: Thread) => change(thread.id, (now) => {
+    const first = next.replies[0], have = new Set(next.replies.map((c) => c.id));
+    const older = next.moreReplies === null || !first ? [] : now.replies.filter((c) => !have.has(c.id) && (c.createdAt < first.createdAt || (c.createdAt === first.createdAt && c.id < first.id)));
+    return { ...next, replies: [...older, ...next.replies], moreReplies: older.length > 0 ? now.moreReplies : next.moreReplies };
+  });
   const resolve = thread.mayResolve && <button class="plain" type="button" disabled={busy} onClick={() => act(async () => { take(await call<Thread>('PUT', `/comments/${thread.id}/resolved`, { resolved: thread.resolvedAt === null })); box.current?.focus(); })}>{t(thread.resolvedAt === null ? 'resolve' : 'reopen')}</button>;
   return (
     <article class="thread" ref={box} tabIndex={-1} data-resolved={thread.resolvedAt !== null}>
@@ -73,7 +90,7 @@ export function ThreadCard({ thread, me, change, remove, title }: { thread: Thre
       <One comment={thread} me={me} onDelete={async () => { await call('DELETE', `/comments/${thread.id}`); remove(thread.id); }} />
       {thread.moreReplies && <button class="plain wide" disabled={busy} onClick={earlier}>{t('earlierReplies')}</button>}
       <div class="replies">
-        {thread.replies.map((c) => <One key={c.id} comment={c} me={me} onDelete={async () => { await call('DELETE', `/comments/${c.id}`); change({ ...thread, replies: thread.replies.filter((o) => o.id !== c.id) }); box.current?.focus(); }} />)}
+        {thread.replies.map((c) => <One key={c.id} comment={c} me={me} onDelete={async () => { await call('DELETE', `/comments/${c.id}`); change(thread.id, (now) => ({ ...now, replies: now.replies.filter((o) => o.id !== c.id) })); box.current?.focus(); }} />)}
       </div>
       {thread.mayReply ? <Write beside={resolve} place={`${me.id} ${thread.id}`} label={t('reply')} action={t('reply')} send={async (id, body) => take(await call<Thread>('POST', `/comments/${thread.id}/replies`, { id, body }))} /> : resolve}
       {problem && <Failure>{t(problem)}</Failure>}
@@ -87,7 +104,13 @@ export interface Threads extends Listed<Thread> { mayComment: boolean }
 export function CommentList({ threads, outline, versionN, path, me, onAdd, onMore, onGoTo, change, remove }: {
   threads: Threads; outline: Section[] | null; versionN: number; path: string; me: Me; onAdd: (next: Thread) => void; onMore: () => Promise<void>; onGoTo: (id: string) => void;
 } & ThreadChange) {
-  const t = useText(), { lang } = useSettings(), id = useId(), [section, setSection] = useState(''), [busy, run] = useBusy(), [problem, setProblem] = useState<Problem | null>(null);
+  const t = useText(), { lang } = useSettings(), id = useId(), place = `${me.id} ${path}`, [section, setSection] = useState(() => sections.get(place) ?? ''), [busy, run] = useBusy(), [problem, setProblem] = useState<Problem | null>(null);
+  const pickSection = (next: string) => {
+    setSection(next);
+    if (next) sections.set(place, next); else sections.delete(place);
+    const cur = drafts.get(place);
+    if (cur) drafts.set(place, { ...cur, id: newId('cmt') });
+  };
   const chosen = outline?.find((s) => s.id === section) ?? null;
   const open = threads.items.filter((c) => c.resolvedAt === null), resolved = threads.items.filter((c) => c.resolvedAt !== null);
   const there = new Set(outline?.map((s) => s.id) ?? []);
@@ -106,10 +129,10 @@ export function CommentList({ threads, outline, versionN, path, me, onAdd, onMor
   return (
     <>
       {threads.mayComment ? (
-        <Write place={`${me.id} ${path}`} label={t('newComment')} action={t('addComment')} send={async (cid, body) => onAdd(await call<Thread>('POST', `${path}/comments`, { id: cid, body, versionN, section: chosen && { id: chosen.id, title: chosen.title, quote: chosen.quote } }))}>
+        <Write place={place} label={t('newComment')} action={t('addComment')} send={async (cid, body) => { const created = await call<Thread>('POST', `${path}/comments`, { id: cid, body, versionN, section: chosen && { id: chosen.id, title: chosen.title, quote: chosen.quote } }); sections.delete(place); onAdd(created); }}>
           {/* There before the page has told its sections, so nothing moves under a finger. */}
           <div class="choice"><label class="muted" for={id}>{t('section')}</label>
-              <select id={id} class="field" value={chosen?.id ?? ''} onChange={(event) => setSection(event.currentTarget.value)}>
+              <select id={id} class="field" value={chosen?.id ?? ''} onChange={(event) => pickSection(event.currentTarget.value)}>
                 <option value="" selected={chosen === null}>{t('wholePage')}</option>
                 {outline?.map((s) => <option key={s.id} value={s.id} selected={s.id === chosen?.id}>{'  '.repeat(s.level - 1) + s.title}</option>)}
               </select></div>
@@ -145,7 +168,7 @@ export function Comments({ me }: { me: Me }) {
     setProblem(null);
     try { const next = await call<Listed<Thread>>('GET', `/comments?cursor=${list!.next!}`); setList((now) => ({ items: [...now!.items, ...next.items], next: next.next })); } catch (error) { setProblem(problemOf(error)); }
   });
-  const change = (next: Thread) => setList((now) => now && { ...now, items: now.items.map((c) => (c.id === next.id ? { ...c, ...next } : c)) });
+  const change = (id: string, update: (now: Thread) => Thread) => setList((now) => now && { ...now, items: now.items.map((c) => (c.id === id ? { ...c, ...update(c) } : c)) });
   const remove = (id: string) => setList((now) => now && { ...now, items: now.items.filter((c) => c.id !== id) });
   return (
     <>

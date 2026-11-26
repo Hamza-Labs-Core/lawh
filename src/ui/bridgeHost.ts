@@ -37,12 +37,14 @@ function read(data: Record<string, unknown>): BridgeMessage | null {
   switch (data.type) {
     case 'lawh:outline': {
       if (!Array.isArray(data.items) || data.items.length > 200) return null;
-      const items: Section[] = [];
+      const items: Section[] = [], seen = new Set<string>();
       // By index: a list can come with holes, which map() skips.
       for (let i = 0; i < data.items.length; i++) {
         const item: unknown = data.items[i];
         if (!isObject(item) || typeof item.id !== 'string' || item.id.length < 1 || item.id.length > 200 || typeof item.title !== 'string' || item.title.length < 1
           || item.title.length > 200 || typeof item.level !== 'number' || ![1, 2, 3, 4].includes(item.level)) return null;
+        if (seen.has(item.id)) continue;
+        seen.add(item.id);
         items.push({ id: item.id, title: item.title, level: item.level, quote: typeof item.quote === 'string' && item.quote.length <= 300 ? item.quote : '' });
       }
       return { type: 'outline', items };

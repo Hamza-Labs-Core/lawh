@@ -186,6 +186,7 @@ describe('queries', () => {
       for (const q of ['', '?project=one', '?tag=x', '?status=draft', '?project=one&tag=x', '?project=one&status=draft', '?tag=x&status=draft', '?project=one&tag=x&status=draft']) await go(`/v1/pages${q}`);
       for (const path of ['', '/versions', '/versions/1', '/versions/1/file?path=index.html']) expect((await go(`/v1/projects/one/pages/q${i}${path}`)).status).toBe(200);
       for (const q of ['', '?status=open', '?project=one', '?project=one&status=open']) await go(`/v1/decisions${q}`);
+      expect((await go('/v1/comments?project=one')).status).toBe(200);
       const listed = await json(await go('/v1/decisions?project=one'));
       if (listed.items?.[0]) {
         expect((await go(`/v1/decisions?page=${listed.items[0].pageId}`)).status).toBe(200);

@@ -40,6 +40,24 @@ describe('reading', () => {
     for (const query of ['?limit=0', '?cursor=x']) expect(await code(await call(`/v1/pages/${pageId}/comments${query}`, { token })), query).toEqual([422, 'invalid']);
   });
 
+  it('lists open threads of a project oldest first, and requires the project filter', async () => {
+    await write(1, 1, { at: 5 }); await write(2, 1, { at: 6 }); await write(3, 3, { at: 5 }); await write(4, 4, { at: 5 });
+    await sql(`UPDATE comments SET resolved_at=9 WHERE id='${ID(4)}'`);
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const body: { items: { id: string }[]; next: string | null } = await json(await call(`/v1/comments?project=one&limit=1${cursor ? `&cursor=${cursor}` : ''}`, { token }));
+      seen.push(...body.items.map((c) => c.id)); cursor = body.next;
+    } while (cursor);
+    expect(seen).toEqual([ID(1), ID(3)]);
+    expect(await code(await call('/v1/comments', { token }))).toEqual([422, 'invalid']);
+    const { token: other } = await makeKey({ projects: ['p2'] }), { token: blind } = await makeKey({ scopes: ['pages:read'] });
+    expect(await code(await call('/v1/comments?project=one', { token: other }))).toEqual([404, 'not_found']);
+    expect(await code(await call('/v1/comments?project=one', { token: blind }))).toEqual([403, 'forbidden']);
+    await sql('UPDATE pages SET deleted_at=1');
+    expect((await json(await call('/v1/comments?project=one', { token }))).items).toEqual([]);
+  });
+
   it('nothing of a deleted page, of another project, or without the scope', async () => {
     await write(1);
     const { token: other } = await makeKey({ projects: ['p2'] }), { token: blind } = await makeKey({ scopes: ['pages:read', 'decisions:read'] }), { token: reader } = await makeKey({ scopes: ['comments:read'] });
@@ -82,6 +100,18 @@ describe('replying', () => {
       return async (statements: D1PreparedStatement[]) => { await sql(`UPDATE comments SET deleted_at=1 WHERE id='${ID(1)}'`); return target.batch(statements); };
     } });
     expect(await code(await call(`/v1/comments/${ID(1)}/replies`, { method: 'POST', token, json: { body: 'x' }, idem: 'z' }, { DB }))).toEqual([409, 'conflict']);
+    expect(await one("SELECT COUNT(*) n FROM events WHERE type='comment.created'")).toEqual({ n: 0 });
+  });
+
+  it('a manager demoted between the read and the write cannot reply through their agent', async () => {
+    await write(1);
+    const { token: managerKey } = await makeKey({ agent: 'am', projects: ['p1'] });
+    const DB = new Proxy(env.DB, { get: (target, key) => {
+      if (key !== 'batch') { const value = Reflect.get(target, key) as unknown; return typeof value === 'function' ? (value as () => void).bind(target) : value; }
+      return async (statements: D1PreparedStatement[]) => { await sql("UPDATE team_members SET level=3, set_by='o' WHERE member_id='m'"); return target.batch(statements); };
+    } });
+    expect(await code(await call(`/v1/comments/${ID(1)}/replies`, { method: 'POST', token: managerKey, json: { body: 'x' }, idem: 'demoted' }, { DB }))).toEqual([404, 'not_found']);
+    expect(await one("SELECT COUNT(*) n FROM comments WHERE agent_id IS NOT NULL")).toEqual({ n: 0 });
     expect(await one("SELECT COUNT(*) n FROM events WHERE type='comment.created'")).toEqual({ n: 0 });
   });
 

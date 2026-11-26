@@ -44,7 +44,7 @@ export const BRIDGE = `(function () {
         for (var n = 2; seen[unique] || document.getElementById(unique); n++) unique = id + '-' + n;
         h.id = unique;
       }
-      if (h.id.length > 200) continue;
+      if (h.id.length > 200 || seen[h.id]) continue;
       seen[h.id] = true;
       items.push({ id: h.id, title: title, level: Number(h.tagName[1]), quote: quote(h) });
     }

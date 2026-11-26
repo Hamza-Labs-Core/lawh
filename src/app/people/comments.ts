@@ -84,7 +84,8 @@ async function write(ctx: SignedIn, comment: New): Promise<void> {
     const text = String(error);
     if (text.includes('UNIQUE constraint failed: comments.id')) {
       const same = await findComment(env, comment.id);
-      if (same && mine(same, ctx) && same.thread_id === comment.threadId && same.page_id === comment.pageId && same.body === comment.body) return;
+      if (same && mine(same, ctx) && same.thread_id === comment.threadId && same.page_id === comment.pageId && same.body === comment.body
+        && same.version_n === comment.versionN && same.section_id === (comment.section?.id ?? null) && same.section_title === (comment.section?.title ?? null) && same.quote === (comment.section?.quote ?? null)) return;
       throw conflict('That id is taken.');
     }
     if (text.includes('comment conflict')) throw conflict('The page or the thread was deleted meanwhile.');
@@ -135,6 +136,13 @@ export async function reply(ctx: SignedIn): Promise<Response> {
   return answer(ctx, comment.id);
 }
 
+/** Live comment on a live page, where the person still has `least` on the project (or owns it as a commenter). */
+const allowed = (least: number) => `EXISTS (SELECT 1 FROM pages p WHERE p.id = comments.page_id AND p.deleted_at IS NULL)
+  AND EXISTS (SELECT 1 FROM members m WHERE m.id = ?1 AND m.removed_at IS NULL AND (
+    m.role = 'owner'
+    OR EXISTS (SELECT 1 FROM project_access x WHERE x.member_id = m.id AND x.project_id = comments.project_id AND x.level >= ${least})
+    OR (comments.member_id = m.id AND EXISTS (SELECT 1 FROM project_access x WHERE x.member_id = m.id AND x.project_id = comments.project_id AND x.level >= ${COMMENTER}))))`;
+
 export async function setResolved(ctx: SignedIn): Promise<Response> {
   const { comment, level } = await find(ctx, COMMENTER);
   if (!isThread(comment)) throw notFound();
@@ -142,13 +150,24 @@ export async function setResolved(ctx: SignedIn): Promise<Response> {
   const { body } = await readJson(ctx.request);
   onlyKeys(body, ['resolved']);
   if (typeof body.resolved !== 'boolean') throw invalid('resolved must be true or false.');
-  const now = Date.now();
-  await ctx.env.DB.batch([
-    ctx.env.DB.prepare(`UPDATE comments SET resolved_at = ? WHERE id = ? AND deleted_at IS NULL AND resolved_at IS ${body.resolved ? '' : 'NOT '}NULL`).bind(body.resolved ? now : null, comment.id),
-    // Told once, and only when it became resolved.
-    ctx.env.DB.prepare(`INSERT INTO events(project_id, page_id, type, subject_id, created_at, actor_type, actor_id) SELECT ?, ?, 'comment.resolved', ?, ?, 'person', ? WHERE changes() = 1 AND ${body.resolved ? 1 : 0}`)
-      .bind(comment.project_id, comment.page_id, comment.id, now, ctx.person.memberId),
-  ]);
+  const now = Date.now(), check = allowed(DECIDER);
+  try {
+    await ctx.env.DB.batch([
+      // Verify live page, live thread, and current permission inside the write transaction.
+      ctx.env.DB.prepare(`SELECT CASE WHEN EXISTS (SELECT 1 FROM comments WHERE id = ?2 AND deleted_at IS NULL AND ${check}) THEN 1 ELSE json('not allowed') END`)
+        .bind(ctx.person.memberId, comment.id),
+      ctx.env.DB.prepare(`UPDATE comments SET resolved_at = ?3 WHERE id = ?2 AND deleted_at IS NULL AND resolved_at IS ${body.resolved ? '' : 'NOT '}NULL AND ${check}`)
+        .bind(ctx.person.memberId, comment.id, body.resolved ? now : null),
+      // Told once, and only when it became resolved.
+      ctx.env.DB.prepare(`INSERT INTO events(project_id, page_id, type, subject_id, created_at, actor_type, actor_id) SELECT ?, ?, 'comment.resolved', ?, ?, 'person', ? WHERE changes() = 1 AND ${body.resolved ? 1 : 0}`)
+        .bind(comment.project_id, comment.page_id, comment.id, now, ctx.person.memberId),
+    ]);
+  } catch (error) {
+    if (!String(error).includes('malformed JSON')) throw error;
+    const latest = await find(ctx, COMMENTER);
+    if (!mayResolve(latest.comment, latest.level, ctx)) throw new ApiError('forbidden', 'Your level does not allow this.');
+    throw conflict('The page or the thread changed meanwhile.');
+  }
   return answer(ctx, comment.id);
 }
 
@@ -156,6 +175,18 @@ export async function setResolved(ctx: SignedIn): Promise<Response> {
 export async function deleteComment(ctx: SignedIn): Promise<Response> {
   const { comment, level } = await find(ctx, COMMENTER);
   if (level < MANAGER && !mine(comment, ctx)) throw new ApiError('forbidden', 'Your level does not allow this.');
-  await ctx.env.DB.prepare(`UPDATE comments SET deleted_at = ? WHERE ${isThread(comment) ? 'thread_id' : 'id'} = ? AND deleted_at IS NULL`).bind(Date.now(), comment.id).run();
+  const check = allowed(MANAGER);
+  try {
+    await ctx.env.DB.batch([
+      ctx.env.DB.prepare(`SELECT CASE WHEN EXISTS (SELECT 1 FROM comments WHERE id = ?2 AND deleted_at IS NULL AND ${check}) THEN 1 ELSE json('not allowed') END`)
+        .bind(ctx.person.memberId, comment.id),
+      ctx.env.DB.prepare(`UPDATE comments SET deleted_at = ? WHERE ${isThread(comment) ? 'thread_id' : 'id'} = ? AND deleted_at IS NULL`).bind(Date.now(), comment.id),
+    ]);
+  } catch (error) {
+    if (!String(error).includes('malformed JSON')) throw error;
+    const latest = await find(ctx, COMMENTER);
+    if (latest.level < MANAGER && !mine(latest.comment, ctx)) throw new ApiError('forbidden', 'Your level does not allow this.');
+    throw conflict('The page or the comment changed meanwhile.');
+  }
   return new Response(null, { status: 204 });
 }

@@ -1,7 +1,7 @@
 import type { AppEnv } from '../../shared/env';
 import { ApiError, notFound } from '../../shared/errors';
 import { authenticate, type Caller, needScope, type Scope } from './auth';
-import { listComments, replyAsAgent } from './comments';
+import { listComments, listProjectThreads, replyAsAgent } from './comments';
 import { getDecision, listDecisions } from './decisions';
 import { getPage, getVersion, listPages, listProjects, listVersions, me, readFile, updatePage } from './pages';
 import { commitPublish, putBlob, startPublish } from './publish';
@@ -39,6 +39,7 @@ export const routes: Route[] = [
   route('POST', `/uploads/${ID}/commit`, 'pages:write', commitPublish),
   route('GET', '/decisions', 'decisions:read', listDecisions),
   route('GET', `/decisions/${ID}`, 'decisions:read', getDecision),
+  route('GET', '/comments', 'comments:read', listProjectThreads),
   route('GET', `/pages/${ID}/comments`, 'comments:read', listComments),
   route('POST', `/comments/${ID}/replies`, 'comments:write', replyAsAgent),
 ];

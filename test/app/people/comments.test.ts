@@ -57,6 +57,8 @@ describe('writing', () => {
     const [x, y] = await Promise.all([add(owner, 1), add(owner, 1)]);
     expect([x!.status, y!.status]).toEqual([200, 200]);
     expect(await code(await add(owner, 1, { body: 'Else' }))).toEqual([409, 'conflict']);
+    expect(await code(await add(owner, 1, { versionN: 2 }))).toEqual([409, 'conflict']);
+    expect(await code(await add(owner, 1, { section: { id: 's-1', title: 'One' } }))).toEqual([409, 'conflict']);
     expect(await code(await add(cookie, 1))).toEqual([409, 'conflict']);
     expect(await code(await reply(owner, 1, 1))).toEqual([409, 'conflict']);
     await reply(cookie, 1, 2); await reply(cookie, 1, 2);
@@ -89,6 +91,22 @@ describe('writing', () => {
     } });
     expect(await code(await api('POST', '/projects/one/pages/a/comments', { cookie, body: { id: ID(1), body: 'x', versionN: 1 } }, { DB }))).toEqual(expected);
     expect([await count('comments'), await count('events')]).toEqual([0, 0]);
+  });
+
+  it.each([
+    ['demoted decider resolving', 3, 'PUT', `/comments/${ID(1)}/resolved`, { resolved: true }, "UPDATE team_members SET level=2, set_by='o' WHERE member_id='m'", [403, 'forbidden']],
+    ['deleted page on resolve', 3, 'PUT', `/comments/${ID(1)}/resolved`, { resolved: true }, "UPDATE pages SET deleted_at=1 WHERE id='a'", [404, 'not_found']],
+    ['demoted manager deleting', 4, 'DELETE', `/comments/${ID(1)}`, {}, "UPDATE team_members SET level=3, set_by='o' WHERE member_id='m'", [403, 'forbidden']],
+  ])('%s between the read and the write is refused atomically', async (_, startLevel, method, path, body, change, expected) => {
+    const owner = (await enter('o')).cookie, cookie = await member(startLevel);
+    await add(owner, 1);
+    const DB = new Proxy(env.DB, { get: (target, key) => {
+      if (key !== 'batch') { const value = Reflect.get(target, key) as unknown; return typeof value === 'function' ? (value as () => void).bind(target) : value; }
+      return async (statements: D1PreparedStatement[]) => { await sql(change); return target.batch(statements); };
+    } });
+    expect(await code(await api(method, path, { cookie, body }, { DB }))).toEqual(expected);
+    expect(await one(`SELECT resolved_at, deleted_at FROM comments WHERE id='${ID(1)}'`)).toEqual({ resolved_at: null, deleted_at: null });
+    expect(await count('events', "type='comment.resolved'")).toBe(0);
   });
 });
 

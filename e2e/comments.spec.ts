@@ -266,6 +266,54 @@ test('earlier replies of a long thread come on request, in order, and stay when 
   await expect(page.getByRole('button', { name: 'Show earlier replies' })).toHaveCount(0);
 });
 
+test('earlier replies with equal timestamps and concurrent new replies are all kept', async ({ page, member, ask }) => {
+  await wide(page);
+  const asked = await ask([], { like: 'good' }), first = await write(asked, member, 'Long', { level: 3, at: 1 });
+  for (let i = 0; i < 55; i++) await write(asked, null, `Reply ${i}.`, { in: first, at: 100 });
+  await open(page, member, asked.path); await ready(page); await opener(page).click();
+  const replies = page.locator('.replies .one');
+  await expect(replies).toHaveCount(50);
+  let release!: () => void;
+  const gate = new Promise<void>((done) => { release = done; });
+  await page.route('**/comments/*/replies?cursor=*', async (route) => { await gate; await route.continue(); });
+  await page.getByRole('button', { name: 'Show earlier replies' }).click();
+  await page.getByRole('textbox', { name: 'Reply' }).fill('Brand new');
+  await page.getByRole('button', { name: 'Reply', exact: true }).click();
+  await expect(replies.filter({ hasText: 'Brand new' })).toHaveCount(1);
+  release();
+  await expect(replies).toHaveCount(56);
+  await expect(replies.filter({ hasText: 'Brand new' })).toHaveCount(1);
+  // Posting again after all equal-timestamp replies are loaded still keeps every one.
+  await page.getByRole('textbox', { name: 'Reply' }).fill('One more');
+  await page.getByRole('button', { name: 'Reply', exact: true }).click();
+  await expect(replies).toHaveCount(57);
+});
+
+test('switching tabs keeps the chosen section and on a phone submitting keeps focus off Close', async ({ page, member, ask }) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  const asked = await ask([{ question: 'Which?' }], { like: 'good' });
+  await open(page, member, asked.path); await ready(page);
+  await page.getByRole('button', { name: 'Decisions to make: 1' }).click();
+  const sheet = page.getByRole('dialog');
+  await sheet.getByRole('button', { name: /Comments/ }).click();
+  await sheet.getByLabel('Section').selectOption('s-first-section');
+  await sheet.getByRole('textbox', { name: 'Comment' }).fill('Unsent draft');
+  await sheet.getByRole('button', { name: /Decisions/ }).click();
+  await sheet.getByRole('button', { name: /Comments/ }).click();
+  await expect(sheet.getByLabel('Section')).toHaveValue('s-first-section');
+  await expect(sheet.getByRole('textbox', { name: 'Comment' })).toHaveValue('Unsent draft');
+  await page.route('**/comments', async (route) => {
+    if (route.request().method() === 'POST') { await new Promise((done) => setTimeout(done, 400)); await route.abort(); } else await route.continue();
+  });
+  await sheet.getByRole('button', { name: 'Add comment' }).focus();
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(200);
+  expect(await page.evaluate(() => document.activeElement?.textContent)).not.toBe('Close');
+  await expect(sheet.getByRole('alert')).toHaveText('No connection.');
+  await expect(sheet.getByRole('textbox', { name: 'Comment' })).toBeFocused();
+  await expect(sheet.getByRole('textbox', { name: 'Comment' })).toHaveValue('Unsent draft');
+});
+
 test('a list that fails can be tried again', async ({ page, member, ask }) => {
   const asked = await ask([], { like: 'good' });
   await write(asked, member, 'Here', { level: 3 });
