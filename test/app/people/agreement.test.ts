@@ -35,10 +35,24 @@ describe('S19 multi-decider agreement', () => {
     expect(listed.find((p) => p.slug === 'one')).toMatchObject({ answersNeeded: 3, answerers: 2 });
     expect(await one("SELECT action FROM audit WHERE action='project.agreement' AND subject_id='p1'")).toEqual({ action: 'project.agreement' });
 
-    // Turning teams off resets answers_needed back to 1, and setting > 1 while teams is off fails with 409.
+    // Turning teams off resets answers_needed back to 1, drops team deciders from answerers, and refuses ANY explicit answersNeeded PATCH (even to 1) with 409.
     expect((await api('PUT', '/switches/teams', { cookie: owner, body: { on: false } })).status).toBe(200);
     expect((await one<{ answers_needed: number }>("SELECT answers_needed FROM projects WHERE id='p1'"))?.answers_needed).toBe(1);
+    const listedOff = (await json(await api('GET', '/projects', { cookie: owner }))).items as { slug: string; answersNeeded: number; answerers: number }[];
+    expect(listedOff.find((p) => p.slug === 'one')).toMatchObject({ answersNeeded: 1, answerers: 1 });
     expect(await code(await api('PATCH', '/projects/one', { cookie: owner, body: { answersNeeded: 2 } }))).toEqual([409, 'conflict']);
+    expect(await code(await api('PATCH', '/projects/one', { cookie: owner, body: { answersNeeded: 1 } }))).toEqual([409, 'conflict']);
+
+    // Partial PATCH never clobbers a concurrently updated field (name-only PATCH preserves answersNeeded set concurrently).
+    expect((await api('PUT', '/switches/teams', { cookie: owner, body: { on: true } })).status).toBe(200);
+    expect((await api('PATCH', '/projects/one', { cookie: owner, body: { answersNeeded: 3 } })).status).toBe(200);
+    const renamed = await json(await api('PATCH', '/projects/one', { cookie: owner, body: { name: { en: 'One Renamed', ar: 'واحد جديد' } } }));
+    expect(renamed).toMatchObject({ slug: 'one', name: { en: 'One Renamed', ar: 'واحد جديد' }, answersNeeded: 3, answerers: 2 });
+
+    // Non-owner member sees consistent `answerers` shape even when all visible projects have answersNeeded=1.
+    expect((await api('PATCH', '/projects/one', { cookie: owner, body: { answersNeeded: 1 } })).status).toBe(200);
+    const monaProjects = (await json(await api('GET', '/projects', { cookie: mona }))).items as { slug: string; answersNeeded: number; answerers: number }[];
+    expect(monaProjects.find((p) => p.slug === 'one')).toMatchObject({ answersNeeded: 1, answerers: 2 });
   });
 
   it('tracks Waiting for others, requires an option when >1 needed, decides on agreement, keeps decided stable, and exposes agreement in /v1/decisions', async () => {
@@ -117,5 +131,13 @@ describe('S19 multi-decider agreement', () => {
     // Verify events recorded decision.vote (seq 1, 2, 4) and decision.answered (seq 3).
     const evs = (await env.DB.prepare("SELECT type FROM events WHERE type IN ('decision.vote','decision.answered') ORDER BY seq").all<{ type: string }>()).results.map((r) => r.type);
     expect(evs).toEqual(['decision.vote', 'decision.vote', 'decision.answered', 'decision.vote']);
+
+    // Turning teams off drops non-owner votes from `agreement` while keeping the deciding `answer` and `history` intact!
+    expect((await api('PUT', '/switches/teams', { cookie: owner, body: { on: false } })).status).toBe(200);
+    const apiOff = await json(await agent(`/v1/decisions/${decId}`, { token }));
+    expect(apiOff.status).toBe('answered');
+    expect(apiOff.answer).toMatchObject({ seq: 3, optionId: 'a' });
+    expect(apiOff.agreement.every((a: { answeredBy: { id: string } }) => a.answeredBy.id === 'o')).toBe(true);
+    expect(apiOff.history).toHaveLength(4);
   });
 });

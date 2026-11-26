@@ -42,23 +42,47 @@ export async function renameProject(ctx: SignedIn): Promise<Response> {
   const { body } = await readJson(ctx.request);
   onlyKeys(body, ['name', 'answersNeeded']);
   if (body.name === undefined && body.answersNeeded === undefined) throw invalid('name or answersNeeded is needed.');
-  const name = body.name !== undefined ? readName(body.name) : { en: project.name_en, ar: project.name_ar };
-  const answersNeeded = body.answersNeeded !== undefined ? integer(body.answersNeeded, 'answersNeeded', 1, 5) : project.answers_needed;
+
+  const sets: string[] = [];
+  const binds: unknown[] = [];
+  const guards: D1PreparedStatement[] = [stillOwner(env, person.memberId)];
   const audits: D1PreparedStatement[] = [];
-  if (body.name !== undefined) audits.push(auditStatement(env, person.memberId, 'project.rename', project.id));
-  if (body.answersNeeded !== undefined) audits.push(auditStatement(env, person.memberId, 'project.agreement', project.id));
+
+  if (body.name !== undefined) {
+    const name = readName(body.name);
+    sets.push('name_en = ?', 'name_ar = ?');
+    binds.push(name.en, name.ar);
+    audits.push(auditStatement(env, person.memberId, 'project.rename', project.id));
+  }
+  if (body.answersNeeded !== undefined) {
+    const needed = integer(body.answersNeeded, 'answersNeeded', 1, 5);
+    // Any explicit agreement change requires the `teams` switch to be on, even when setting to 1.
+    guards.push(env.DB.prepare("SELECT CASE WHEN EXISTS (SELECT 1 FROM settings WHERE key = 'teams' AND value_json = 'true') THEN 1 ELSE json('teams_off') END"));
+    sets.push('answers_needed = ?');
+    binds.push(needed);
+    audits.push(auditStatement(env, person.memberId, 'project.agreement', project.id));
+  }
+
+  let updated: { name_en: string; name_ar: string; answers_needed: number } | undefined;
   try {
-    await env.DB.batch([
-      stillOwner(env, person.memberId),
-      env.DB.prepare('UPDATE projects SET name_en = ?, name_ar = ?, answers_needed = ? WHERE id = ?')
-        .bind(name.en, name.ar, answersNeeded, project.id),
+    const results = await env.DB.batch([
+      ...guards,
+      env.DB.prepare(`UPDATE projects SET ${sets.join(', ')} WHERE id = ? RETURNING name_en, name_ar, answers_needed`)
+        .bind(...binds, project.id),
       ...audits,
     ]);
+    updated = (results[guards.length]!.results as { name_en: string; name_ar: string; answers_needed: number }[])[0];
   } catch (error) {
     const msg = String(error);
-    if (msg.includes('agreement needs teams')) throw conflict('Turn teams on before requiring more than one person to agree.');
-    if (msg.includes('malformed JSON')) throw new ApiError('forbidden', 'Only the owner can do this.');
+    if (msg.includes('agreement needs teams')) throw conflict('Turn teams on before changing required agreement.');
+    if (msg.includes('malformed JSON')) {
+      const still = await env.DB.prepare("SELECT 1 FROM members WHERE id = ? AND role = 'owner' AND removed_at IS NULL").bind(person.memberId).first();
+      if (!still) throw new ApiError('forbidden', 'Only the owner can do this.');
+      throw conflict('Turn teams on before changing required agreement.');
+    }
     throw error;
   }
-  return Response.json({ slug: project.slug, name, level: 5, answersNeeded, answerers: await answerers(env, project.id) });
+  const finalName = updated ? { en: updated.name_en, ar: updated.name_ar } : { en: project.name_en, ar: project.name_ar };
+  const finalNeeded = updated ? updated.answers_needed : project.answers_needed;
+  return Response.json({ slug: project.slug, name: finalName, level: 5, answersNeeded: finalNeeded, answerers: await answerers(env, project.id) });
 }

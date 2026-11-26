@@ -4,7 +4,7 @@ import { Failure, Fill, Heading, Link, useBusy, useSettings, useText } from '../
 import { day, digits, type Key } from '../i18n';
 import { Account } from './Account';
 
-type Problem = 'offline' | 'wait' | 'failed' | 'notAllowed' | 'taken' | 'badInput' | 'keyLate' | 'secretComment' | 'teamLimitConflict';
+type Problem = 'offline' | 'wait' | 'failed' | 'notAllowed' | 'taken' | 'agreementOff' | 'badInput' | 'keyLate' | 'secretComment' | 'teamLimitConflict';
 const problemIn = (error: unknown): Problem =>
   error instanceof CallError && error.status === 403 ? 'notAllowed' : error instanceof CallError && error.code === 'secret_found' ? 'secretComment' : error instanceof CallError && error.status === 422 ? 'badInput' : problemOf(error);
 
@@ -577,16 +577,14 @@ function Projects({ me }: { me: Me }) {
   if (data === null) return <Loading problem={problem} load={load} />;
   return (
     <>
-      <ProjectForm me={me} onSave={async (slug, name) => { const made = await call<ProjectName>('POST', '/projects', { slug, name }); set((now) => now && { ...now, items: [...now.items, made] }); }} />
+      <ProjectForm me={me} onSave={async (slug, payload) => { const made = await call<ProjectName>('POST', '/projects', { slug, ...payload }); set((now) => now && { ...now, items: [...now.items, made] }); }} />
       <ul class="grid wide-cards">
         {data.items.map((p) => (
           <li key={p.slug}>
             <ProjectForm
               me={me}
               project={p}
-              onSave={async (slug, name, answersNeeded) => {
-                const payload: Record<string, unknown> = { name };
-                if (me.teams && answersNeeded !== undefined) payload.answersNeeded = answersNeeded;
+              onSave={async (slug, payload) => {
                 const next = await call<ProjectName>('PATCH', `/projects/${slug}`, payload);
                 set((now) => now && { ...now, items: now.items.map((o) => (o.slug === slug ? { ...o, ...next } : o)) });
               }}
@@ -601,17 +599,22 @@ function Projects({ me }: { me: Me }) {
 
 const AGREEMENT_OPTIONS = [1, 2, 3, 4, 5] as const;
 
-function ProjectForm({ me, project, onSave }: { me: Me; project?: ProjectName; onSave: (slug: string, name: { en: string; ar: string }, answersNeeded?: number) => Promise<void> }) {
+function ProjectForm({ me, project, onSave }: { me: Me; project?: ProjectName; onSave: (slug: string, payload: { name?: { en: string; ar: string }; answersNeeded?: number }) => Promise<void> }) {
   const t = useText(), { lang } = useSettings(), id = useId(), [busy, run] = useBusy(), [problem, setProblem] = useState<Problem | null>(null), [done, setDone] = useState(false), [open, setOpen] = useState(false), box = useRef<HTMLDivElement>(null), first = useRef<HTMLInputElement>(null), wasOpen = useRef(false);
   const [slug, setSlug] = useState(project?.slug ?? ''), [en, setEn] = useState(project?.name.en ?? ''), [ar, setAr] = useState(project?.name.ar ?? '');
   const currentNeeded = project?.answersNeeded ?? 1;
   const [needed, setNeeded] = useState(currentNeeded);
   useEffect(() => { if (open) first.current?.focus(); else if (wasOpen.current) box.current?.focus(); wasOpen.current = open; }, [open]);
-  const changed = !project || en.trim() !== project.name.en || ar.trim() !== project.name.ar || (me.teams && needed !== currentNeeded);
+  const nameChanged = !project || en.trim() !== project.name.en || ar.trim() !== project.name.ar;
+  const neededChanged = Boolean(project && me.teams && needed !== currentNeeded);
+  const changed = nameChanged || neededChanged;
   const ready = /^[a-z0-9][a-z0-9-]{0,79}$/.test(slug) && en.trim() !== '' && ar.trim() !== '' && changed;
   const save = () => run(async () => {
     setProblem(null); setDone(false);
-    try { await onSave(slug, { en: en.trim(), ar: ar.trim() }, needed); setDone(true); setOpen(false); if (!project) { setSlug(''); setEn(''); setAr(''); } } catch (error) { setProblem(error instanceof CallError && error.status === 409 ? 'taken' : problemIn(error)); }
+    const payload: { name?: { en: string; ar: string }; answersNeeded?: number } = {};
+    if (nameChanged) payload.name = { en: en.trim(), ar: ar.trim() };
+    if (neededChanged) payload.answersNeeded = needed;
+    try { await onSave(slug, payload); setDone(true); setOpen(false); if (!project) { setSlug(''); setEn(''); setAr(''); } } catch (error) { setProblem(error instanceof CallError && error.status === 409 ? (project ? 'agreementOff' : 'taken') : problemIn(error)); }
   });
   const tooFew = project !== undefined && currentNeeded > 1 && project.answerers !== undefined && project.answerers < currentNeeded;
   if (!open) {

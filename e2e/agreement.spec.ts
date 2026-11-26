@@ -59,9 +59,11 @@ test.describe('S19 Agreement: project setting, progress, and Waiting for others'
       }
       await route.continue();
     });
+    let lastPatchBody: Record<string, unknown> | null = null;
     await page.route('**/app-api/projects/one', async (route) => {
       if (route.request().method() === 'PATCH') {
         const body = route.request().postDataJSON() as { name?: { en: string; ar: string }; answersNeeded?: number };
+        lastPatchBody = body;
         if (body.name) projectsState.items[0]!.name = body.name;
         if (body.answersNeeded !== undefined) projectsState.items[0]!.answersNeeded = body.answersNeeded;
         await route.fulfill({ json: projectsState.items[0]! });
@@ -79,7 +81,7 @@ test.describe('S19 Agreement: project setting, progress, and Waiting for others'
       await route.fulfill({ json: { items: show === 'waiting' ? [waitingDecision] : [], next: null } });
     });
 
-    // Settings → Projects: set answersNeeded to 3 when only 2 can answer -> shows exact warning!
+    // Settings → Projects: set answersNeeded to 3 when only 2 can answer -> sends ONLY { answersNeeded: 3 } and shows exact warning!
     await page.goto(`${APP}/settings/projects`);
     await expect(page.getByRole('heading', { name: 'One' })).toBeVisible();
     await page.getByRole('button', { name: 'Rename' }).click();
@@ -87,8 +89,16 @@ test.describe('S19 Agreement: project setting, progress, and Waiting for others'
     await expect(page.getByText('Needs 3 people, only 2 can answer.')).toBeVisible();
     await page.getByRole('button', { name: 'Save' }).click();
     await expect(page.getByText('3 must agree')).toBeVisible();
+    expect(lastPatchBody).toEqual({ answersNeeded: 3 });
     await expect(page.getByText('Needs 3 people, only 2 can answer.')).toBeVisible();
     expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+
+    // Check Settings → Projects in Arabic RTL as well!
+    await page.getByRole('button', { name: 'العربية' }).click();
+    await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+    await expect(page.getByRole('heading', { name: 'واحد' })).toBeVisible();
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    await page.getByRole('button', { name: 'English' }).click();
 
     // Decisions → Waiting for others: shows 1 of 3 agree, Only 2 can answer, Chosen by You!
     await page.getByRole('link', { name: 'Decisions' }).click();
