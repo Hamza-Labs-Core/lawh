@@ -23,23 +23,41 @@ function pack(...fields: [size: 2 | 4 | 8, value: number][]): Uint8Array {
 
 export interface Entry { name: string; body: AsyncIterable<Uint8Array> }
 
-/** Each entry must be smaller than 4 GB; the whole may be larger. */
+// ZIP64 local extra placeholder so streaming data descriptors always use 8-byte sizes (APPNOTE §4.3.9.2).
+const LFH_ZIP64 = pack([2, 1], [2, 16], [8, 0], [8, 0]);
+
+/** Build a central directory entry (ZIP64 extra field whenever size or offset reaches 4 GiB). */
+export function centralEntry(encoded: Uint8Array, crc: number, size: number, offset: number): [Uint8Array, Uint8Array, Uint8Array] {
+  const big = size >= MAX32, far = offset >= MAX32;
+  const fields: [size: 2 | 4 | 8, value: number][] = [];
+  if (big) fields.push([8, size], [8, size]);
+  if (far) fields.push([8, offset]);
+  const extra = fields.length > 0 ? pack([2, 1], [2, fields.length * 8], ...fields) : new Uint8Array();
+  const header = pack(
+    [4, 0x02014b50], [2, 45], [2, 45], [2, 0x0808], [2, 0], [2, 0], [2, 0x21],
+    [4, crc], [4, big ? MAX32 : size], [4, big ? MAX32 : size], [2, encoded.length], [2, extra.length],
+    [2, 0], [2, 0], [2, 0], [4, 0], [4, far ? MAX32 : offset],
+  );
+  return [header, encoded, extra];
+}
+
+/** Streams a valid ZIP64 archive of arbitrary entry sizes and archive size. */
 export async function* zip(entries: AsyncIterable<Entry>): AsyncGenerator<Uint8Array> {
   const directory: Uint8Array[] = [];
   let at = 0;
   for await (const { name, body } of entries) {
     const encoded = new TextEncoder().encode(name), offset = at;
-    // Bits 3 and 11: the sizes come after the data, and the name is UTF-8. The time is 1980-01-01, for no reason to tell another.
-    const head = pack([4, 0x04034b50], [2, 45], [2, 0x0808], [2, 0], [2, 0], [2, 0x21], [4, 0], [4, 0], [4, 0], [2, encoded.length], [2, 0]);
-    yield head; yield encoded;
-    at += head.length + encoded.length;
+    if (encoded.length > 0xFFFF) throw new RangeError('ZIP entry name is too long.');
+    // Bits 3 and 11: sizes follow in the ZIP64 data descriptor, and the name is UTF-8. Time is 1980-01-01.
+    const head = pack([4, 0x04034b50], [2, 45], [2, 0x0808], [2, 0], [2, 0], [2, 0x21], [4, 0], [4, 0], [4, 0], [2, encoded.length], [2, LFH_ZIP64.length]);
+    yield head; yield encoded; yield LFH_ZIP64;
+    at += head.length + encoded.length + LFH_ZIP64.length;
     let crc = 0, size = 0;
     for await (const chunk of body) { crc = crc32(chunk, crc); size += chunk.length; yield chunk; }
-    const tail = pack([4, 0x08074b50], [4, crc], [4, size], [4, size]);
+    const tail = pack([4, 0x08074b50], [4, crc], [8, size], [8, size]);
     yield tail;
     at += size + tail.length;
-    const far = offset >= MAX32, extra = far ? pack([2, 1], [2, 8], [8, offset]) : new Uint8Array();
-    directory.push(pack([4, 0x02014b50], [2, 45], [2, 45], [2, 0x0808], [2, 0], [2, 0], [2, 0x21], [4, crc], [4, size], [4, size], [2, encoded.length], [2, extra.length], [2, 0], [2, 0], [2, 0], [4, 0], [4, far ? MAX32 : offset]), encoded, extra);
+    directory.push(...centralEntry(encoded, crc, size, offset));
   }
   const start = at, size = directory.reduce((n, part) => n + part.length, 0), count = directory.length / 3;
   yield* directory;

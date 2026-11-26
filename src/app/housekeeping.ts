@@ -57,11 +57,27 @@ export async function versionsKept(env: AppEnv): Promise<number | null> {
   return typeof keep === 'number' && Number.isInteger(keep) && keep >= 1 ? keep : null;
 }
 
-/** Removes versions past the number kept. The current one always stays. */
-export async function pruneVersions(env: AppEnv, pageId: string, currentVersion: number, keep: number, now = Date.now()): Promise<void> {
-  if (currentVersion <= keep) return;
+/** Fails the batch unless retention still requires dropping this version (the setting may have changed meanwhile). */
+const stillPastRetention = (env: AppEnv, versionId: string): D1PreparedStatement =>
+  env.DB.prepare(`SELECT CASE WHEN EXISTS (
+    SELECT 1 FROM settings s JOIN page_versions v ON v.id = ? JOIN pages p ON p.id = v.page_id
+    WHERE s.key = 'retention' AND json_type(s.value_json) = 'integer' AND CAST(s.value_json AS INTEGER) >= 1
+      AND v.n <= p.current_version - CAST(s.value_json AS INTEGER)
+  ) THEN 1 ELSE json('kept') END`).bind(versionId);
+
+/** Removes versions past the number kept. The current one always stays. Returns false if the setting changed meanwhile. */
+export async function pruneVersions(env: AppEnv, pageId: string, currentVersion: number, keep: number, now = Date.now()): Promise<boolean> {
+  if (currentVersion <= keep) return true;
   const { results } = await env.DB.prepare('SELECT id FROM page_versions WHERE page_id = ? AND n <= ? ORDER BY n LIMIT ?').bind(pageId, currentVersion - keep, VERSIONS).all<{ id: string }>();
-  for (const { id } of results) await env.DB.batch(dropVersion(env, id, now));
+  for (const { id } of results) {
+    try {
+      await env.DB.batch([stillPastRetention(env, id), ...dropVersion(env, id, now)]);
+    } catch (error) {
+      if (String(error).includes('malformed JSON')) return false;
+      throw error;
+    }
+  }
+  return true;
 }
 
 /** After the setting changed: every page once, some each hour. Pages published since are pruned at their publish. */
@@ -72,7 +88,7 @@ export async function prune(env: AppEnv, now = Date.now()): Promise<void> {
   const { results } = await env.DB.prepare('SELECT id, current_version FROM pages WHERE id > ? ORDER BY id LIMIT ?').bind(from, WALK).all<{ id: string; current_version: number }>();
   let last = from, whole = true;
   for (const page of results) {
-    await pruneVersions(env, page.id, page.current_version, keep, now);
+    if (!(await pruneVersions(env, page.id, page.current_version, keep, now))) return;
     if (await env.DB.prepare('SELECT 1 FROM page_versions WHERE page_id = ? AND n <= ? LIMIT 1').bind(page.id, page.current_version - keep).first()) { whole = false; break; } // Its rest next hour.
     last = page.id;
   }

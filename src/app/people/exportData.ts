@@ -40,11 +40,17 @@ async function* rowEntries(env: AppEnv): AsyncGenerator<Entry> {
   for (const [table, key, columns = '*'] of TABLES) yield { name: `rows/${table}.ndjson`, body: rowsOf(env, table, key, columns) };
 }
 
-async function* fileEntries(env: AppEnv, files: { sha256: string; r2_key: string }[]): AsyncGenerator<Entry> {
-  for (const { sha256, r2_key } of files) {
-    const object = await env.FILES.get(r2_key);
-    // Cleaned up since the list was read.
-    if (object) yield { name: `files/${sha256}`, body: object.body };
+async function* fileEntries(env: AppEnv, after: string, last: string): AsyncGenerator<Entry> {
+  let cursor = after;
+  for (;;) {
+    const { results } = await env.DB.prepare('SELECT sha256, r2_key FROM blobs WHERE sha256 > ? AND sha256 <= ? ORDER BY sha256 LIMIT ?').bind(cursor, last, FILES).all<{ sha256: string; r2_key: string }>();
+    for (const { sha256, r2_key } of results) {
+      const object = await env.FILES.get(r2_key);
+      // Cleaned up since the list was read.
+      if (object) yield { name: `files/${sha256}`, body: object.body };
+    }
+    if (results.length < FILES) return;
+    cursor = results.at(-1)!.sha256;
   }
 }
 
@@ -84,6 +90,5 @@ export async function exportFiles(ctx: SignedIn): Promise<Response> {
   ownerOnly(ctx);
   const after = ctx.url.searchParams.get('after') ?? '', last = ctx.url.searchParams.get('last') ?? '', part = ctx.url.searchParams.get('part') ?? '1';
   if (!/^(?:[0-9a-f]{64})?$/.test(after) || !/^[0-9a-f]{64}$/.test(last) || !/^[1-9]\d{0,6}$/.test(part)) throw invalid('That part is not there.');
-  const { results } = await ctx.env.DB.prepare('SELECT sha256, r2_key FROM blobs WHERE sha256 > ? AND sha256 <= ? ORDER BY sha256 LIMIT ?').bind(after, last, FILES).all<{ sha256: string; r2_key: string }>();
-  return download(`lawh-files-${part}.zip`, fileEntries(ctx.env, results));
+  return download(`lawh-files-${part}.zip`, fileEntries(ctx.env, after, last));
 }

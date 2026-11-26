@@ -60,7 +60,7 @@ function Devices() {
         {passkeys === null && !problem && <p class="muted" role="status">{t('loading')}</p>}
         <ul class="rows">{passkeys?.map((k) => (
           <li key={k.id}><div><strong><bdi dir="auto">{k.label}</bdi></strong><p class="muted"><Fill text="addedOn" date={day(lang, k.createdAt)} />{lang === 'ar' ? '، ' : ', '}{k.lastUsedAt === null ? t('neverUsed') : <Fill text="lastUsed" date={day(lang, k.lastUsedAt)} />}</p></div>
-            {passkeys.length > 1 && <button class="plain" disabled={busy} onClick={() => act(async () => { await call('DELETE', `/passkeys/${k.id}`); setPasskeys(passkeys.filter((o) => o.id !== k.id)); })}>{t('remove')}</button>}</li>
+            {passkeys.length > 1 && <button class="plain" disabled={busy} onClick={() => act(async () => { await call('DELETE', `/passkeys/${k.id}`); setPasskeys((now) => now && now.filter((o) => o.id !== k.id)); })}>{t('remove')}</button>}</li>
         ))}</ul>
         {browserSupportsWebAuthn() && <button class="plain wide" disabled={busy} onClick={add}>{t('addPasskey')}</button>}
       </section>
@@ -68,7 +68,7 @@ function Devices() {
         <h2>{t('devices')}</h2>
         <ul class="rows">{sessions?.map((s) => (
           <li key={s.id}><div><strong><bdi dir="auto">{s.label}</bdi></strong>{s.current && <> <span class="status decided">{t('thisDevice')}</span></>}<p class="muted"><Fill text="lastSeen" date={day(lang, s.lastSeenAt)} /></p></div>
-            {!s.current && <button class="plain" disabled={busy} onClick={() => act(async () => { await call('DELETE', `/sessions/${s.id}`); setSessions(sessions.filter((o) => o.id !== s.id)); })}>{t('endSession')}</button>}</li>
+            {!s.current && <button class="plain" disabled={busy} onClick={() => act(async () => { await call('DELETE', `/sessions/${s.id}`); setSessions((now) => now && now.filter((o) => o.id !== s.id)); })}>{t('endSession')}</button>}</li>
         ))}</ul>
         {problem && <><Failure>{t(problem)}</Failure>{(sessions === null || passkeys === null) && <button class="plain" onClick={() => setTries((n) => n + 1)}>{t('retry')}</button>}</>}
       </section>

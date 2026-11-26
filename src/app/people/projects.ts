@@ -1,10 +1,10 @@
-import { conflict, invalid } from '../../shared/errors';
+import { ApiError, conflict, invalid } from '../../shared/errors';
 import { newId } from '../../shared/ids';
 import { isObject, onlyKeys, readJson, text } from '../api/body';
 import { openProject } from './access';
 import type { SignedIn } from './router';
 import { auditStatement } from './session';
-import { ownerOnly } from './settings';
+import { ownerOnly, stillOwner } from './settings';
 
 /** Projects are the owner's to make and name. */
 
@@ -23,10 +23,12 @@ export async function addProject(ctx: SignedIn): Promise<Response> {
   const id = newId('prj');
   try {
     await env.DB.batch([
+      stillOwner(env, person.memberId),
       env.DB.prepare('INSERT INTO projects(id, slug, name_en, name_ar, created_at) VALUES(?,?,?,?,?)').bind(id, slug, name.en, name.ar, Date.now()),
       auditStatement(env, person.memberId, 'project.add', id),
     ]);
   } catch (error) {
+    if (String(error).includes('malformed JSON')) throw new ApiError('forbidden', 'Only the owner can do this.');
     if (String(error).includes('UNIQUE constraint failed: projects.slug')) throw conflict('That address is taken.');
     throw error;
   }
@@ -39,9 +41,15 @@ export async function renameProject(ctx: SignedIn): Promise<Response> {
   const { body } = await readJson(ctx.request);
   onlyKeys(body, ['name']);
   const name = readName(body.name);
-  await env.DB.batch([
-    env.DB.prepare('UPDATE projects SET name_en = ?, name_ar = ? WHERE id = ?').bind(name.en, name.ar, project.id),
-    auditStatement(env, person.memberId, 'project.rename', project.id),
-  ]);
+  try {
+    await env.DB.batch([
+      stillOwner(env, person.memberId),
+      env.DB.prepare('UPDATE projects SET name_en = ?, name_ar = ? WHERE id = ?').bind(name.en, name.ar, project.id),
+      auditStatement(env, person.memberId, 'project.rename', project.id),
+    ]);
+  } catch (error) {
+    if (String(error).includes('malformed JSON')) throw new ApiError('forbidden', 'Only the owner can do this.');
+    throw error;
+  }
   return Response.json({ slug: project.slug, name, level: 5 });
 }
