@@ -20,6 +20,8 @@ export interface AppEnv extends SharedEnv {
   PEPPER: SecretsStoreSecret | string;
   /** Encrypts webhook signing secrets at rest (AES-256-GCM). */
   WEBHOOK_KEY: SecretsStoreSecret | string;
+  /** Signs short-lived WebSocket tickets for live event pings. */
+  LIVE_KEY: SecretsStoreSecret | string;
   /** Outbound webhook delivery queue. */
   WEBHOOKS: Queue<WebhookMessage>;
   /** Requests for each agent key. */

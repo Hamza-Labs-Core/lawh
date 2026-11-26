@@ -7,6 +7,7 @@ import { STATUSES, encodeCursor, pageLimit, readCursor, tagsOf } from '../pages/
 import { indexStatements, statusStatements, unindexStatements } from '../search';
 import { entryTextOf } from '../search/entry';
 import { dispatchOutbox } from '../webhooks/deliver';
+import { notifyLive } from '../api/live';
 import { levelOn, openProject, visibleProjects } from './access';
 import type { SignedIn } from './router';
 import { auditStatement } from './session';
@@ -53,6 +54,7 @@ export async function setStatus(ctx: SignedIn): Promise<Response> {
     throw error;
   }
   ctx.ctx.waitUntil(dispatchOutbox(env).catch(() => undefined));
+  ctx.ctx.waitUntil(notifyLive(env, page.project_id).catch(() => undefined));
   return Response.json({ status });
 }
 

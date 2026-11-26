@@ -2,7 +2,7 @@
 // Lawh agent CLI — single file, zero dependencies, Node >= 22.
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { hostname, homedir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 
@@ -122,10 +122,12 @@ function saveEntry(entry) {
 function parseArgs(argv) {
   const positional = [];
   const flags = {};
+  let afterDash = null;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--') {
-      positional.push(...argv.slice(i + 1));
+      afterDash = argv.slice(i + 1);
+      positional.push(...afterDash);
       break;
     }
     if (arg.startsWith('--')) {
@@ -146,7 +148,7 @@ function parseArgs(argv) {
       positional.push(arg);
     }
   }
-  return { positional, flags };
+  return { positional, flags, afterDash };
 }
 
 function pickCredentials(flags) {
@@ -378,11 +380,13 @@ Commands:
   comments [--project <slug> | --page <pageId>] [--json]
   reply <threadId> <body> [--json]
   events --project <slug> [--after <seq>] [--limit <n>] [--json]
+  wait [--project <slug>] [--page <pageId>] [--decision <decId>] [--agents] [--cursor <name>] [--after <seq>] [--timeout <sec>] [--json]
+  listen [--project <slug>] [--page <pageId>] [--decision <decId>] [--agents] [--cursor <name>] [--after <seq>] -- <command> [args...]
 `);
     return;
   }
 
-  const { positional, flags } = parseArgs(rest);
+  const { positional, flags, afterDash } = parseArgs(rest);
   const asJson = Boolean(flags.json);
 
   if (cmd === 'connect') return cmdConnect(positional, flags);
@@ -524,7 +528,298 @@ Commands:
     return;
   }
 
+  if (cmd === 'wait') return cmdWatch('wait', cred, flags, null);
+  if (cmd === 'listen') {
+    if (!afterDash || afterDash.length === 0) die('Usage: lawh.mjs listen [--project <slug>] [--page <pageId>] [--decision <decId>] [--agents] [--cursor <name>] [--after <seq>] -- <command> [args...]');
+    return cmdWatch('listen', cred, flags, afterDash);
+  }
+
   die(`Unknown command: ${cmd}`);
+}
+
+function cursorDirPath() {
+  if (process.env.LAWH_CURSOR_DIR) return process.env.LAWH_CURSOR_DIR;
+  const base = process.env.XDG_STATE_HOME || process.env.XDG_CONFIG_HOME || join(homedir(), '.config');
+  return join(base, 'lawh', 'cursors');
+}
+
+function cursorFilePath(cred, agentId, project, mode, filterKey) {
+  const digest = sha256Hex(JSON.stringify([cred.url, agentId, project, mode, filterKey]));
+  return join(cursorDirPath(), `${digest}.json`);
+}
+
+function readSavedCursor(file) {
+  if (!existsSync(file)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8'));
+    if (typeof parsed?.seq === 'number' && Number.isSafeInteger(parsed.seq) && parsed.seq >= 0) return parsed.seq;
+  } catch { /* ignore corrupted cursor */ }
+  return null;
+}
+
+function writeSavedCursor(file, seq) {
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify({ seq, updatedAt: Date.now() })}\n`, { mode: 0o600 });
+  try { chmodSync(tmp, 0o600); } catch { /* Windows */ }
+  renameSync(tmp, file);
+  try { chmodSync(file, 0o600); } catch { /* Windows */ }
+}
+
+function isPidAlive(pid) {
+  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (err) { return err && typeof err === 'object' && 'code' in err && err.code === 'EPERM'; }
+}
+
+function acquireLock(cursorFile) {
+  const lockFile = `${cursorFile}.lock`;
+  mkdirSync(dirname(lockFile), { recursive: true, mode: 0o700 });
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const fd = openSync(lockFile, 'wx', 0o600);
+      writeFileSync(fd, `${JSON.stringify({ pid: process.pid, startedAt: Date.now() })}\n`);
+      closeSync(fd);
+      return lockFile;
+    } catch (err) {
+      if (!err || typeof err !== 'object' || !('code' in err) || err.code !== 'EEXIST') throw err;
+      let existingPid = null;
+      try { existingPid = JSON.parse(readFileSync(lockFile, 'utf8'))?.pid ?? null; } catch { /* stale */ }
+      if (existingPid !== null && isPidAlive(existingPid)) {
+        die(`Another process (pid ${existingPid}) is already using this cursor.`);
+      }
+      try { unlinkSync(lockFile); } catch { /* raced */ }
+    }
+  }
+  die('Could not acquire cursor lock.');
+}
+
+function releaseLocks(lockFiles) {
+  for (const lf of lockFiles) {
+    try { unlinkSync(lf); } catch { /* ignore */ }
+  }
+}
+
+function matchesEvent(ev, { agentId, includeAgents, pageId, decisionId }) {
+  if (ev.actorType === 'agent' && ev.actorId === agentId) return false;
+  if (!includeAgents && ev.actorType === 'agent') return false;
+  if (pageId && ev.pageId !== pageId) return false;
+  if (decisionId && ev.subjectId !== decisionId) return false;
+  return true;
+}
+
+function runHandlerCommand(command, event) {
+  return new Promise((resolve) => {
+    const child = spawn(command[0], command.slice(1), {
+      shell: false,
+      stdio: ['pipe', 'inherit', 'inherit'],
+    });
+    child.on('error', (err) => {
+      process.stderr.write(`Command error: ${err.message}\n`);
+      resolve(1);
+    });
+    child.on('close', (code) => resolve(code ?? 1));
+    child.stdin.on('error', () => { /* child closed stdin early */ });
+    child.stdin.end(`${JSON.stringify(event)}\n`);
+  });
+}
+
+async function cmdWatch(mode, cred, flags, command) {
+  const me = await apiRequest(cred, 'GET', '/v1/me');
+  const agentId = me.agentId;
+  const projects = typeof flags.project === 'string'
+    ? [flags.project]
+    : (me.projects || []).map((p) => p.slug);
+  if (projects.length === 0) die('No accessible projects to watch.');
+
+  const pageId = typeof flags.page === 'string' ? flags.page : null;
+  const decisionId = typeof flags.decision === 'string' ? flags.decision : null;
+  const includeAgents = Boolean(flags.agents);
+  const filterKey = typeof flags.cursor === 'string'
+    ? `named:${flags.cursor}`
+    : JSON.stringify({ pageId, decisionId, includeAgents });
+
+  const afterOverride = flags.after !== undefined ? Number(flags.after) : null;
+  if (afterOverride !== null && (!Number.isSafeInteger(afterOverride) || afterOverride < 0)) {
+    die('--after must be a non-negative integer.');
+  }
+  const pollMs = Math.max(50, Number(flags['poll-ms'] || 30_000));
+  const catchupMs = Math.max(100, Number(flags['catchup-ms'] || 300_000));
+  const timeoutSec = flags.timeout !== undefined ? Number(flags.timeout) : null;
+  const once = Boolean(flags.once);
+
+  const states = projects.map((slug) => {
+    const file = cursorFilePath(cred, agentId, slug, mode, filterKey);
+    return { slug, file, lockFile: '', seq: 0, ws: null, liveEnabled: true, reconnectAt: 0 };
+  });
+
+  const acquiredLocks = [];
+  const cleanup = () => {
+    for (const s of states) {
+      try { s.ws?.close(); } catch { /* ignore */ }
+      s.ws = null;
+    }
+    releaseLocks(acquiredLocks);
+  };
+
+  try {
+    for (const s of states) {
+      s.lockFile = acquireLock(s.file);
+      acquiredLocks.push(s.lockFile);
+    }
+  } catch (err) {
+    cleanup();
+    throw err;
+  }
+
+  let stopping = false;
+  const onSignal = () => {
+    stopping = true;
+    cleanup();
+    process.exit(0);
+  };
+  process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
+
+  try {
+    // Initialize cursors: --after overrides; otherwise read saved cursor; first run fetches newest seq without replaying past.
+    for (const s of states) {
+      if (afterOverride !== null) {
+        s.seq = afterOverride;
+      } else {
+        const saved = readSavedCursor(s.file);
+        if (saved !== null) {
+          s.seq = saved;
+        } else {
+          const head = await apiRequest(cred, 'GET', `/v1/events?project=${encodeURIComponent(s.slug)}`);
+          s.seq = typeof head?.next === 'number' ? head.next : 0;
+          writeSavedCursor(s.file, s.seq);
+        }
+      }
+    }
+
+    const filterOpts = { agentId, includeAgents, pageId, decisionId };
+    let pendingWake = false;
+    let wakeResolve = null;
+    const wake = () => {
+      if (wakeResolve) {
+        const r = wakeResolve;
+        wakeResolve = null;
+        pendingWake = false;
+        r();
+      } else {
+        pendingWake = true;
+      }
+    };
+
+    async function drainProject(s) {
+      while (!stopping) {
+        const data = await apiRequest(cred, 'GET', `/v1/events?project=${encodeURIComponent(s.slug)}&after=${s.seq}`);
+        const items = Array.isArray(data?.items) ? data.items : [];
+        const nextSeq = typeof data?.next === 'number' ? data.next : s.seq;
+
+        let matchedOnPage = false;
+        let lastMatchedSeq = s.seq;
+        for (const ev of items) {
+          if (!matchesEvent(ev, filterOpts)) continue;
+          matchedOnPage = true;
+          const out = { project: s.slug, ...ev };
+          if (mode === 'wait') {
+            process.stdout.write(`${JSON.stringify(out)}\n`);
+            s.seq = ev.seq;
+            writeSavedCursor(s.file, s.seq);
+            return 'done';
+          }
+          const exitCode = await runHandlerCommand(command, out);
+          if (exitCode !== 0) {
+            process.stderr.write(`Handler exited with code ${exitCode} on event #${ev.seq}; cursor kept at ${s.seq}.\n`);
+            return 'handler_failed';
+          }
+          s.seq = ev.seq;
+          lastMatchedSeq = ev.seq;
+          writeSavedCursor(s.file, s.seq);
+          if (once) return 'done';
+        }
+
+        // Advance to `next` only when no matching event remains on this page.
+        if (nextSeq > s.seq && (!matchedOnPage || nextSeq > lastMatchedSeq)) {
+          s.seq = nextSeq;
+          writeSavedCursor(s.file, s.seq);
+        }
+        if (items.length === 0 || nextSeq <= lastMatchedSeq) break;
+      }
+      return 'idle';
+    }
+
+    async function ensureSocket(s) {
+      if (stopping || !s.liveEnabled || s.ws || typeof globalThis.WebSocket !== 'function') return;
+      if (Date.now() < s.reconnectAt) return;
+      try {
+        const res = await fetch(`${cred.url}/v1/events/ticket`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${cred.key}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ project: s.slug }),
+        });
+        if (res.status === 404) {
+          s.liveEnabled = false;
+          return;
+        }
+        if (!res.ok) {
+          s.reconnectAt = Date.now() + 5_000;
+          return;
+        }
+        const { url: wsUrl } = await res.json();
+        const ws = new WebSocket(wsUrl);
+        s.ws = ws;
+        ws.addEventListener('open', () => wake());
+        ws.addEventListener('message', () => wake());
+        ws.addEventListener('close', () => {
+          if (s.ws === ws) s.ws = null;
+          s.reconnectAt = Date.now() + 1_000;
+          wake();
+        });
+        ws.addEventListener('error', () => {
+          if (s.ws === ws) s.ws = null;
+          s.reconnectAt = Date.now() + 5_000;
+          wake();
+        });
+      } catch {
+        s.reconnectAt = Date.now() + 5_000;
+      }
+    }
+
+    const deadline = timeoutSec !== null && Number.isFinite(timeoutSec) ? Date.now() + timeoutSec * 1000 : null;
+    while (!stopping) {
+      for (const s of states) {
+        const res = await drainProject(s);
+        if (res === 'done') return;
+        if (res === 'handler_failed') {
+          cleanup();
+          process.exit(1);
+        }
+      }
+      if (deadline !== null && Date.now() >= deadline) {
+        cleanup();
+        process.exit(124);
+      }
+      for (const s of states) await ensureSocket(s);
+      if (pendingWake) {
+        pendingWake = false;
+        continue;
+      }
+      const anyLive = states.some((s) => s.liveEnabled && s.ws !== null);
+      let waitMs = anyLive ? catchupMs : pollMs;
+      if (deadline !== null) waitMs = Math.max(10, Math.min(waitMs, deadline - Date.now()));
+      await new Promise((resolve) => {
+        const timer = setTimeout(() => { wakeResolve = null; resolve(); }, waitMs);
+        wakeResolve = () => { clearTimeout(timer); resolve(); };
+      });
+    }
+  } finally {
+    process.off('SIGINT', onSignal);
+    process.off('SIGTERM', onSignal);
+    cleanup();
+  }
 }
 
 main().catch((err) => die(err instanceof Error ? err.message : String(err)));

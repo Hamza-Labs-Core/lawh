@@ -58,6 +58,8 @@ Pass `--json` to any command for machine-readable JSON output.
 - `node lawh.mjs comments --project <slug>` or `comments --page <pageId>` — list open threads or all comments on a page.
 - `node lawh.mjs reply <threadId> "<message>"` — post an agent reply in a comment thread.
 - `node lawh.mjs events --project <slug> [--after <seq>] [--limit <n>]` — read ordered project events (`page.*`, `decision.*`, `comment.*`).
+- `node lawh.mjs wait [--project <slug>] [--page <pageId>] [--decision <decId>] [--agents] [--cursor <name>] [--after <seq>] [--timeout <sec>]` — wait for the next matching event (uses live WebSocket pings when `live` is on, falls back to 30s polling when off), prints event JSON, and exits immediately if something already happened since the saved cursor.
+- `node lawh.mjs listen [--project <slug>] [--page <pageId>] [--decision <decId>] [--agents] [--cursor <name>] [--after <seq>] -- <command> [args...]` — stay connected and run `<command>` (no shell) with each matching event as JSON on stdin, advancing the saved cursor only after `<command>` exits 0.
 
 ## 4. Publishing Guide
 

@@ -12,7 +12,8 @@
     "CONTENT_ORIGIN": "http://127.0.0.1:8787",
     "PEPPER": "local-development-pepper-not-a-secret",
     "CONTENT_KEY": "local-development-content-key-not-a-secret",
-    "WEBHOOK_KEY": "local-development-webhook-key-not-a-secret"
+    "WEBHOOK_KEY": "local-development-webhook-key-not-a-secret",
+    "LIVE_KEY": "local-development-live-key-not-a-secret"
   },
   "queues": {
     "producers": [{ "binding": "WEBHOOKS", "queue": "lawh-webhooks" }],

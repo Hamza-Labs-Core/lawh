@@ -5,6 +5,7 @@ import { listComments, listProjectThreads, replyAsAgent } from './comments';
 import { getConnect, startConnect } from './connect';
 import { getDecision, listDecisions } from './decisions';
 import { listEvents } from './events';
+import { connectLive, getLiveTicket } from './live';
 import { getPage, getVersion, listPages, listProjects, listVersions, me, readFile, updatePage } from './pages';
 import { commitPublish, putBlob, startPublish } from './publish';
 
@@ -45,15 +46,17 @@ export const routes: Route[] = [
   route('GET', `/pages/${ID}/comments`, 'comments:read', listComments),
   route('POST', `/comments/${ID}/replies`, 'comments:write', replyAsAgent),
   route('GET', '/events', 'any', listEvents),
+  route('POST', '/events/ticket', 'any', getLiveTicket),
 ];
 
 const CONNECT_ID = /^\/v1\/connect\/([^/]+)$/;
 
-/** The agent API. Connect endpoints run without an existing key; every other route checks the key first. */
+/** The agent API. Connect and ticket-authenticated live endpoints run without an agent key header; every other route checks the key first. */
 export async function api(request: Request, env: AppEnv, ctx: ExecutionContext): Promise<Response> {
   try {
     const url = new URL(request.url);
     if (request.method === 'POST' && url.pathname === '/v1/connect') return await startConnect(request, env);
+    if (request.method === 'GET' && url.pathname === '/v1/events/live') return await connectLive(request, env);
     if (request.method === 'GET') {
       const connectMatch = CONNECT_ID.exec(url.pathname);
       if (connectMatch) return await getConnect(request, env, connectMatch[1]!);

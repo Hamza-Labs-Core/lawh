@@ -343,6 +343,12 @@ const TEXT = {
   needsMoreAnswerers: ['Needs {n} people, only {can} can answer.', 'يحتاج إلى {n}، ومن يمكنهم الإجابة {can} فقط.'],
   agreementCount: ['{n} must agree', 'يلزم اتفاق {n}'],
   agreementOff: ['Turn teams on to require more than one person to agree.', 'يلزم تشغيل الفرق لطلب موافقة أكثر من شخص.'],
+  livePings: ['Live pings', 'التنبيهات الفورية'],
+  livePingsHelp: ['Wake waiting agents immediately over WebSockets with event numbers only. When off, agents poll every 30 seconds.', 'تنبيه الوكلاء المنتظرين فورًا عبر WebSocket بأرقام الأحداث فقط. عند الإيقاف، يستعلم الوكلاء كل ٣٠ ثانية.'],
+  livePingsOn: ['Live pings are on.', 'التنبيهات الفورية تعمل.'],
+  livePingsOff: ['Live pings are off.', 'التنبيهات الفورية متوقفة.'],
+  turnLiveOn: ['Turn live pings on', 'تشغيل التنبيهات الفورية'],
+  turnLiveOff: ['Turn live pings off', 'إيقاف التنبيهات الفورية'],
 } as const;
 
 export type Key = keyof typeof TEXT;

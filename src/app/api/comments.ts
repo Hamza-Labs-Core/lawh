@@ -7,6 +7,7 @@ import { onlyKeys, readJson, text } from './body';
 import { idempotent, mustChange, replay, writeOnce } from './idempotency';
 import { eventStatement } from './pages';
 import { dispatchOutbox } from '../webhooks/deliver';
+import { notifyLive } from './live';
 import type { Context } from './router';
 
 export const MAX_BODY = 10_000;
@@ -71,6 +72,7 @@ export async function replyAsAgent(ctx: Context): Promise<Response> {
         .bind(caller.keyId),
     ]);
     ctx.ctx.waitUntil(dispatchOutbox(env).catch(() => undefined));
+    ctx.ctx.waitUntil(notifyLive(env, row.project_id).catch(() => undefined));
     return Response.json(stored.json, { status: stored.status });
   } catch (error) {
     const text = String(error);

@@ -20,13 +20,14 @@ export const stillOwner = (env: AppEnv, memberId: string): D1PreparedStatement =
 
 export async function readSettings(ctx: SignedIn): Promise<Response> {
   ownerOnly(ctx);
-  const [retention, webhooks, webhookHosts, teams] = await Promise.all([
+  const [retention, webhooks, webhookHosts, teams, live] = await Promise.all([
     versionsKept(ctx.env),
     isOn(ctx.env.DB, 'webhooks'),
     readAllowedHosts(ctx.env),
     isOn(ctx.env.DB, 'teams'),
+    isOn(ctx.env.DB, 'live'),
   ]);
-  return Response.json({ retention, webhooks, webhookHosts, teams });
+  return Response.json({ retention, webhooks, webhookHosts, teams, live });
 }
 
 /** Turn teams on or off. Turning teams off fires the settings_teams_off trigger which resets every project's answers_needed to 1. */
@@ -47,6 +48,26 @@ export async function setTeamsSwitch(ctx: SignedIn): Promise<Response> {
     throw error;
   }
   return Response.json({ teams: body.on });
+}
+
+/** Turn live WebSocket pings on or off. When off, `lawh wait` and `lawh listen` poll every 30 seconds. */
+export async function setLiveSwitch(ctx: SignedIn): Promise<Response> {
+  ownerOnly(ctx);
+  const { env, person } = ctx, { body } = await readJson(ctx.request), now = Date.now();
+  onlyKeys(body, ['on']);
+  if (typeof body.on !== 'boolean') throw invalid('on must be true or false.');
+  try {
+    await env.DB.batch([
+      stillOwner(env, person.memberId),
+      env.DB.prepare("INSERT INTO settings(key, value_json, updated_at) VALUES('live', ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at")
+        .bind(String(body.on), now),
+      auditStatement(env, person.memberId, body.on ? 'live.on' : 'live.off', null),
+    ]);
+  } catch (error) {
+    if (String(error).includes('malformed JSON')) throw new ApiError('forbidden', 'Only the owner can do this.');
+    throw error;
+  }
+  return Response.json({ live: body.on });
 }
 
 /** How many versions each page keeps; null keeps all. Fewer than now removes the older ones, some each hour. */

@@ -5,6 +5,7 @@ import { answeredStatement, answerers, countInboxStatement, type Decision, decis
 import { encodeCursor, pageLimit, readCursor } from '../pages/list';
 import { statusStatements } from '../search';
 import { dispatchOutbox } from '../webhooks/deliver';
+import { notifyLive } from '../api/live';
 import { levelOn, openProject, visibleProjects } from './access';
 import type { SignedIn } from './router';
 
@@ -113,6 +114,7 @@ export async function answerDecision(ctx: SignedIn): Promise<Response> {
     throw error;
   }
   ctx.ctx.waitUntil(dispatchOutbox(env).catch(() => undefined));
+  ctx.ctx.waitUntil(notifyLive(env, row.project_id).catch(() => undefined));
   const { decision, level } = await find(ctx, 1, true);
   return Response.json({ ...seen(decision, level), answerers: decision.row.answers_needed > 1 ? await answerers(env, decision.row.project_id) : null });
 }
