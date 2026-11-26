@@ -28,9 +28,12 @@ describe('text', () => {
     ['<p hidden>hiddenword<p>visibleword</p>', 'visibleword'],
     ['<div hidden><p hidden>a<p>b</p></div>c', 'c'],
     ['<ul><li hidden>a<li>b</ul><dl><dt hidden>x<dd>y</dl><div><p hidden>z</div>w', 'b y w'],
+    ['<ul><li hidden><ul><li>secret</li></ul></li><li>visible</li></ul>', 'visible'],
+    ['<table><tr><td hidden><table><tr><td>secret</td></tr></table></td><td>visible</td></tr></table>', 'visible'],
+    ['<constructor hidden><span>x</span></constructor>ok', 'ok'],
     ['<img hidden src="x">shown<input hidden value="1">too', 'shown too'],
-    ['<p style="display:none; display:block">shown</p><p style="display:none !important; display:block">gone</p><p style="display:none !important; display:flex !important">back</p><p style="content: \'; display: none\'">kept</p>', 'shown back kept'],
-    ['Caf&eacute; h&aacute;&ccaron;ek &frac12; Tom &amp; Jerry &lt;3 &#1605;&#x631;&nbsp;x &unknown; &toString; &#0; &#xD800;', 'Café háček ½ Tom & Jerry <3 مر x &unknown; &toString;'], ['<title>T</title><h1>H</h1>', 'T H'], ['<svg><style/><text>in a chart</text></svg> after', 'in a chart after'], ['<!-- no -->yes', 'yes'],
+    ['<p style="display:none; display:block">shown</p><p style="display:none; display:bogus">gone</p><p style="display:no/**/ne">kept</p><p style="display:none !important; display:block">gone</p><p style="display:none !important; display:flex !important">back</p><p style="content: \'; display: none\'">lit</p>', 'shown kept back lit'],
+    ['Caf&eacute; h&aacute;&ccaron;ek &frac12; &notit; &#000000065; &#128; Tom &amp; Jerry &lt;3 &#1605;&#x631;&nbsp;x &unknown; &toString; &#0; &#xD800;', 'Café háček ½ ¬it; A € Tom & Jerry <3 مر x &unknown; &toString;'], ['<title>T</title><h1>H</h1>', 'T H'], ['<svg><style/><text>in a chart</text></svg> after', 'in a chart after'], ['<!-- no -->yes', 'yes'],
     ['<div><script>1</script>a<script>2</script>b</div>', 'ab'], ['<p title="no">x', 'x'], ['', ''],
   ])('reads %s as %s', async (source, expected) => { expect(await text(source)).toBe(expected); });
 
