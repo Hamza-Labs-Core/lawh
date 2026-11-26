@@ -113,7 +113,7 @@ export async function runOwnerTransfer({ targetArg, sql, prompt, log = console.l
         error && typeof error === 'object' && 'stderr' in error ? String(error.stderr ?? '') : '',
         error && typeof error === 'object' && 'stdout' in error ? String(error.stdout ?? '') : '',
       ].join('\n');
-      if (msg.includes('malformed JSON') || msg.includes('UNIQUE constraint failed') || msg.includes('inventory_changed')) {
+      if (msg.includes('malformed JSON') || msg.includes('UNIQUE constraint failed')) {
         continue;
       }
       throw error;

@@ -130,11 +130,32 @@ test.describe('S18 Settings → People, teams switch, and post-reset key review'
       teamsOn = body.on;
       await route.fulfill({ json: { teams: teamsOn } });
     });
+    const accountKeysState = {
+      items: [
+        {
+          id: 'key_01',
+          agentId: 'agt_01',
+          agentName: 'claude-agent',
+          label: 'Lost laptop',
+          createdAt: 1_700_000_000_000,
+          expiresAt: Date.now() + 86_400_000 * 30,
+          lastUsedAt: null as number | null,
+        },
+      ],
+    };
+
+    await page.route('**/app-api/account/keys', async (route) => {
+      await route.fulfill({ json: accountKeysState });
+    });
     await page.route('**/app-api/agents*', async (route) => {
       await route.fulfill({ json: agentsState });
     });
     await page.route('**/app-api/agent-keys/*', async (route) => {
-      agentsState.items[0]!.keys[0]!.revokedAt = Date.now();
+      const id = new URL(route.request().url()).pathname.split('/').at(-1)!;
+      for (const a of agentsState.items) {
+        for (const k of a.keys) if (k.id === id) k.revokedAt = Date.now();
+      }
+      accountKeysState.items = accountKeysState.items.filter((k) => k.id !== id);
       await route.fulfill({ status: 204 });
     });
 
@@ -190,12 +211,31 @@ test.describe('S18 Settings → People, teams switch, and post-reset key review'
     await page.getByRole('button', { name: 'Turn teams off now' }).click();
     await expect(page.getByText('Teams are off. Only the owner can sign in.')).toBeVisible();
 
-    // Post-reset page (/settings/agents?reset=1) shows banner and active keys with Revoke!
+    // Post-reset page (/settings/agents?reset=1) shows PostResetReview (even if the agent is beyond page 1 of /agents) and revoking updates both views!
     await page.goto(`${APP}/settings/agents?reset=1`);
-    await expect(page.getByText(/Agent keys stay active after a reset/)).toBeVisible();
-    await expect(page.getByText('Lost laptop')).toBeVisible();
-    await page.getByRole('button', { name: 'Revoke' }).click();
-    await page.getByRole('button', { name: 'Revoke for good' }).click();
+    const review = page.getByRole('status');
+    await expect(review.getByText(/Agent keys stay active after a reset/)).toBeVisible();
+    await expect(review.getByText('Lost laptop')).toBeVisible();
+    await review.getByRole('button', { name: 'Revoke' }).click();
+    await review.getByRole('button', { name: 'Revoke for good' }).click();
     await expect(page.getByText('Revoked')).toBeVisible();
+
+    // Even when /agents returns 200 older agents (without the user's retained key), PostResetReview still shows and revokes the retained key!
+    accountKeysState.items = [
+      {
+        id: 'key_hidden',
+        agentId: 'agt_201',
+        agentName: 'z-late-agent',
+        label: 'Hidden retained key',
+        createdAt: 1_700_000_000_000,
+        expiresAt: Date.now() + 86_400_000 * 30,
+        lastUsedAt: null,
+      },
+    ];
+    await page.goto(`${APP}/settings/agents?reset=1`);
+    await expect(page.getByRole('status').getByText('Hidden retained key')).toBeVisible();
+    await page.getByRole('status').getByRole('button', { name: 'Revoke' }).click();
+    await page.getByRole('status').getByRole('button', { name: 'Revoke for good' }).click();
+    await expect(page.getByRole('status').getByText('Hidden retained key')).toHaveCount(0);
   });
 });
