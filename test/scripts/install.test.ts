@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -85,7 +85,7 @@ function runAsync(cmd: string, args: string[], opts: { env?: NodeJS.ProcessEnv; 
   });
 }
 
-describe('no-clone installer (install.sh) and lawh CLI', () => {
+describe('no-clone installer (install.sh) and lawh CLI', { timeout: 30_000 }, () => {
   it('installs with relative/spaced paths, migrates round-1 wrappers, persists custom bin/repo on self-update, normalizes 0600 modes, and rolls back post-metadata failures cleanly', () => {
     const work = realpathSync(mkdtempSync(join(tmpdir(), 'lawh install test ')));
     cleanups.push(() => rmSync(work, { recursive: true, force: true }));
@@ -343,6 +343,43 @@ describe('no-clone installer (install.sh) and lawh CLI', () => {
     expect(resExt.status, resExt.stdout + resExt.stderr).toBe(0);
     expect(readFileSync(join(externalApp, 'important-user-file.txt'), 'utf8')).toBe('do-not-delete');
 
+    // Relative app symlink inside $LAWH_HOME/releases/ IS pruned cleanly even when installer runs from another cwd.
+    const relOld = join(lawhHome, 'releases/rel.oldrel');
+    mkdirSync(relOld, { recursive: true });
+    unlinkSync(join(lawhHome, 'app'));
+    symlinkSync('releases/rel.oldrel', join(lawhHome, 'app'));
+    const resRelPrune = spawnSync('bash', [installerPath], {
+      cwd: tmpdir(),
+      encoding: 'utf8',
+      env: { ...process.env, LAWH_HOME: lawhHome, LAWH_BIN_DIR: binDir, LAWH_VERSION: 'v1.0.1', LAWH_TARBALL_URL: `file://${validTar}`, LAWH_SKIP_INSTALL_DEPS: '1' },
+    });
+    expect(resRelPrune.status, resRelPrune.stdout + resRelPrune.stderr).toBe(0);
+    expect(existsSync(relOld)).toBe(false);
+
+    // Symlinked $LAWH_HOME/releases is rejected before touching any external directory.
+    const symReleasesHome = join(work, 'sym-rel-home');
+    const externalReleases = join(work, 'external-releases');
+    mkdirSync(symReleasesHome, { recursive: true });
+    mkdirSync(externalReleases, { recursive: true });
+    symlinkSync(externalReleases, join(symReleasesHome, 'releases'));
+    const resSymRel = spawnSync('bash', [installerPath], {
+      encoding: 'utf8',
+      env: { ...process.env, LAWH_HOME: symReleasesHome, LAWH_BIN_DIR: binDir, LAWH_VERSION: 'v1.0.1', LAWH_TARBALL_URL: `file://${validTar}`, LAWH_SKIP_INSTALL_DEPS: '1' },
+    });
+    expect(resSymRel.status).not.toBe(0);
+    expect(resSymRel.stderr).toContain('symlinked releases directory');
+
+    // Leftover directory at .install.lock produces a clear directory error (not a misleading "already running" error).
+    const dirLockHome = join(work, 'dir-lock-home');
+    mkdirSync(join(dirLockHome, '.install.lock'), { recursive: true });
+    const resDirLock = spawnSync('bash', [installerPath], {
+      encoding: 'utf8',
+      env: { ...process.env, LAWH_HOME: dirLockHome, LAWH_BIN_DIR: binDir, LAWH_VERSION: 'v1.0.1', LAWH_TARBALL_URL: `file://${validTar}`, LAWH_SKIP_INSTALL_DEPS: '1' },
+    });
+    expect(resDirLock.status).not.toBe(0);
+    expect(resDirLock.stderr).toContain('Found a directory at');
+    expect(resDirLock.stderr).not.toContain('already running');
+
     // Symlinked local state file in an existing install is refused rather than followed.
     const outside = join(work, 'outside.txt');
     writeFileSync(outside, 'secret-outside');
@@ -458,6 +495,16 @@ describe('no-clone installer (install.sh) and lawh CLI', () => {
     );
     // Token expiring in 10s is still valid (matches Wrangler's `now >= expiry`, no premature 30s cutoff).
     expect(readCloudflareToken({}, legacyHome)).toBe('legacy-tok');
+
+    // 1b) On macOS without ~/.wrangler or XDG_CONFIG_HOME, Lawh selects ~/Library/Preferences/.wrangler exclusively (does not fall back to ~/.config/.wrangler).
+    const macOnlyHome = join(work, 'mac-only-home');
+    mkdirSync(join(macOnlyHome, '.config/.wrangler/config'), { recursive: true });
+    writeFileSync(join(macOnlyHome, '.config/.wrangler/config/default.toml'), 'oauth_token = "linux-only-tok"\n');
+    expect(() => readCloudflareToken({}, macOnlyHome, { platform: 'darwin' })).toThrow(MissingCloudflareTokenError);
+    expect(readCloudflareToken({}, macOnlyHome, { platform: 'linux' })).toBe('linux-only-tok');
+    mkdirSync(join(macOnlyHome, 'Library/Preferences/.wrangler/config'), { recursive: true });
+    writeFileSync(join(macOnlyHome, 'Library/Preferences/.wrangler/config/default.toml'), 'oauth_token = "mac-prefs-tok"\n');
+    expect(readCloudflareToken({}, macOnlyHome, { platform: 'darwin' })).toBe('mac-prefs-tok');
 
     // 2) Expired OAuth token throws MissingCloudflareTokenError with expired=true.
     const expiredHome = join(work, 'expired-home');

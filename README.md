@@ -8,7 +8,7 @@ You run your own copy in your own Cloudflare account (Workers, D1, R2, Queues, D
 
 ## Quick setup (no git clone required)
 
-Requires **Node.js `>= 22.12`**, **pnpm** (or Corepack), and a **Cloudflare Workers Paid** account ($5/mo; no custom domain required — `workers.dev` is the default).
+Requires **Node.js `>= 22.12`**, **pnpm** (or Corepack), **Python 3**, and a **Cloudflare Workers Paid** account ($5/mo; no custom domain required — `workers.dev` is the default).
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Hamza-Labs-Core/lawh/main/install.sh | bash

@@ -903,8 +903,11 @@ describe('S15 self-hosting lifecycle (init, upgrade, rollback, destroy)', () => 
   it('reads Wrangler OAuth token from config file and enforces check_no_instance.py', () => {
     const fakeHome = mkdtempSync(join(tmpdir(), 'lawh-wrangler-auth-'));
     cleanups.push(() => rmSync(fakeHome, { recursive: true, force: true }));
-    mkdirSync(join(fakeHome, '.config/.wrangler/config'), { recursive: true });
-    writeFileSync(join(fakeHome, '.config/.wrangler/config/default.toml'), 'oauth_token = "wrangler-oauth-xyz"\n');
+    const wranglerCfgDir = process.platform === 'darwin'
+      ? join(fakeHome, 'Library/Preferences/.wrangler/config')
+      : join(fakeHome, '.config/.wrangler/config');
+    mkdirSync(wranglerCfgDir, { recursive: true });
+    writeFileSync(join(wranglerCfgDir, 'default.toml'), 'oauth_token = "wrangler-oauth-xyz"\n');
     expect(readCloudflareToken({}, fakeHome)).toBe('wrangler-oauth-xyz');
     expect(readCloudflareToken({ CLOUDFLARE_API_TOKEN: 'env-tok' }, fakeHome)).toBe('env-tok');
 

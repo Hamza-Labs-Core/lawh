@@ -28,6 +28,7 @@ if ! node -e 'const [maj, min] = process.versions.node.split(".").map(Number); i
   die "Node.js >= 22.12.0 is required (found $(node -v))."
 fi
 command -v tar >/dev/null 2>&1 || die "tar is required."
+command -v python3 >/dev/null 2>&1 || die "python3 is required for safe install locking."
 
 # Normalize install paths to canonical absolute paths so relative paths work from any directory.
 LAWH_HOME="$(node -e 'process.stdout.write(require("node:path").resolve(process.argv[1]))' -- "$LAWH_HOME")"
@@ -148,10 +149,15 @@ else
 fi
 
 # 3) Prepare home/bin directories and check wrapper collision BEFORE touching live state
-mkdir -p "$LAWH_HOME" "$LAWH_HOME/releases" "$LAWH_BIN_DIR"
+mkdir -p "$LAWH_HOME" "$LAWH_BIN_DIR"
 chmod 700 "$LAWH_HOME"
 LAWH_HOME="$(node -e 'process.stdout.write(require("node:fs").realpathSync(process.argv[1]))' -- "$LAWH_HOME")"
 LAWH_BIN_DIR="$(node -e 'process.stdout.write(require("node:fs").realpathSync(process.argv[1]))' -- "$LAWH_BIN_DIR")"
+
+if [ -L "$LAWH_HOME/releases" ]; then
+  die "Refusing to use symlinked releases directory: ${LAWH_HOME}/releases"
+fi
+mkdir -p "$LAWH_HOME/releases"
 
 WRAPPER_PATH="$LAWH_BIN_DIR/lawh"
 is_managed_wrapper() {
@@ -179,7 +185,6 @@ fi
 # 4) Serialize concurrent installers via OS kernel fcntl.flock (persistent inode, never unlinked)
 LOCK_HELPER_PID=""
 LOCK_PIPE_DIR=""
-LOCK_DIR_FALLBACK=""
 STAGING=""
 RELEASE_DIR=""
 TMP_LINK=""
@@ -248,15 +253,22 @@ cleanup() {
       rm -rf "$RELEASE_DIR" 2>/dev/null || true
     fi
   else
-    # Committed cleanly: prune ONLY old releases strictly inside $LAWH_HOME/releases/.
-    if [ "$PREV_IS_SYMLINK" = "1" ] && [ -n "$PREV_SYMLINK_TARGET" ] && [ -d "$PREV_SYMLINK_TARGET" ] && [ "$PREV_SYMLINK_TARGET" != "$RELEASE_DIR" ]; then
-      if node -e '
+    # Committed cleanly: prune ONLY old releases strictly inside real $LAWH_HOME/releases/.
+    if [ "$PREV_IS_SYMLINK" = "1" ] && [ -n "$PREV_SYMLINK_TARGET" ] && [ ! -L "$LAWH_HOME/releases" ]; then
+      local prune_target=""
+      prune_target="$(node -e '
         const fs = require("node:fs"), path = require("node:path");
-        const base = fs.realpathSync(process.argv[1]) + path.sep;
-        const target = fs.realpathSync(process.argv[2]);
-        process.exit(target.startsWith(base) ? 0 : 1);
-      ' -- "$LAWH_HOME/releases" "$PREV_SYMLINK_TARGET" 2>/dev/null; then
-        rm -rf "$PREV_SYMLINK_TARGET" 2>/dev/null || true
+        const [homeDir, releasesDir, prevRaw, currentRelease] = process.argv.slice(1);
+        const resolved = path.resolve(homeDir, prevRaw);
+        if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) process.exit(1);
+        const base = fs.realpathSync(releasesDir) + path.sep;
+        const target = fs.realpathSync(resolved);
+        const current = fs.realpathSync(currentRelease);
+        if (target === current || !target.startsWith(base)) process.exit(1);
+        process.stdout.write(target);
+      ' -- "$LAWH_HOME" "$LAWH_HOME/releases" "$PREV_SYMLINK_TARGET" "$RELEASE_DIR" 2>/dev/null || true)"
+      if [ -n "$prune_target" ]; then
+        rm -rf "$prune_target" 2>/dev/null || true
       fi
     fi
     if [ -n "$PREV_MIGRATED_DIR" ] && [ -d "$PREV_MIGRATED_DIR" ]; then
@@ -276,22 +288,31 @@ cleanup() {
   if [ -n "$LOCK_PIPE_DIR" ]; then
     rm -rf "$LOCK_PIPE_DIR" 2>/dev/null || true
   fi
-  if [ -n "$LOCK_DIR_FALLBACK" ]; then
-    rm -rf "$LOCK_DIR_FALLBACK" 2>/dev/null || true
-  fi
 }
 trap cleanup EXIT
 
 acquire_install_lock() {
-  if command -v python3 >/dev/null 2>&1; then
-    LOCK_PIPE_DIR="$(mktemp -d "$LAWH_HOME/.lockpipe.XXXXXX")"
-    local fifo="$LOCK_PIPE_DIR/hold"
-    local status_fifo="$LOCK_PIPE_DIR/status"
-    mkfifo "$fifo" "$status_fifo"
-    python3 - "$LAWH_HOME/.install.lock" "$fifo" "$status_fifo" <<'PY' &
+  local lock_path="$LAWH_HOME/.install.lock"
+  if [ -L "$lock_path" ]; then
+    die "Refusing to use symlinked lock path: ${lock_path}"
+  fi
+  if [ -d "$lock_path" ]; then
+    die "Found a directory at ${lock_path} instead of a lock file; remove it if no install is running."
+  fi
+  LOCK_PIPE_DIR="$(mktemp -d "$LAWH_HOME/.lockpipe.XXXXXX")"
+  local fifo="$LOCK_PIPE_DIR/hold"
+  local status_fifo="$LOCK_PIPE_DIR/status"
+  mkfifo "$fifo" "$status_fifo"
+  python3 - "$lock_path" "$fifo" "$status_fifo" <<'PY' &
 import fcntl, os, sys
 lock_path, hold_fifo, status_fifo = sys.argv[1:4]
-fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+try:
+    fd = os.open(lock_path, flags, 0o600)
+except OSError as exc:
+    with open(status_fifo, "w") as s:
+        s.write(f"ERR:{exc}\n")
+    sys.exit(1)
 try:
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except BlockingIOError:
@@ -303,22 +324,20 @@ with open(status_fifo, "w") as s:
 with open(hold_fifo, "r") as h:
     h.read()
 PY
-    LOCK_HELPER_PID=$!
-    local lock_status=""
-    read -r lock_status < "$status_fifo" || true
-    if [ "$lock_status" != "OK" ]; then
-      wait "$LOCK_HELPER_PID" 2>/dev/null || true
-      LOCK_HELPER_PID=""
-      die "Another Lawh install or update is already running."
-    fi
-    exec 9>"$fifo"
-  else
-    # Fallback when python3 is unavailable: non-reclaiming atomic mkdir lock (no stale-unlink race).
-    if ! mkdir "$LAWH_HOME/.install.lockdir" 2>/dev/null; then
-      die "Another Lawh install or update is already running (${LAWH_HOME}/.install.lockdir)."
-    fi
-    LOCK_DIR_FALLBACK="$LAWH_HOME/.install.lockdir"
+  LOCK_HELPER_PID=$!
+  local lock_status=""
+  read -r lock_status < "$status_fifo" || true
+  if [ "$lock_status" = "BUSY" ]; then
+    wait "$LOCK_HELPER_PID" 2>/dev/null || true
+    LOCK_HELPER_PID=""
+    die "Another Lawh install or update is already running."
   fi
+  if [ "$lock_status" != "OK" ]; then
+    wait "$LOCK_HELPER_PID" 2>/dev/null || true
+    LOCK_HELPER_PID=""
+    die "Could not acquire install lock (${lock_status#ERR:})."
+  fi
+  exec 9>"$fifo"
 }
 acquire_install_lock
 
