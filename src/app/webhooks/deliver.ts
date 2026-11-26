@@ -214,15 +214,6 @@ export async function deliverOne(
     await env.DB.prepare(sql).bind(now, webhookId, eventSeq, s1, s2, s3).run();
   };
 
-  if (!(await isOn(env.DB, 'webhooks'))) {
-    await markTerminal(true);
-    return 'ack';
-  }
-  if (!isResend && eventSeq <= (await readWebhooksSince(env))) {
-    await markTerminal(true);
-    return 'ack';
-  }
-
   const [webhook, event, hosts] = await Promise.all([
     env.DB.prepare('SELECT w.id, w.project_id, p.slug AS project_slug, w.url, w.secret_enc, w.enabled FROM webhooks w JOIN projects p ON p.id = w.project_id WHERE w.id = ?')
       .bind(webhookId).first<DeliveryTarget>(),
@@ -255,6 +246,30 @@ export async function deliverOne(
   });
   const secret = await decryptWebhookSecret(env, webhook.id, webhook.secret_enc);
   const signature = await signWebhook(secret, Math.floor(now / 1000), body);
+
+  // Final atomic check right before outbound fetch: switch, allowlist, webhook enabled, and (for automatic deliveries) watermark.
+  const [swRes, sinceRes, hostsRes, hookRes] = await env.DB.batch([
+    env.DB.prepare("SELECT value_json FROM settings WHERE key = 'webhooks'"),
+    env.DB.prepare("SELECT value_json FROM settings WHERE key = 'webhooks_since'"),
+    env.DB.prepare("SELECT value_json FROM settings WHERE key = 'webhook_hosts'"),
+    env.DB.prepare('SELECT enabled, url FROM webhooks WHERE id = ?').bind(webhookId),
+  ]);
+  const liveOn = (swRes?.results as { value_json: string }[] | undefined)?.[0]?.value_json === 'true';
+  const liveSinceRaw = Number((sinceRes?.results as { value_json: string }[] | undefined)?.[0]?.value_json ?? 0);
+  const liveSince = Number.isSafeInteger(liveSinceRaw) && liveSinceRaw > 0 ? liveSinceRaw : 0;
+  const liveHostsParsed: unknown = JSON.parse((hostsRes?.results as { value_json: string }[] | undefined)?.[0]?.value_json ?? '[]');
+  const liveHosts = Array.isArray(liveHostsParsed) ? liveHostsParsed.filter((h): h is string => typeof h === 'string') : [];
+  const liveHook = (hookRes?.results as { enabled: number; url: string }[] | undefined)?.[0];
+  if (!liveOn || (!isResend && eventSeq <= liveSince) || !liveHook || liveHook.enabled !== 1) {
+    await markTerminal(!liveOn || (!isResend && eventSeq <= liveSince));
+    return 'ack';
+  }
+  try {
+    checkWebhookUrl(liveHook.url, liveHosts);
+  } catch {
+    await markTerminal(true);
+    return 'ack';
+  }
 
   let statusCode: number | null = null;
   let ok = false;
