@@ -299,6 +299,50 @@ test('the open decisions say when fewer people can answer than must agree', asyn
   await expect(card(page, 'Which?').getByText('Only 2 can answer.')).toBeVisible();
 });
 
+test('on a small phone, moving back to a scrolled option keeps it below the sheet header', async ({ page, member, ask, browserName }) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  const asked = await ask([{
+    question: 'Which?', context: 'Long context.\n'.repeat(12),
+    options: [
+      { id: 'a', label: 'First choice', detail: 'Details.\n'.repeat(8) },
+      { id: 'b', label: 'Second choice', detail: 'More.\n'.repeat(8) },
+    ],
+  }]);
+  await open(page, member, asked.path);
+  await page.getByRole('button', { name: 'Decisions to make: 1' }).click();
+  const first = card(page, 'Which?').getByRole('radio').first();
+  await first.check();
+  const notes = card(page, 'Which?').getByRole('textbox');
+  await notes.focus();
+  await page.locator('.dialog-body').evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  if (browserName === 'webkit') await first.focus(); else await page.keyboard.press('Shift+Tab');
+  await expect(first).toBeFocused();
+  const head = (await page.locator('.dialog-head').boundingBox())!, box = (await first.boundingBox())!;
+  expect(box.y).toBeGreaterThanOrEqual(head.y + head.height - 1);
+});
+
+test('moving around while the count is still loading reuses the pending request', async ({ page, member, ask }) => {
+  await wide(page);
+  const asked = await ask([{ question: 'Which?' }]);
+  let counts = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((done) => { release = done; });
+  await page.route('**/app-api/decisions/count', async (route) => {
+    counts++;
+    await gate;
+    await route.continue();
+  });
+  await open(page, member, '/');
+  await page.getByRole('link', { name: 'Account' }).click();
+  await page.getByRole('link', { name: 'Decisions', exact: true }).click();
+  await page.getByRole('link', { name: 'Photo storage options' }).click();
+  await expect(page).toHaveURL(`${APP}${asked.path}`);
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  expect(counts).toBe(1);
+  release();
+  await expect(page.getByRole('link', { name: 'Decisions 1' })).toBeVisible();
+});
+
 test('the page can be read and scrolled beside and under the questions', async ({ page, member, ask }) => {
   const asked = await ask([{ question: 'Which?' }]);
   for (const [width, height] of [[1280, 800], [390, 844], [320, 568]] as const) {

@@ -101,16 +101,30 @@ describe('what a page declares', () => {
     expect(await states()).toEqual({ x: 'open 1' });
   });
 
-  it('all decisions together are at most 1 MB, whatever the language', async () => {
+  it('all decisions together are at most 500 KB, and fit alongside 500 max-length Arabic paths', async () => {
     const big = (letter: string, n: number) => Array.from({ length: 50 }, (_, i) => ask(`k${i}`, { question: letter.repeat(500), context: letter.repeat(n),
-      options: Array.from({ length: 10 }, (_, o) => ({ id: `o${o}`, label: letter.repeat(200), detail: letter.repeat(1000), cost: letter.repeat(300) })) }));
-    for (const letter of ['x', 'م']) expect(await code(await start(token, await manifest({ 'index.html': 'x' }, { decisions: big(letter, 4000) }))), letter).toEqual([413, 'too_large']);
-    // Just under.
-    const fits = big('x', 2000);
-    const bytes = new TextEncoder().encode(JSON.stringify(fits)).byteLength;
-    expect(bytes).toBeGreaterThan(900_000);
-    expect(bytes).toBeLessThan(1_000_000);
-    await declare(fits);
+      options: Array.from({ length: 10 }, (_, o) => ({ id: `o${o}`, label: letter.repeat(200), detail: letter.repeat(n), cost: letter.repeat(100) })) }));
+    for (const letter of ['x', 'م']) expect(await code(await start(token, await manifest({ 'index.html': 'x' }, { decisions: big(letter, 1000) }))), letter).toEqual([413, 'too_large']);
+    // 500 distinct 512-character Arabic paths + 50 decisions near the 500 KB normalized JSON cap.
+    const fits = Array.from({ length: 50 }, (_, i) => ({
+      key: `k${i}`, question: 'م'.repeat(250), context: 'م'.repeat(850),
+      options: Array.from({ length: 10 }, (_, o) => ({ id: `o${o}`, label: 'م'.repeat(100), detail: 'م'.repeat(200), cost: 'م'.repeat(50) })),
+    }));
+    const normalized = fits.map((d) => ({ key: d.key, question: d.question, context: d.context, options: JSON.stringify(d.options) }));
+    const bytes = new TextEncoder().encode(JSON.stringify(normalized)).byteLength;
+    expect(bytes).toBeGreaterThan(450_000);
+    expect(bytes).toBeLessThan(500_000);
+    const files: Record<string, string> = { 'index.html': 'x' };
+    for (let i = 0; i < 499; i++) {
+      const id = String(i).padStart(3, '0');
+      files[`${'م'.repeat(504)}${id}.html`] = 'x';
+    }
+    const body = await manifest(files, { decisions: fits });
+    const started = await start(token, body);
+    expect(started.status).toBe(201);
+    const { uploadId } = await json(started);
+    await put(token, uploadId, 'x');
+    expect((await commit(token, uploadId)).status).toBe(200);
     expect(await one("SELECT COUNT(*) n FROM decisions WHERE status='open'")).toEqual({ n: 50 });
   });
 

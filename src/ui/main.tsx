@@ -18,22 +18,26 @@ if (linkToken) history.replaceState(null, '', '/link');
 /** Where to go. On a phone it is at the bottom, in reach of a thumb. */
 function Nav({ path }: { path: string }) {
   const t = useText(), { lang } = useSettings(), [waiting, setWaiting] = useState<{ count: number; more: boolean } | null>(null);
-  // After an answer at once; on moving around or coming back, at most once a minute.
+  // After an answer at once (replacing any older request); on moving around or coming back, reuse a pending one and wait a minute after a reply.
   const counted = useRef(0), inFlight = useRef<AbortController | null>(null);
-  const load = () => {
+  const load = (force: boolean) => {
+    if (!force && (inFlight.current || Date.now() - counted.current <= 60_000)) return;
     inFlight.current?.abort();
     const stop = new AbortController();
     inFlight.current = stop;
-    call<{ count: number; more: boolean }>('GET', '/decisions/count', undefined, stop.signal)
-      .then((next) => { if (!stop.signal.aborted) { counted.current = Date.now(); setWaiting(next); } }, () => undefined);
+    call<{ count: number; more: boolean }>('GET', '/decisions/count', undefined, stop.signal).then(
+      (next) => { if (inFlight.current === stop) { inFlight.current = null; counted.current = Date.now(); setWaiting(next); } },
+      () => { if (inFlight.current === stop) inFlight.current = null; },
+    );
   };
   useEffect(() => {
-    const onVisible = () => { if (document.visibilityState === 'visible' && Date.now() - counted.current > 60_000) load(); };
-    addEventListener('lawh:decisions', load);
+    const onChanged = () => load(true);
+    const onVisible = () => { if (document.visibilityState === 'visible') load(false); };
+    addEventListener('lawh:decisions', onChanged);
     document.addEventListener('visibilitychange', onVisible);
-    return () => { inFlight.current?.abort(); removeEventListener('lawh:decisions', load); document.removeEventListener('visibilitychange', onVisible); };
+    return () => { inFlight.current?.abort(); inFlight.current = null; removeEventListener('lawh:decisions', onChanged); document.removeEventListener('visibilitychange', onVisible); };
   }, []);
-  useEffect(() => { if (Date.now() - counted.current > 60_000) load(); }, [path]);
+  useEffect(() => { load(false); }, [path]);
   const n = waiting ? digits(lang, waiting.count) + (waiting.more ? '+' : '') : '';
   return (
     <nav class="places" aria-label={t('app')}>

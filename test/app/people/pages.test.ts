@@ -200,6 +200,13 @@ describe('reading a page', () => {
 });
 
 it('people’s queries never scan a table, and never sort without an index', async () => {
+  const [d1, d2] = [`dec_${'1'.repeat(26)}`, `dec_${'2'.repeat(26)}`];
+  await sql(
+    "UPDATE projects SET answers_needed=2 WHERE id='p1'",
+    `INSERT INTO decisions(id,page_id,project_id,key,position,created_at,updated_at) VALUES('${d1}','a','p1','k1',0,1,1),('${d2}','a','p1','k2',1,1,2)`,
+    `INSERT INTO decision_revisions(decision_id,revision,question,context,options_json,version_id,version_n,created_at) VALUES('${d1}',1,'Q1?','','[{"id":"a","label":"A"},{"id":"b","label":"B"}]','${VERSIONS[0]}',1,1),('${d2}',1,'Q2?','','[{"id":"a","label":"A"},{"id":"b","label":"B"}]','${VERSIONS[0]}',1,1)`,
+    `INSERT INTO decision_answers(decision_id,seq,revision,option_id,notes,answered_at,member_id,needed,decides) VALUES('${d1}',1,1,'a','',5,'o',2,0),('${d2}',1,1,'a','',6,'o',2,0)`,
+  );
   const seen = new Set<string>();
   const DB = new Proxy(env.DB, { get(target, name) {
     if (name === 'prepare') return (query: string) => { seen.add(query); return target.prepare(query); };
@@ -208,13 +215,13 @@ it('people’s queries never scan a table, and never sort without an index', asy
   } });
   for (const cookie of [(await enter('o')).cookie, await member(['t1', 4], ['t2', 1])]) {
     for (const path of ['/me', '/projects', '/sessions', '/passkeys', '/pages', '/pages?project=one', '/pages?tag=alpha', '/pages?status=draft', '/pages?project=one&tag=alpha&status=draft', '/tags', '/tags?q=a&project=one',
-      '/projects/one/pages/a', '/projects/one/pages/a?v=1', '/projects/one/pages/a/versions', '/decisions', '/decisions?show=waiting', '/decisions?show=answered', '/decisions/count', '/projects/one/pages/a/decisions']) expect((await api('GET', path, { cookie }, { DB })).status, path).toBe(200);
+      '/projects/one/pages/a', '/projects/one/pages/a?v=1', '/projects/one/pages/a/versions', '/decisions', '/decisions?show=waiting', '/decisions?show=answered', '/decisions/count', '/projects/one/pages/a/decisions', `/decisions/${d1}`]) expect((await api('GET', path, { cookie }, { DB })).status, path).toBe(200);
   }
   expect(seen.size).toBeGreaterThan(18);
   for (const query of seen) {
     const marks = (query.match(/\?(?!\d)/g) ?? []).length, numbered = Math.max(0, ...[...query.matchAll(/\?(\d)/g)].map((m) => Number(m[1])));
     const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${query}`).bind(...Array(marks + numbered).fill(null)).all<{ detail: string }>();
     // The recursive table of the tags list holds at most 51 rows.
-    for (const { detail } of results) expect(/^SCAN (?!j\b|json_each\b|CONSTANT ROW|t$)/.test(detail) || detail.includes('TEMP B-TREE'), `${detail} | ${query}`).toBe(false);
+    for (const { detail } of results) expect(/^SCAN (?!j\b|o VIRTUAL TABLE|json_each\b|CONSTANT ROW|t$)/.test(detail) || detail.includes('TEMP B-TREE'), `${detail} | ${query}`).toBe(false);
   }
 });
