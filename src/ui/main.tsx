@@ -5,6 +5,7 @@ import { Failure, go, Link, SettingsProvider, TopBar, useSettings, useText } fro
 import { digits } from './i18n';
 import { ApproveDevice, AskDevice } from './screens/Device';
 import { Account } from './screens/Account';
+import { Connect } from './screens/Connect';
 import { Settings } from './screens/Settings';
 import { Comments } from './screens/Comments';
 import { Decisions } from './screens/Decisions';
@@ -83,6 +84,7 @@ function App() {
   else if (me === 'nobody') screen = path === '/device' ? <AskDevice onDone={arrive} /> : <SignIn onDone={() => { setMe(null); void load(); }} />;
   else if (path === '/approve') screen = <ApproveDevice onSignedOut={() => { setMe(null); void load(); }} />;
   else if (!me.instance) screen = <Account me={me} onChange={() => void load()} />;
+  else if (path === '/connect') screen = <Connect me={me} onSignedOut={() => { setMe(null); void load(); }} />;
   else if (path.startsWith('/settings')) screen = <Settings path={path} me={me} onChange={() => void load()} />;
   else if (reading) screen = <PageView project={reading[1]!} slug={reading[2]!} search={search} me={me} />;
   else if (path === '/comments') screen = <Comments me={me} />;
