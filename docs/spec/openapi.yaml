@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Lawh agent API
-  version: 1.0.0-draft
+  version: 1.0.0
   description: >
     Publish pages, and read people's decisions and comments. Agents can't answer decisions,
     delete pages or manage keys. Every route answers 404 `feature_off` while the instance switch is
