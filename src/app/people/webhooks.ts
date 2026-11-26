@@ -199,17 +199,27 @@ export async function updateWebhook(ctx: SignedIn): Promise<Response> {
   onlyKeys(body, ['enabled', 'eventTypes']);
   if (body.enabled === undefined && body.eventTypes === undefined) throw invalid('Nothing to change.');
   if (body.enabled !== undefined && typeof body.enabled !== 'boolean') throw invalid('enabled must be true or false.');
-  const enabled = body.enabled === undefined ? webhook.enabled === 1 : body.enabled;
-  const eventTypes = body.eventTypes === undefined ? (JSON.parse(webhook.event_types_json) as EventType[]) : readEventTypes(body.eventTypes);
+  const hasEnabled = body.enabled !== undefined;
+  const hasTypes = body.eventTypes !== undefined;
+  const nextTypes = hasTypes ? readEventTypes(body.eventTypes) : null;
 
+  const updateStmt = hasEnabled && hasTypes
+    ? env.DB.prepare('UPDATE webhooks SET enabled = ?, event_types_json = ? WHERE id = ?').bind(body.enabled ? 1 : 0, JSON.stringify(nextTypes), id)
+    : hasEnabled
+      ? env.DB.prepare('UPDATE webhooks SET enabled = ? WHERE id = ?').bind(body.enabled ? 1 : 0, id)
+      : env.DB.prepare('UPDATE webhooks SET event_types_json = ? WHERE id = ?').bind(JSON.stringify(nextTypes), id);
+
+  let updated: { enabled: number; event_types_json: string } | undefined;
   try {
-    await env.DB.batch([
+    const results = await env.DB.batch([
       stillWebhooksOn(env),
       stillManager(env, person.memberId, webhook.project_id),
-      env.DB.prepare('UPDATE webhooks SET enabled = ?, event_types_json = ? WHERE id = ?').bind(enabled ? 1 : 0, JSON.stringify(eventTypes), id),
+      updateStmt,
       mustChange(env),
       auditStatement(env, person.memberId, 'webhook.update', id),
+      env.DB.prepare('SELECT enabled, event_types_json FROM webhooks WHERE id = ?').bind(id),
     ]);
+    updated = (results[5]?.results as { enabled: number; event_types_json: string }[] | undefined)?.[0];
   } catch (error) {
     if (String(error).includes('malformed JSON')) {
       if (!(await isOn(env.DB, 'webhooks'))) throw featureOff();
@@ -220,7 +230,11 @@ export async function updateWebhook(ctx: SignedIn): Promise<Response> {
     }
     throw error;
   }
-  return Response.json({ id, enabled, eventTypes });
+  return Response.json({
+    id,
+    enabled: (updated?.enabled ?? webhook.enabled) === 1,
+    eventTypes: JSON.parse(updated?.event_types_json ?? webhook.event_types_json) as EventType[],
+  });
 }
 
 export async function deleteWebhook(ctx: SignedIn): Promise<Response> {

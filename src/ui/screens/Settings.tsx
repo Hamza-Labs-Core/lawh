@@ -240,7 +240,16 @@ function Webhooks() {
   const [making, setMaking] = useState(false), [secret, setSecret] = useState<string | null>(null), [resent, setResent] = useState(false);
   const [busy, run] = useBusy(), [failed, setFailed] = useState<Problem | null>(null), [asking, setAsking] = useState<string | null>(null);
   const newBtn = useRef<HTMLButtonElement>(null), wasOpen = useRef(false), open = making || secret !== null;
+  const statusRef = useRef<HTMLDivElement>(null), failedListRef = useRef<HTMLUListElement>(null), resendFocus = useRef<number | null>(null);
   useEffect(() => { if (!open && wasOpen.current) newBtn.current?.focus(); wasOpen.current = open; }, [open]);
+  useEffect(() => {
+    if (resendFocus.current === null || !data) return;
+    const idx = resendFocus.current;
+    resendFocus.current = null;
+    const buttons = failedListRef.current?.querySelectorAll<HTMLButtonElement>('button');
+    if (buttons && buttons.length > 0) buttons[Math.min(idx, buttons.length - 1)]?.focus();
+    else statusRef.current?.focus();
+  }, [data?.failed.length]);
   if (data === null) return <Loading problem={problem} load={load} />;
   const act = (what: () => Promise<void>) => run(async () => { setFailed(null); setResent(false); try { await what(); setAsking(null); } catch (error) { setFailed(problemIn(error)); } });
   return (
@@ -274,12 +283,12 @@ function Webhooks() {
           </li>
         ))}
       </ul>
+      <div ref={statusRef} tabIndex={-1} aria-live="polite">{resent && <p class="done">{t('resent')}</p>}</div>
       {data.failed.length > 0 && (
         <section class="card form">
           <h2>{t('failedDeliveries')}</h2>
-          <div aria-live="polite">{resent && <p class="done">{t('resent')}</p>}</div>
-          <ul class="rows">
-            {data.failed.map((f) => (
+          <ul class="rows" ref={failedListRef}>
+            {data.failed.map((f, index) => (
               <li key={`${f.webhookId}:${f.eventSeq}`}>
                 <div>
                   <strong>{t(`event ${f.eventType}` as Key)}</strong>
@@ -287,6 +296,7 @@ function Webhooks() {
                 </div>
                 <button class="plain" disabled={busy} onClick={() => act(async () => {
                   await call('POST', `/webhooks/${f.webhookId}/deliveries/${f.eventSeq}/resend`);
+                  resendFocus.current = index;
                   set((now) => now && { ...now, failed: now.failed.filter((o) => !(o.webhookId === f.webhookId && o.eventSeq === f.eventSeq)) });
                   setResent(true);
                 })}>{t('resend')}</button>
