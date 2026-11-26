@@ -118,6 +118,14 @@ export async function runOwnerTransfer({ targetArg, sql, prompt, log = console.l
       if (diagnostic.includes('malformed JSON') || /UNIQUE constraint failed:\s*agents\.member_id,\s*agents\.name/i.test(diagnostic)) {
         continue;
       }
+      if (output) {
+        let detail = output;
+        try {
+          const parsed = JSON.parse(stdout.trim() || stderr.trim());
+          if (typeof parsed?.error?.text === 'string' && parsed.error.text.trim()) detail = parsed.error.text.trim();
+        } catch { /* keep raw stderr/stdout output */ }
+        throw new Error(`Ownership transfer failed: ${detail}`, { cause: error });
+      }
       throw error;
     }
     log(`Ownership transferred to "${target.name}" (${target.id}).`);

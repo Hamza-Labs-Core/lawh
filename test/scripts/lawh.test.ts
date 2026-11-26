@@ -183,7 +183,7 @@ describe('pnpm lawh owner setup --local', { timeout: 120_000 }, () => {
         },
         log: () => {},
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow('audit trigger blocked');
     expect(promptCalls2).toBe(1);
     query("DELETE FROM agents WHERE id='agt_mj';");
   });
