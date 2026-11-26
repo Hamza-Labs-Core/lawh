@@ -856,7 +856,7 @@ describe('S15 self-hosting lifecycle (init, upgrade, rollback, destroy)', () => 
     expect(builtHtml).toContain('data-default-lang="ar"');
     const cssMatch = /href="\/assets\/(style-[a-f0-9]+\.css)"/.exec(builtHtml);
     expect(cssMatch).not.toBeNull();
-    expect(readFileSync(join(uiOut, 'dist/assets', cssMatch![1]!), 'utf8')).toContain(':root{--ac:#22aa88;}');
+    expect(readFileSync(join(uiOut, 'dist/assets', cssMatch![1]!), 'utf8')).toContain(':root,:root[data-mode=light]{--ac:#22aa88;}');
     expect(builtManifest.name).toBe('Studio Board · لوحة الاستوديو');
     expect(builtManifest.theme_color).toBe('#f6f4ef');
     expect(builtSvg).toContain('#22aa88');
