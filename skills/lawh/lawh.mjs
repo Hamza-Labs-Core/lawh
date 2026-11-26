@@ -269,7 +269,8 @@ async function cmdConnect(positional, flags) {
   const started = await startRes.json();
   const fullKey = `lawh_${started.id}_${secret}`;
 
-  const connectUrl = safeConnectUrl(started.url, baseUrl) ?? `${baseUrl}/connect`;
+  const baseOrigin = new URL(baseUrl).origin;
+  const connectUrl = safeConnectUrl(started.url, baseUrl) ?? `${baseOrigin}/connect`;
   process.stderr.write(`Open: ${connectUrl}\nCode: ${started.code}\nWaiting for approval...\n`);
   if (!flags['no-open']) openBrowser(connectUrl);
 
@@ -442,7 +443,7 @@ Commands:
         let content = '';
         if (textType || textExt) {
           try {
-            content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+            content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
             encoding = 'utf8';
           } catch {
             content = bytes.toString('base64');

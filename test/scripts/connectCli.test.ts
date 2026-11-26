@@ -169,8 +169,9 @@ process.exit(1);
 `);
     chmodSync(stub, 0o755);
 
+    const xdg = mkdtempSync(join(tmpdir(), 'lawh-xdg-'));
     try {
-      const env: NodeJS.ProcessEnv = { ...process.env, PATH: binDir };
+      const env: NodeJS.ProcessEnv = { ...process.env, PATH: binDir, XDG_CONFIG_HOME: xdg };
       delete env.LAWH_STORE;
       delete env.LAWH_NO_KEYCHAIN;
       const res = await runCli(['connect', baseUrl, '--client', 'claude', '--no-open', '--poll-ms', '200', '--json'], env);
@@ -193,17 +194,12 @@ if (args[0] === 'find-generic-password') {
 process.exit(1);
 `);
       chmodSync(stub, 0o755);
-      const xdg = mkdtempSync(join(tmpdir(), 'lawh-xdg-'));
-      try {
-        const env2: NodeJS.ProcessEnv = { ...env, XDG_CONFIG_HOME: xdg };
-        const res2 = await runCli(['connect', baseUrl, '--client', 'codex', '--no-open', '--poll-ms', '200', '--json'], env2);
-        expect(res2.status, res2.stderr).toBe(0);
-        const whoCodex = await runCli(['whoami', '--client', 'codex', '--json'], env2);
-        expect(whoCodex.status, whoCodex.stderr).toBe(0);
-      } finally {
-        rmSync(xdg, { recursive: true, force: true });
-      }
+      const res2 = await runCli(['connect', baseUrl, '--client', 'codex', '--no-open', '--poll-ms', '200', '--json'], env);
+      expect(res2.status, res2.stderr).toBe(0);
+      const whoCodex = await runCli(['whoami', '--client', 'codex', '--json'], env);
+      expect(whoCodex.status, whoCodex.stderr).toBe(0);
     } finally {
+      rmSync(xdg, { recursive: true, force: true });
       rmSync(binDir, { recursive: true, force: true });
     }
   });
