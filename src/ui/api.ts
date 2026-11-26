@@ -30,6 +30,8 @@ export interface Answer { seq: number; revision: number; question: string; optio
 export interface Decision {
   id: string; project: string; projectName: { en: string; ar: string }; page: { slug: string; title: string; lang: 'en' | 'ar'; status: Status }; revision: number; status: 'open' | 'answered' | 'stale' | 'withdrawn';
   question: string; context: string; options: { id: string; label: string; detail?: string; cost?: string }[]; answer: Answer | null; answersNeeded: number; agreement: Answer[]; answerSeq: number; mayAnswer: boolean; history?: Answer[];
+  /** On the list of open ones: how many people can answer, when more than one must agree. */
+  answerers?: number | null;
 }
 
 export interface Me { id: string; name: string; isOwner: boolean; instance: boolean }

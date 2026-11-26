@@ -1,12 +1,12 @@
 import type { AppEnv } from '../../shared/env';
-import { invalid } from '../../shared/errors';
+import { ApiError, invalid } from '../../shared/errors';
 import { newId } from '../../shared/ids';
 import { isObject, onlyKeys, text } from '../api/body';
 
 /** What a page asks. `options` is JSON text: as stored, and compared as text to tell whether the wording changed. */
 export interface Declared { key: string; question: string; context: string; options: string }
 
-const MAX_DECISIONS = 50;
+const MAX_DECISIONS = 50, MAX_BYTES = 1_000_000;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
 
 function name(value: unknown, what: string): string {
@@ -24,7 +24,7 @@ function readOption(value: unknown): { id: string; label: string; detail?: strin
 export function readDeclared(value: unknown): Declared[] {
   if (!Array.isArray(value) || value.length > MAX_DECISIONS) throw invalid(`decisions must be a list of at most ${MAX_DECISIONS}.`);
   const keys = new Set<string>();
-  return value.map((item: unknown) => {
+  const declared = value.map((item: unknown) => {
     if (!isObject(item)) throw invalid('Each decision must be an object.');
     onlyKeys(item, ['key', 'question', 'context', 'options']);
     const key = name(item.key, 'A decision key');
@@ -38,6 +38,9 @@ export function readDeclared(value: unknown): Declared[] {
       options: JSON.stringify(options),
     };
   });
+  // Stored with the upload and sent to the database as one value, which holds at most 2 MB.
+  if (new TextEncoder().encode(JSON.stringify(declared)).byteLength > MAX_BYTES) throw new ApiError('too_large', 'All decisions together can be at most 1 MB.');
+  return declared;
 }
 
 /**
@@ -52,7 +55,7 @@ export function declareStatements(
   const ASKED = "json_each(?) j CROSS JOIN decisions d ON d.page_id = ? AND d.key = j.value ->> 'key'";
   const changed = 'EXISTS (SELECT 1 FROM decision_revisions x WHERE x.decision_id = d.id AND x.revision = d.revision + 1)';
   return [
-    prepare("UPDATE decisions SET status = 'withdrawn', updated_at = ? WHERE page_id = ? AND status <> 'withdrawn' AND key NOT IN (SELECT value ->> 'key' FROM json_each(?))", now, pageId, list),
+    prepare("UPDATE decisions SET status = 'withdrawn', updated_at = MAX(updated_at + 1, ?) WHERE page_id = ? AND status <> 'withdrawn' AND key NOT IN (SELECT value ->> 'key' FROM json_each(?))", now, pageId, list),
     // Other wording: a new revision. From here to the update, its number is one above the decision's.
     prepare(`INSERT INTO decision_revisions(decision_id, revision, question, context, options_json, version_id, version_n, created_at)
       SELECT d.id, d.revision + 1, j.value ->> 'question', j.value ->> 'context', j.value ->> 'options', ?, ?, ?
@@ -62,7 +65,7 @@ export function declareStatements(
       SELECT d.project_id, d.page_id, 'decision.stale', d.id, ?, 'agent', ? FROM ${ASKED} WHERE d.status = 'answered' AND ${changed}`, now, agentId, list, pageId),
     // One that comes back is answered again if its answer was to the same wording.
     prepare(`UPDATE decisions AS d SET position = j.key, revision = d.revision + ${changed},
-        updated_at = CASE WHEN d.status = 'withdrawn' OR ${changed} THEN ? ELSE d.updated_at END,
+        updated_at = CASE WHEN d.status = 'withdrawn' OR ${changed} THEN MAX(d.updated_at + 1, ?) ELSE d.updated_at END,
         status = CASE
           WHEN d.status = 'withdrawn' THEN CASE WHEN EXISTS (SELECT 1 FROM decision_answers a CROSS JOIN decision_revisions r ON r.decision_id = a.decision_id AND r.revision = a.revision
             WHERE a.decision_id = d.id AND a.seq = d.decided_seq AND r.question = j.value ->> 'question' AND r.context = j.value ->> 'context' AND r.options_json = j.value ->> 'options') THEN 'answered' ELSE 'open' END

@@ -254,8 +254,49 @@ test('on a phone: a fixed button opens the questions as a sheet, and closing kee
   await expect(card(page, 'Which?').getByText('Recorded.')).toBeVisible();
   await sheet.getByRole('button', { name: 'Close' }).click();
   await expect(page.getByRole('button', { name: 'Decisions to make: 1' })).toBeVisible();
-  // Another person signing in on this device doesn't see a draft.
   expect(await answers(asked)).toHaveLength(1);
+});
+
+test('on a phone, the focus stays at the question while an answer is sent, and after it fails', async ({ page, member, ask }) => {
+  await phone(page);
+  const asked = await ask([{ question: 'Which?' }]);
+  await open(page, member, asked.path);
+  await page.getByRole('button', { name: 'Decisions to make: 1' }).click();
+  await card(page, 'Which?').getByText('Object storage').click();
+  await page.route('**/answers', async (route) => { await new Promise((done) => setTimeout(done, 600)); await route.abort(); });
+  await record(page, 'Which?').click();
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => document.activeElement?.textContent)).not.toBe('Close');
+  await expect(card(page, 'Which?').getByRole('alert')).toHaveText('No connection.');
+  await expect(card(page, 'Which?')).toBeFocused();
+  await page.waitForTimeout(300);
+  await expect(card(page, 'Which?')).toBeFocused();
+});
+
+test('notes written before the question changed are kept, also when the sheet was closed meanwhile', async ({ page, member, ask }) => {
+  await phone(page);
+  const asked = await ask([{ question: 'Which?' }]);
+  await open(page, member, asked.path);
+  const button = page.getByRole('button', { name: 'Decisions to make: 1' });
+  await button.click();
+  await card(page, 'Which?').getByText('Object storage').click();
+  await card(page, 'Which?').getByRole('textbox').fill('Long thoughts');
+  await page.keyboard.press('Escape');
+  await reworded(asked, 'Which one now?');
+  await page.getByRole('link', { name: 'Decisions 1' }).click();
+  const it = card(page, 'Which one now?');
+  await expect(it.getByRole('textbox')).toHaveValue('Long thoughts');
+  await expect(it.getByRole('radio', { checked: true })).toHaveCount(0);
+  await page.goBack();
+  await page.getByRole('button', { name: 'Decisions to make: 1' }).click();
+  await expect(it.getByRole('textbox')).toHaveValue('Long thoughts');
+});
+
+test('the open decisions say when fewer people can answer than must agree', async ({ page, member, ask }) => {
+  await wide(page);
+  await ask([{ question: 'Which?' }], { needed: 3 });
+  await open(page, member, '/decisions');
+  await expect(card(page, 'Which?').getByText('Only 2 can answer.')).toBeVisible();
 });
 
 test('the page can be read and scrolled beside and under the questions', async ({ page, member, ask }) => {

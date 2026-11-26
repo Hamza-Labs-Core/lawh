@@ -208,7 +208,7 @@ it('people’s queries never scan a table, and never sort without an index', asy
   } });
   for (const cookie of [(await enter('o')).cookie, await member(['t1', 4], ['t2', 1])]) {
     for (const path of ['/me', '/projects', '/sessions', '/passkeys', '/pages', '/pages?project=one', '/pages?tag=alpha', '/pages?status=draft', '/pages?project=one&tag=alpha&status=draft', '/tags', '/tags?q=a&project=one',
-      '/projects/one/pages/a', '/projects/one/pages/a?v=1', '/projects/one/pages/a/versions']) expect((await api('GET', path, { cookie }, { DB })).status, path).toBe(200);
+      '/projects/one/pages/a', '/projects/one/pages/a?v=1', '/projects/one/pages/a/versions', '/decisions', '/decisions?show=waiting', '/decisions?show=answered', '/decisions/count', '/projects/one/pages/a/decisions']) expect((await api('GET', path, { cookie }, { DB })).status, path).toBe(200);
   }
   expect(seen.size).toBeGreaterThan(18);
   for (const query of seen) {
