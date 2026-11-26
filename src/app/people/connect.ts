@@ -11,11 +11,53 @@ import type { SignedIn } from './router';
 import { auditStatement } from './session';
 
 const MANAGER = 4, DAY = 86_400_000, DEFAULT_DAYS = 90, MAX_PROJECTS = 20, MAX_KEYS = 100;
+const WRONG_CODE_WINDOW = 600_000, MAX_WRONG_CODES = 5;
 
 async function managedProjects(ctx: SignedIn) {
   const projects = (await visibleProjects(ctx.env, ctx.person)).filter((p) => p.level >= MANAGER);
   if (!ctx.person.isOwner && projects.length === 0) throw new ApiError('forbidden', 'Your level does not allow this.');
   return projects;
+}
+
+/** Security model §5: wrong codes are limited to 5 a session in 10 minutes (across both look and answer). */
+async function checkCodeLimit(ctx: SignedIn, now: number): Promise<void> {
+  const { env, person } = ctx;
+  if (!(await env.CODE_LIMIT.limit({ key: person.sessionId })).success) {
+    throw new ApiError('rate_limited', 'Too many codes. Try again later.');
+  }
+  const row = await env.DB.prepare(
+    "SELECT response_json FROM idempotency WHERE key_id = 'rl:connect-code' AND idem_key = ?",
+  ).bind(person.sessionId).first<{ response_json: string }>();
+  if (!row) return;
+  try {
+    const times = (JSON.parse(row.response_json) as number[]).filter((t) => typeof t === 'number' && t > now - WRONG_CODE_WINDOW);
+    if (times.length >= MAX_WRONG_CODES) throw new ApiError('rate_limited', 'Too many wrong codes. Try again later.');
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+  }
+}
+
+async function recordWrongCode(ctx: SignedIn, now: number): Promise<void> {
+  const cutoff = now - WRONG_CODE_WINDOW;
+  const expiresAt = now + WRONG_CODE_WINDOW;
+  await ctx.env.DB.prepare(
+    `INSERT INTO idempotency(key_id, idem_key, request_sha256, status, response_json, expires_at)
+     VALUES('rl:connect-code', ?1, '', 1, json_array(?2), ?3)
+     ON CONFLICT(key_id, idem_key) DO UPDATE SET
+       response_json = (
+         SELECT json_group_array(v) FROM (
+           SELECT value AS v FROM json_each(idempotency.response_json) WHERE value > ?4
+           UNION ALL SELECT ?2
+         )
+       ),
+       status = (
+         SELECT COUNT(*) FROM (
+           SELECT 1 FROM json_each(idempotency.response_json) WHERE value > ?4
+           UNION ALL SELECT 1
+         )
+       ),
+       expires_at = ?3`,
+  ).bind(ctx.person.sessionId, now, expiresAt, cutoff).run();
 }
 
 /** POST /app-api/connect/look — look up an open agent connection request by its typed code. */
@@ -24,15 +66,22 @@ export async function lookAtConnect(ctx: SignedIn): Promise<Response> {
   const projects = await managedProjects(ctx);
   const { body } = await readJson(ctx.request);
   onlyKeys(body, ['code']);
-  if (!(await env.CODE_LIMIT.limit({ key: person.sessionId })).success) throw new ApiError('rate_limited', 'Too many codes. Wait a minute.');
-  if (typeof body.code !== 'string' || body.code.length > 40) throw notFound();
+  const now = Date.now();
+  await checkCodeLimit(ctx, now);
+  if (typeof body.code !== 'string' || body.code.length > 40) {
+    await recordWrongCode(ctx, now);
+    throw notFound();
+  }
 
   const row = await env.DB.prepare(
     'SELECT id, client, machine, created_at, expires_at FROM agent_connects WHERE code_hmac = ? AND expires_at > ? AND answered_at IS NULL',
-  ).bind(await connectCodeHmac(env, body.code), Date.now()).first<{
+  ).bind(await connectCodeHmac(env, body.code), now).first<{
     id: string; client: string; machine: string; created_at: number; expires_at: number;
   }>();
-  if (!row) throw notFound();
+  if (!row) {
+    await recordWrongCode(ctx, now);
+    throw notFound();
+  }
 
   const { results: agents } = await env.DB.prepare(
     'SELECT id, name FROM agents WHERE member_id = ? AND disabled_at IS NULL ORDER BY name LIMIT 200',
@@ -59,14 +108,21 @@ export async function answerConnect(ctx: SignedIn): Promise<Response> {
   } else {
     onlyKeys(body, ['id', 'code', 'refuse', 'agentId', 'agentName', 'projects']);
   }
-  if (typeof body.id !== 'string' || typeof body.code !== 'string' || body.code.length > 40) throw notFound();
+  const now = Date.now();
+  await checkCodeLimit(ctx, now);
+  if (typeof body.id !== 'string' || typeof body.code !== 'string' || body.code.length > 40) {
+    await recordWrongCode(ctx, now);
+    throw notFound();
+  }
   if (body.refuse !== undefined && typeof body.refuse !== 'boolean') throw invalid('refuse must be true or false.');
 
-  const now = Date.now();
   const reqRow = await env.DB.prepare(
     'SELECT id, code_hmac, client FROM agent_connects WHERE id = ? AND expires_at > ? AND answered_at IS NULL',
   ).bind(body.id, now).first<{ id: string; code_hmac: string; client: string }>();
-  if (!reqRow || !equalInConstantTime(await connectCodeHmac(env, body.code), reqRow.code_hmac)) throw notFound();
+  if (!reqRow || !equalInConstantTime(await connectCodeHmac(env, body.code), reqRow.code_hmac)) {
+    await recordWrongCode(ctx, now);
+    throw notFound();
+  }
 
   if (body.refuse === true) {
     try {
@@ -153,12 +209,32 @@ export async function answerConnect(ctx: SignedIn): Promise<Response> {
         ).bind(now, person.memberId, person.sessionId, agentId, scopesJson, all ? 1 : 0, projectsJson, keyExpiresAt, reqRow.id),
       );
     }
-    statements.push(mustChange(env), auditStatement(env, person.memberId, 'connect.approve', reqRow.id));
+    statements.push(
+      mustChange(env),
+      // Enforce the 100-key cap atomically inside the same D1 transaction (after trigger inserts the new key).
+      env.DB.prepare(
+        `SELECT CASE WHEN (
+           SELECT COUNT(*) FROM (
+             SELECT 1 FROM agents a CROSS JOIN agent_keys k ON k.agent_id = a.id
+             WHERE a.member_id = ?1 AND k.revoked_at IS NULL AND k.expires_at > ?2
+             LIMIT ?3
+           )
+         ) <= ?4 THEN 1 ELSE json('[') END`,
+      ).bind(person.memberId, now, MAX_KEYS + 1, MAX_KEYS),
+      auditStatement(env, person.memberId, 'connect.approve', reqRow.id),
+    );
     await env.DB.batch(statements);
   } catch (error) {
     const msg = String(error);
     if (msg.includes('key not allowed')) throw conflict('The agent is off, or a project is not yours to give anymore.');
-    if (/connect not allowed|malformed JSON|CHECK constraint failed/.test(msg)) throw notFound();
+    if (msg.includes('malformed JSON')) {
+      const stillOpen = await env.DB.prepare(
+        'SELECT 1 AS ok FROM agent_connects WHERE id = ? AND answered_at IS NULL AND expires_at > ?',
+      ).bind(reqRow.id, now).first<{ ok: number }>();
+      if (stillOpen) throw conflict('Too many keys. Revoke some first.');
+      throw notFound();
+    }
+    if (/connect not allowed|CHECK constraint failed/.test(msg)) throw notFound();
     throw error;
   }
 

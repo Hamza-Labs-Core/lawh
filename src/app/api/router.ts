@@ -47,7 +47,7 @@ export const routes: Route[] = [
   route('GET', '/events', 'any', listEvents),
 ];
 
-const CONNECT_ID = /^\/v1\/connect\/(key_[0-9A-HJKMNP-TV-Z]{26})$/;
+const CONNECT_ID = /^\/v1\/connect\/([^/]+)$/;
 
 /** The agent API. Connect endpoints run without an existing key; every other route checks the key first. */
 export async function api(request: Request, env: AppEnv, ctx: ExecutionContext): Promise<Response> {
