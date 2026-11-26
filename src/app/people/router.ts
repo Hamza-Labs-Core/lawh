@@ -5,12 +5,13 @@ import { endSession, listSessions, setInstance, whoAmI } from './account';
 import { listMyPages, listMyProjects, listMyTags, listMyVersions, readPage } from './pages';
 import { addComment, deleteComment, listMyThreads, listReplies, listThreads, reply, setResolved } from './comments';
 import { answerDecision, countMyDecisions, listMyDecisions, listPageDecisions, readDecision } from './decisions';
-import { addKey, listAgents, revokeKey, setAgentOff } from './agents';
+import { addKey, listAgents, revokeKey, setAgentOff, takeOverAgent } from './agents';
 import { answerConnect, lookAtConnect } from './connect';
 import { exportFiles, exportPlan, exportRows } from './exportData';
 import { deletePage, listDeleted, restorePage, setStatus } from './manage';
 import { addProject, renameProject } from './projects';
 import { readSettings, setRetention, setWebhookHosts, setWebhooksSwitch } from './settings';
+import { addTeam, addTeamMember, addTeamProject, deleteTeam, listTeams, removeTeamMember, removeTeamProject, renameTeam, setTeamMemberLevel } from './teams';
 import { addWebhook, deleteWebhook, listWebhooks, resendDelivery, updateWebhook } from './webhooks';
 import { approveDevice, claimDevice, lookAtDevice, startDevice } from './devices';
 import { addPasskey, addPasskeyOptions, linkOptions, linkRegister, listPasskeys, removePasskey, signIn, signInOptions } from './passkeys';
@@ -60,8 +61,18 @@ export const peopleRoutes: PeopleRoute[] = [
   person('POST', '/deleted/(pag_[0-9A-Z]{26})/restore', false, restorePage),
   person('GET', '/agents', false, listAgents),
   person('PUT', '/agents/(agt_[0-9A-Z]{26})/off', false, setAgentOff),
+  person('POST', '/agents/(agt_[0-9A-Z]{26})/take-over', false, takeOverAgent),
   person('POST', '/agent-keys', false, addKey),
   person('DELETE', '/agent-keys/(key_[0-9A-Z]{26})', false, revokeKey),
+  person('GET', '/teams', false, listTeams),
+  person('POST', '/teams', false, addTeam),
+  person('PATCH', '/teams/([a-zA-Z0-9_-]{1,64})', false, renameTeam),
+  person('DELETE', '/teams/([a-zA-Z0-9_-]{1,64})', false, deleteTeam),
+  person('POST', '/teams/([a-zA-Z0-9_-]{1,64})/members', false, addTeamMember),
+  person('PATCH', '/teams/([a-zA-Z0-9_-]{1,64})/members/([a-zA-Z0-9_-]{1,64})', false, setTeamMemberLevel),
+  person('DELETE', '/teams/([a-zA-Z0-9_-]{1,64})/members/([a-zA-Z0-9_-]{1,64})', false, removeTeamMember),
+  person('POST', '/teams/([a-zA-Z0-9_-]{1,64})/projects', false, addTeamProject),
+  person('DELETE', `/teams/([a-zA-Z0-9_-]{1,64})/projects/${SLUG}`, false, removeTeamProject),
   person('GET', '/settings', false, readSettings),
   person('PUT', '/settings/retention', false, setRetention),
   person('PUT', '/switches/webhooks', false, setWebhooksSwitch),

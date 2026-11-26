@@ -344,7 +344,7 @@ describe('agents and keys', () => {
     expect(expiresAt).toBeGreaterThan(Date.now() + 89 * DAY);
     expect([await works(id), await works(id, '/v1/projects/two/pages/x'), await works(id, '/v1/decisions'), (await agent('/v1/me', { token: `lawh_${id}_${'B'.repeat(43)}` })).status]).toEqual([200, 404, 403, 401]);
     const [ci] = (await list(cookie)).filter((a) => a.name === 'ci');
-    expect(ci).toEqual({ id: expect.stringMatching(/^agt_/), name: 'ci', createdAt: expect.any(Number), disabledAt: null, keys: [{
+    expect(ci).toEqual({ id: expect.stringMatching(/^agt_/), name: 'ci', createdAt: expect.any(Number), disabledAt: null, owner: { id: 'o', name: 'Owner' }, isMine: true, keys: [{
       id, label: 'Build server', scopes: ['pages:read', 'pages:write'], allProjects: false, projects: [{ slug: 'one', name: { en: 'One', ar: 'واحد' } }], createdAt: expect.any(Number), expiresAt, lastUsedAt: expect.any(Number), revokedAt: null }] });
     expect(JSON.stringify(await list(cookie))).not.toContain(await sha(secret));
     // The same name is the same agent, with another key.

@@ -52,7 +52,7 @@ export async function register(token: string, authenticator: Authenticator, chan
 }
 
 /** A person who registered a passkey from a link, and their session. */
-export async function enter(member: 'o' | 'm' | 'x'): Promise<{ authenticator: Authenticator; cookie: string }> {
+export async function enter(member: string): Promise<{ authenticator: Authenticator; cookie: string }> {
   const authenticator = await Authenticator.make();
   const response = await register(await makeLink(member === 'o' ? 'owner' : member === 'x' ? 'invite' : 'reset', member), authenticator);
   if (response.status !== 204) throw new Error(`${response.status} ${await response.text()}`);

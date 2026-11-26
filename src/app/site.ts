@@ -3,7 +3,7 @@ import { errorResponse } from '../shared/errors';
 import { origins } from '../shared/origin';
 
 // Every page of the app is the same document; its script shows the screen for the address.
-const PAGES = /^\/(?:|link|device|approve|connect|decisions|comments|settings(?:\/(?:agents|projects|deleted|data|webhooks))?|p\/[a-z0-9][a-z0-9-]{0,79}\/[a-z0-9][a-z0-9-]{0,79})$/;
+const PAGES = /^\/(?:|link|device|approve|connect|decisions|comments|settings(?:\/(?:agents|projects|deleted|data|webhooks|teams))?|p\/[a-z0-9][a-z0-9-]{0,79}\/[a-z0-9][a-z0-9-]{0,79})$/;
 /** Reachable while the instance is off: sign-in, setup, and the static shell files they link to. */
 const OPEN = /^\/(?:|link)$/;
 const ASSET = /^\/assets\/[a-z]+-[A-Za-z0-9]{8}\.(?:js|css)$/;

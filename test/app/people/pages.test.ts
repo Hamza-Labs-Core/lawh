@@ -64,7 +64,9 @@ describe('what a person sees', () => {
       // In webhooks.test.ts, at every level.
       '/switches/webhooks', '/settings/webhook-hosts', '/webhooks', `/webhooks/whk_${'0'.repeat(26)}`, `/webhooks/whk_${'0'.repeat(26)}/deliveries/1/resend`,
       // In connect.test.ts, at every level.
-      '/connect/look', '/connect/answer'];
+      '/connect/look', '/connect/answer',
+      // In teams.test.ts & matrix.test.ts, at every level.
+      `/agents/agt_${'0'.repeat(26)}/take-over`, '/teams', '/teams/t1', '/teams/t1/members', '/teams/t1/members/m', '/teams/t1/projects', '/teams/t1/projects/one'];
     for (const route of peopleRoutes.filter((r) => r.who === 'person')) {
       expect([...paths, ...without].some((p) => route.path.test(`/app-api${p.split('?')[0]!}`)), route.path.source).toBe(true);
     }
