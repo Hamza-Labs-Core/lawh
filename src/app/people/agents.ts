@@ -1,4 +1,4 @@
-import { hmacHex, readSecret } from '../../shared/crypto';
+import { base64url, hmacHex, readSecret } from '../../shared/crypto';
 import { ApiError, conflict, invalid, notFound } from '../../shared/errors';
 import { newId } from '../../shared/ids';
 import { isOn } from '../../shared/switches';
@@ -12,7 +12,7 @@ import { ownerOnly, stillOwner } from './settings';
 
 /** A person's agents and their keys. Keys for CI and containers are made here; other agents connect (S11). */
 
-const MANAGER = 4, DAY = 86_400_000, MAX_PROJECTS = 20, MAX_KEYS = 100;
+const MANAGER = 4, DAY = 86_400_000, MAX_PROJECTS = 20, MAX_KEYS = 100, DEFAULT_LIMIT = 100, MAX_LIMIT = 200;
 
 /** The owner, or someone who manages a project: others have no use for an agent. */
 async function managesSomething(ctx: SignedIn): Promise<void> {
@@ -22,38 +22,104 @@ async function managesSomething(ctx: SignedIn): Promise<void> {
 
 interface KeyRow { id: string; agent_id: string; label: string | null; scopes_json: string; all_projects: number; created_at: number; expires_at: number; last_used_at: number | null; revoked_at: number | null }
 
-/** Keys that were revoked or ended are listed for 30 days. When teams is on, the owner sees every member's agents too. */
+function encodeAgentCursor(name: string, id: string): string {
+  return base64url(new TextEncoder().encode(JSON.stringify([name, id])));
+}
+
+function decodeAgentCursor(raw: string): [string, string] {
+  try {
+    const pad = raw.replaceAll('-', '+').replaceAll('_', '/');
+    const bytes = Uint8Array.from(atob(pad + '='.repeat((4 - (pad.length % 4)) % 4)), (c) => c.charCodeAt(0));
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    if (Array.isArray(parsed) && parsed.length === 2 && typeof parsed[0] === 'string' && typeof parsed[1] === 'string') {
+      return [parsed[0], parsed[1]];
+    }
+  } catch { /* fall through */ }
+  throw invalid('cursor is not valid.');
+}
+
+/** Keys that were revoked or ended are listed for 30 days. When teams is on, the owner sees every member's agents too, paginated. */
 export async function listAgents(ctx: SignedIn): Promise<Response> {
   await managesSomething(ctx);
-  const { env, person } = ctx, since = Date.now() - 30 * DAY;
+  const { env, person, url } = ctx, since = Date.now() - 30 * DAY;
+  const rawLimit = url.searchParams.get('limit');
+  let limit = DEFAULT_LIMIT;
+  if (rawLimit !== null) {
+    if (!/^[1-9][0-9]*$/.test(rawLimit)) throw invalid(`limit must be a whole number from 1 to ${MAX_LIMIT}.`);
+    limit = Math.min(Number(rawLimit), MAX_LIMIT);
+  }
+  const rawCursor = url.searchParams.get('cursor');
+  const after = rawCursor ? decodeAgentCursor(rawCursor) : null;
   const allAgents = person.isOwner && (await isOn(env.DB, 'teams'));
-  const [agents, keys, projects] = await env.DB.batch(
-    allAgents
-      ? [
-          env.DB.prepare('SELECT a.id, a.name, a.created_at, a.disabled_at, a.member_id, m.name owner_name FROM agents a JOIN members m ON m.id = a.member_id ORDER BY a.name, a.id LIMIT 200'),
-          env.DB.prepare(`SELECT k.id, k.agent_id, k.label, k.scopes_json, k.all_projects, k.created_at, k.expires_at, k.last_used_at, k.revoked_at FROM agent_keys k
-            WHERE (k.revoked_at IS NULL OR k.revoked_at > ?) AND k.expires_at > ?`).bind(since, since),
-          env.DB.prepare(`SELECT kp.key_id, p.slug, p.name_en, p.name_ar FROM agent_key_projects kp JOIN projects p ON p.id = kp.project_id`),
-        ]
-      : [
-          env.DB.prepare('SELECT a.id, a.name, a.created_at, a.disabled_at, a.member_id, m.name owner_name FROM agents a JOIN members m ON m.id = a.member_id WHERE a.member_id = ? ORDER BY a.name LIMIT 200').bind(person.memberId),
-          env.DB.prepare(`SELECT k.id, k.agent_id, k.label, k.scopes_json, k.all_projects, k.created_at, k.expires_at, k.last_used_at, k.revoked_at FROM agents a CROSS JOIN agent_keys k ON k.agent_id = a.id
-            WHERE a.member_id = ? AND (k.revoked_at IS NULL OR k.revoked_at > ?) AND k.expires_at > ?`).bind(person.memberId, since, since),
-          env.DB.prepare(`SELECT kp.key_id, p.slug, p.name_en, p.name_ar FROM agents a CROSS JOIN agent_keys k ON k.agent_id = a.id CROSS JOIN agent_key_projects kp ON kp.key_id = k.id CROSS JOIN projects p ON p.id = kp.project_id WHERE a.member_id = ?`).bind(person.memberId),
-        ],
-  );
+
+  const agentStmt = allAgents
+    ? after
+      ? env.DB.prepare(
+          `SELECT a.id, a.name, a.created_at, a.disabled_at, a.member_id, m.name owner_name
+           FROM agents a JOIN members m ON m.id = a.member_id
+           WHERE a.name > ? OR (a.name = ? AND a.id > ?)
+           ORDER BY a.name, a.id LIMIT ?`,
+        ).bind(after[0], after[0], after[1], limit + 1)
+      : env.DB.prepare(
+          `SELECT a.id, a.name, a.created_at, a.disabled_at, a.member_id, m.name owner_name
+           FROM agents a JOIN members m ON m.id = a.member_id
+           ORDER BY a.name, a.id LIMIT ?`,
+        ).bind(limit + 1)
+    : after
+      ? env.DB.prepare(
+          `SELECT a.id, a.name, a.created_at, a.disabled_at, a.member_id, m.name owner_name
+           FROM agents a JOIN members m ON m.id = a.member_id
+           WHERE a.member_id = ? AND (a.name > ? OR (a.name = ? AND a.id > ?))
+           ORDER BY a.name, a.id LIMIT ?`,
+        ).bind(person.memberId, after[0], after[0], after[1], limit + 1)
+      : env.DB.prepare(
+          `SELECT a.id, a.name, a.created_at, a.disabled_at, a.member_id, m.name owner_name
+           FROM agents a JOIN members m ON m.id = a.member_id
+           WHERE a.member_id = ?
+           ORDER BY a.name, a.id LIMIT ?`,
+        ).bind(person.memberId, limit + 1);
+
+  const { results: rawAgents } = await agentStmt.all<{ id: string; name: string; created_at: number; disabled_at: number | null; member_id: string; owner_name: string | null }>();
+  const hasMore = rawAgents.length > limit;
+  const page = hasMore ? rawAgents.slice(0, limit) : rawAgents;
+  const next = hasMore ? encodeAgentCursor(page.at(-1)!.name, page.at(-1)!.id) : null;
+
+  let keyRows: KeyRow[] = [];
   const of = new Map<string, { slug: string; name: { en: string; ar: string } }[]>();
-  for (const row of projects!.results as { key_id: string; slug: string; name_en: string; name_ar: string }[]) of.set(row.key_id, [...(of.get(row.key_id) ?? []), { slug: row.slug, name: { en: row.name_en, ar: row.name_ar } }]);
-  const rows = (keys!.results as KeyRow[]).sort((a, b) => b.created_at - a.created_at);
+  if (page.length > 0) {
+    const idsJson = JSON.stringify(page.map((a) => a.id));
+    const [keysRes, projectsRes] = await env.DB.batch([
+      env.DB.prepare(
+        `SELECT k.id, k.agent_id, k.label, k.scopes_json, k.all_projects, k.created_at, k.expires_at, k.last_used_at, k.revoked_at
+         FROM json_each(?) j
+         CROSS JOIN agent_keys k ON k.agent_id = j.value
+         WHERE (k.revoked_at IS NULL OR k.revoked_at > ?) AND k.expires_at > ?`,
+      ).bind(idsJson, since, since),
+      env.DB.prepare(
+        `SELECT kp.key_id, p.slug, p.name_en, p.name_ar
+         FROM json_each(?) j
+         CROSS JOIN agent_keys k ON k.agent_id = j.value
+         CROSS JOIN agent_key_projects kp ON kp.key_id = k.id
+         CROSS JOIN projects p ON p.id = kp.project_id
+         WHERE (k.revoked_at IS NULL OR k.revoked_at > ?) AND k.expires_at > ?`,
+      ).bind(idsJson, since, since),
+    ]);
+    keyRows = (keysRes!.results as KeyRow[]).sort((a, b) => b.created_at - a.created_at);
+    for (const row of projectsRes!.results as { key_id: string; slug: string; name_en: string; name_ar: string }[]) {
+      of.set(row.key_id, [...(of.get(row.key_id) ?? []), { slug: row.slug, name: { en: row.name_en, ar: row.name_ar } }]);
+    }
+  }
+
   return Response.json({
-    items: (agents!.results as { id: string; name: string; created_at: number; disabled_at: number | null; member_id: string; owner_name: string | null }[]).map((a) => ({
+    items: page.map((a) => ({
       id: a.id, name: a.name, createdAt: a.created_at, disabledAt: a.disabled_at,
       owner: { id: a.member_id, name: a.owner_name }, isMine: a.member_id === person.memberId,
-      keys: rows.filter((k) => k.agent_id === a.id).map((k) => ({
+      keys: keyRows.filter((k) => k.agent_id === a.id).map((k) => ({
         id: k.id, label: k.label, scopes: JSON.parse(k.scopes_json) as string[], allProjects: k.all_projects === 1, projects: of.get(k.id) ?? [],
         createdAt: k.created_at, expiresAt: k.expires_at, lastUsedAt: k.last_used_at, revokedAt: k.revoked_at,
       })),
     })),
+    next,
   });
 }
 
@@ -149,6 +215,13 @@ export async function setAgentOff(ctx: SignedIn): Promise<Response> {
   return new Response(null, { status: 204 });
 }
 
+function fallbackAgentName(baseName: string, agentId: string, attempt: number): string {
+  const tag = attempt === 0 ? agentId : `${agentId}-${attempt + 1}`;
+  const suffix = ` (${tag})`;
+  const maxPrefix = Math.max(0, 60 - suffix.length);
+  return maxPrefix > 0 ? `${[...baseName].slice(0, maxPrefix).join('')}${suffix}` : tag.slice(0, 60);
+}
+
 /** Owner takes over another member's agent to keep its history; trigger revokes all its old keys atomically. */
 export async function takeOverAgent(ctx: SignedIn): Promise<Response> {
   if (!(await isOn(ctx.env.DB, 'teams'))) throw new ApiError('feature_off', 'This feature is off.');
@@ -158,22 +231,35 @@ export async function takeOverAgent(ctx: SignedIn): Promise<Response> {
   if (!agent) throw notFound();
   if (agent.member_id === person.memberId) throw conflict('This agent is already yours.');
 
-  const collision = await env.DB.prepare('SELECT 1 FROM agents WHERE member_id = ? AND name = ?').bind(person.memberId, agent.name).first();
-  const suffix = ` (${agent.id})`;
-  const nextName = collision ? `${[...agent.name].slice(0, Math.max(1, 60 - suffix.length)).join('')}${suffix}` : agent.name;
-
-  try {
-    await env.DB.batch([
-      stillOwner(env, person.memberId),
-      env.DB.prepare('UPDATE agents SET member_id = ?, name = ? WHERE id = ? AND member_id <> ?').bind(person.memberId, nextName, id, person.memberId),
-      mustChange(env),
-      auditStatement(env, person.memberId, 'agent.takeover', id),
-    ]);
-  } catch (error) {
-    const msg = String(error);
-    if (msg.includes('UNIQUE constraint failed')) throw conflict('That agent name is already used.');
-    if (msg.includes('malformed JSON')) throw conflict('This agent could not be taken over.');
-    throw error;
+  // Choose an available name atomically inside the guarded write so concurrent key creation or a colliding fallback never fails takeover.
+  for (let attempt = 0; attempt < 16; attempt++) {
+    const fallback = attempt < 8
+      ? fallbackAgentName(agent.name, agent.id, attempt)
+      : fallbackAgentName(agent.name, newId('agt').slice(4, 14), attempt);
+    try {
+      const results = await env.DB.batch([
+        stillOwner(env, person.memberId),
+        env.DB.prepare(
+          `UPDATE agents
+           SET member_id = ?1,
+               name = CASE
+                 WHEN NOT EXISTS (SELECT 1 FROM agents o WHERE o.member_id = ?1 AND o.name = agents.name) THEN agents.name
+                 ELSE ?2
+               END
+           WHERE id = ?3 AND member_id <> ?1
+           RETURNING name`,
+        ).bind(person.memberId, fallback, id),
+        mustChange(env),
+        auditStatement(env, person.memberId, 'agent.takeover', id),
+      ]);
+      const updated = (results[1]!.results as { name: string }[])[0];
+      return Response.json({ id, name: updated?.name ?? fallback });
+    } catch (error) {
+      const msg = String(error);
+      if (msg.includes('UNIQUE constraint failed')) continue;
+      if (msg.includes('malformed JSON')) throw conflict('This agent could not be taken over.');
+      throw error;
+    }
   }
-  return Response.json({ id, name: nextName });
+  throw conflict('That agent name is already used.');
 }

@@ -19,7 +19,7 @@ describe('setup and recovery links', () => {
     const response = await register(token, authenticator);
     expect(response.status).toBe(204);
     expect(response.headers.get('Set-Cookie')).toMatch(/^lawh-local=[A-Za-z0-9_-]{43}; Path=\/; HttpOnly; SameSite=Lax; Max-Age=7776000$/);
-    expect(await json(await api('GET', '/me', { cookie: cookieOf(response) }))).toEqual({ id: 'o', name: 'Sara', isOwner: true, instance: true, manages: true, webhooks: false, teams: true });
+    expect(await json(await api('GET', '/me', { cookie: cookieOf(response) }))).toEqual({ id: 'o', name: 'Sara', isOwner: true, instance: true, manages: true, managesTeam: true, webhooks: false, teams: true });
     expect(await code(await register(token, await Authenticator.make()))).toEqual([404, 'not_found']);
     expect(await count('passkeys')).toBe(1);
     expect(await one("SELECT actor_id, subject_id FROM audit WHERE action='link.owner'")).toEqual({ actor_id: 'o', subject_id: 'o' });

@@ -25,13 +25,13 @@ function Loading({ problem, load }: { problem: 'offline' | 'wait' | 'failed' | n
   return problem ? <><Failure>{t(problem)}</Failure><button class="plain" onClick={load}>{t('retry')}</button></> : <p class="muted" role="status">{t('loading')}</p>;
 }
 
-const PARTS: [path: string, title: Key, who: 'all' | 'managers' | 'owner', need?: 'webhooks' | 'teams'][] = [
-  ['/settings', 'account', 'all'], ['/settings/teams', 'teams', 'managers', 'teams'], ['/settings/agents', 'agents', 'managers'], ['/settings/projects', 'projects', 'owner'], ['/settings/deleted', 'deletedPages', 'managers'], ['/settings/webhooks', 'webhooks', 'managers', 'webhooks'], ['/settings/data', 'data', 'owner'],
+const PARTS: [path: string, title: Key, who: 'all' | 'managers' | 'teamManagers' | 'owner', need?: 'webhooks' | 'teams'][] = [
+  ['/settings', 'account', 'all'], ['/settings/teams', 'teams', 'teamManagers', 'teams'], ['/settings/agents', 'agents', 'managers'], ['/settings/projects', 'projects', 'owner'], ['/settings/deleted', 'deletedPages', 'managers'], ['/settings/webhooks', 'webhooks', 'managers', 'webhooks'], ['/settings/data', 'data', 'owner'],
 ];
 
 export function Settings({ path, me, onChange }: { path: string; me: Me; onChange: () => void }) {
   const t = useText();
-  const parts = PARTS.filter(([, , who, need]) => (!need || me[need]) && (who === 'all' || me.isOwner || (who === 'managers' && me.manages)));
+  const parts = PARTS.filter(([, , who, need]) => (!need || me[need]) && (who === 'all' || me.isOwner || (who === 'managers' && me.manages) || (who === 'teamManagers' && me.managesTeam)));
   const now = parts.find(([p]) => p === path) ?? parts[0]!;
   return (
     <>
@@ -55,8 +55,12 @@ const LEVELS = [1, 2, 3, 4] as const;
 function Teams({ me }: { me: Me }) {
   const t = useText(), { data, problem, load } = useLoad<TeamsResponse>('/teams');
   const [making, setMaking] = useState(false), [name, setName] = useState(''), [busy, run] = useBusy(), [failed, setFailed] = useState<Problem | null>(null);
-  const newBtn = useRef<HTMLButtonElement>(null), first = useRef<HTMLInputElement>(null), id = useId();
-  useEffect(() => { if (making) first.current?.focus(); }, [making]);
+  const newBtn = useRef<HTMLButtonElement>(null), first = useRef<HTMLInputElement>(null), wasMaking = useRef(false), id = useId();
+  useEffect(() => {
+    if (making) first.current?.focus();
+    else if (wasMaking.current) newBtn.current?.focus();
+    wasMaking.current = making;
+  }, [making]);
   if (data === null) return <Loading problem={problem} load={load} />;
   const createTeam = () => run(async () => {
     setFailed(null);
@@ -65,7 +69,6 @@ function Teams({ me }: { me: Me }) {
       setName('');
       setMaking(false);
       load();
-      newBtn.current?.focus();
     } catch (error) {
       setFailed(error instanceof CallError && error.status === 409 ? 'teamLimitConflict' : problemIn(error));
     }
@@ -230,11 +233,12 @@ const SCOPES = ['pages:read', 'pages:write', 'decisions:read', 'comments:read', 
 const b64 = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes)).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
 
 function Agents({ me }: { me: Me }) {
-  const t = useText(), { data, problem, load, set } = useLoad<{ items: Agent[] }>('/agents'), [making, setMaking] = useState(false), [made, setMade] = useState<string | null>(null);
+  const t = useText(), { data, problem, load, set } = useLoad<Listed<Agent>>('/agents'), [making, setMaking] = useState(false), [made, setMade] = useState<string | null>(null);
+  const [busy, run] = useBusy(), [moreFailed, setMoreFailed] = useState<Problem | null>(null);
   const newKey = useRef<HTMLButtonElement>(null), wasOpen = useRef(false), open = making || made !== null;
   useEffect(() => { if (!open && wasOpen.current) newKey.current?.focus(); wasOpen.current = open; }, [open]);
-  const off = (agent: Agent, value: boolean) => call('PUT', `/agents/${agent.id}/off`, { off: value }).then(() => set((now) => now && { items: now.items.map((a) => (a.id === agent.id ? { ...a, disabledAt: value ? Date.now() : null } : a)) }));
-  const revoke = (id: string) => call('DELETE', `/agent-keys/${id}`).then(() => set((now) => now && { items: now.items.map((a) => ({ ...a, keys: a.keys.map((k) => (k.id === id ? { ...k, revokedAt: Date.now() } : k)) })) }));
+  const off = (agent: Agent, value: boolean) => call('PUT', `/agents/${agent.id}/off`, { off: value }).then(() => set((now) => now && { ...now, items: now.items.map((a) => (a.id === agent.id ? { ...a, disabledAt: value ? Date.now() : null } : a)) }));
+  const revoke = (id: string) => call('DELETE', `/agent-keys/${id}`).then(() => set((now) => now && { ...now, items: now.items.map((a) => ({ ...a, keys: a.keys.map((k) => (k.id === id ? { ...k, revokedAt: Date.now() } : k)) })) }));
   const takeOver = (agent: Agent) => call<{ id: string; name: string }>('POST', `/agents/${agent.id}/take-over`).then(() => load());
   if (data === null) return <Loading problem={problem} load={load} />;
   return (
@@ -245,6 +249,14 @@ function Agents({ me }: { me: Me }) {
       <p class="muted">{t('newKeyHelp')}</p>
       {data.items.length === 0 && <div class="card empty"><p>{t('noAgents')}</p></div>}
       <ul class="grid wide-cards">{data.items.map((agent) => <li key={agent.id}><AgentCard me={me} agent={agent} off={off} revoke={revoke} takeOver={takeOver} /></li>)}</ul>
+      {moreFailed && <Failure>{t(moreFailed)}</Failure>}
+      {data.next && <button class="plain wide" disabled={busy} onClick={() => run(async () => {
+        setMoreFailed(null);
+        try {
+          const next = await call<Listed<Agent>>('GET', `/agents?cursor=${encodeURIComponent(data.next!)}`);
+          set((now) => now && { items: [...now.items, ...next.items], next: next.next });
+        } catch (error) { setMoreFailed(problemIn(error)); }
+      })}>{t('more')}</button>}
     </>
   );
 }

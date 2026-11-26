@@ -17,9 +17,21 @@ describe('S17 teams API, caps, highest-level-wins, and managers’ agents', () =
     await sql("UPDATE settings SET value_json='false' WHERE key='teams'");
     const { cookie: owner } = await enter('o');
     expect((await json(await api('GET', '/me', { cookie: owner }))).teams).toBe(false);
-    expect(await code(await api('GET', '/teams', { cookie: owner }))).toEqual([404, 'feature_off']);
-    expect(await code(await api('POST', '/teams', { cookie: owner, body: { name: 'Alpha' } }))).toEqual([404, 'feature_off']);
-    expect(await code(await api('POST', '/agents/agt_00000000000000000000000001/take-over', { cookie: owner }))).toEqual([404, 'feature_off']);
+    const gated: [string, string, unknown?][] = [
+      ['GET', '/teams'],
+      ['POST', '/teams', { name: 'Alpha' }],
+      ['PATCH', '/teams/t1', { name: 'Beta' }],
+      ['DELETE', '/teams/t1'],
+      ['POST', '/teams/t1/members', { memberId: 'r', level: 1 }],
+      ['PATCH', '/teams/t1/members/r', { level: 2 }],
+      ['DELETE', '/teams/t1/members/r'],
+      ['POST', '/teams/t1/projects', { project: 'three' }],
+      ['DELETE', '/teams/t1/projects/one'],
+      ['POST', '/agents/agt_00000000000000000000000001/take-over'],
+    ];
+    for (const [method, path, body] of gated) {
+      expect(await code(await api(method, path, { cookie: owner, ...(body !== undefined ? { body } : {}) })), `${method} ${path}`).toEqual([404, 'feature_off']);
+    }
   });
 
   it('supports owner team CRUD, project assignment with 10-project cap, and member assignment with 5-team cap', async () => {
@@ -134,5 +146,68 @@ describe('S17 teams API, caps, highest-level-wins, and managers’ agents', () =
     expect(taken.name).toContain(monaAgentId);
     // Old key is immediately revoked (401)!
     expect((await agent('/v1/me', { token: monaKey })).status).toBe(401);
+  });
+
+  it('sets managesTeam for managers of teams without projects, paginates owner agents, handles repeated takeover collisions, and maps FK deletion races to 404', async () => {
+    const { cookie: owner } = await enter('o');
+    const { cookie: mona } = await enter('m');
+
+    // Create a team with ZERO projects and make Mona its manager.
+    const emptyTeam = await json(await api('POST', '/teams', { cookie: owner, body: { name: 'NoProjects' } }));
+    expect((await api('POST', `/teams/${emptyTeam.id}/members`, { cookie: owner, body: { memberId: 'm', level: 4 } })).status).toBe(201);
+    const monaMe = await json(await api('GET', '/me', { cookie: mona }));
+    expect(monaMe.manages).toBe(false);
+    expect(monaMe.managesTeam).toBe(true);
+    const monaTeams = await json(await api('GET', '/teams', { cookie: mona }));
+    expect(monaTeams.items.map((t: { id: string }) => t.id)).toEqual([emptyTeam.id]);
+
+    // Owner agent pagination returns every agent across pages with no silent truncation.
+    await sql(
+      "INSERT INTO agents(id, member_id, name, created_at) VALUES('agt_01PAG000000000000000000001', 'o', 'bot-1', 1)",
+      "INSERT INTO agents(id, member_id, name, created_at) VALUES('agt_01PAG000000000000000000002', 'm', 'bot-2', 1)",
+      "INSERT INTO agents(id, member_id, name, created_at) VALUES('agt_01PAG000000000000000000003', 'r', 'bot-3', 1)",
+    );
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: { items: { name: string }[]; next: string | null } = await json(
+        await api('GET', `/agents?limit=2${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, { cookie: owner }),
+      );
+      seen.push(...page.items.map((a) => a.name));
+      cursor = page.next;
+    } while (cursor);
+    expect(seen).toEqual(expect.arrayContaining(['bot-1', 'bot-2', 'bot-3']));
+    expect(new Set(seen).size).toBe(seen.length);
+
+    // Takeover still succeeds even when the owner already uses BOTH the original name AND the first `<name> (<id>)` fallback!
+    const colId = 'agt_01COL000000000000000000001';
+    await sql(
+      `INSERT INTO agents(id, member_id, name, created_at) VALUES('${colId}', 'm', 'dup', 1)`,
+      `INSERT INTO agents(id, member_id, name, created_at) VALUES('agt_01COL000000000000000000002', 'o', 'dup', 1)`,
+      `INSERT INTO agents(id, member_id, name, created_at) VALUES('agt_01COL000000000000000000003', 'o', 'dup (${colId})', 1)`,
+    );
+    const taken = await json(await api('POST', `/agents/${colId}/take-over`, { cookie: owner }));
+    expect(taken.id).toBe(colId);
+    expect(taken.name).toBe(`dup (${colId}-2)`);
+
+    // Deleting a team concurrently before addTeamProject's INSERT returns 404 (not 500).
+    const { env } = await import('cloudflare:workers');
+    let armed = true;
+    const racingDb = new Proxy(env.DB, {
+      get(target, key) {
+        if (key === 'batch') {
+          return async (statements: D1PreparedStatement[]) => {
+            if (armed) {
+              armed = false;
+              await sql(`DELETE FROM teams WHERE id='${emptyTeam.id}'`);
+            }
+            return target.batch(statements);
+          };
+        }
+        const value = Reflect.get(target, key);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    expect(await code(await api('POST', `/teams/${emptyTeam.id}/projects`, { cookie: owner, body: { project: 'one' } }, { DB: racingDb }))).toEqual([404, 'not_found']);
   });
 });

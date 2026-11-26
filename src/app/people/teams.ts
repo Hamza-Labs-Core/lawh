@@ -32,54 +32,82 @@ async function checkTeamAccess(ctx: SignedIn, teamId?: string): Promise<void> {
 
 /** GET /app-api/teams — owner sees all teams and projects; a team manager sees only the teams they manage. */
 export async function listTeams(ctx: SignedIn): Promise<Response> {
-  await needTeams(ctx.env);
-  await checkTeamAccess(ctx);
   const { env, person } = ctx;
+  const switchStmt = env.DB.prepare("SELECT value_json FROM settings WHERE key = 'teams'");
+  const availableMembersStmt = env.DB.prepare(
+    "SELECT id, name FROM members WHERE role = 'member' AND joined_at IS NOT NULL AND removed_at IS NULL ORDER BY name, id LIMIT 500",
+  );
 
-  const teamsStmt = person.isOwner
-    ? env.DB.prepare('SELECT id, name, created_at FROM teams ORDER BY name, id LIMIT 200')
-    : env.DB.prepare(
-        `SELECT t.id, t.name, t.created_at FROM team_members m
-         JOIN teams t ON t.id = m.team_id
-         WHERE m.member_id = ? AND m.level = 4
-         ORDER BY t.name, t.id LIMIT 200`,
-      ).bind(person.memberId);
-
-  const [teamsRes, availableMembersRes, availableProjectsRes] = await env.DB.batch([
-    teamsStmt,
-    env.DB.prepare(
-      "SELECT id, name FROM members WHERE role = 'member' AND joined_at IS NOT NULL AND removed_at IS NULL ORDER BY name, id LIMIT 500",
-    ),
-    person.isOwner
-      ? env.DB.prepare('SELECT id, slug, name_en, name_ar FROM projects ORDER BY slug LIMIT 1000')
-      : env.DB.prepare('SELECT id, slug, name_en, name_ar FROM projects WHERE 1 = 0'),
-  ]);
-
-  const teams = teamsRes!.results as { id: string; name: string; created_at: number }[];
-  const teamIds = teams.map((t) => t.id);
-
+  // Read switch, authorization, teams, members, and projects in one atomic snapshot so a mid-request demotion can never leak newer rows.
+  let teamsOn = false;
+  let teams: { id: string; name: string; created_at: number }[] = [];
   let memberRows: { team_id: string; member_id: string; name: string | null; level: number; set_at: number }[] = [];
   let projectRows: { team_id: string; slug: string; name_en: string; name_ar: string }[] = [];
+  let availableMembers: { id: string; name: string }[] = [];
+  let availableProjects: { slug: string; name_en: string; name_ar: string }[] = [];
 
-  if (teamIds.length > 0) {
-    const [mRes, pRes] = await env.DB.batch([
+  if (person.isOwner) {
+    const [swRes, ownerRes, teamsRes, mRes, pRes, availMRes, availPRes] = await env.DB.batch([
+      switchStmt,
+      env.DB.prepare("SELECT 1 FROM members WHERE id = ? AND role = 'owner' AND removed_at IS NULL").bind(person.memberId),
+      env.DB.prepare('SELECT id, name, created_at FROM teams ORDER BY name, id LIMIT 200'),
       env.DB.prepare(
         `SELECT t.team_id, t.member_id, m.name, t.level, t.set_at
-         FROM json_each(?) j
-         CROSS JOIN team_members t ON t.team_id = j.value
+         FROM team_members t
          JOIN members m ON m.id = t.member_id
          ORDER BY t.team_id, m.name, t.member_id`,
-      ).bind(JSON.stringify(teamIds)),
+      ),
       env.DB.prepare(
         `SELECT t.team_id, p.slug, p.name_en, p.name_ar
-         FROM json_each(?) j
-         CROSS JOIN team_projects t ON t.team_id = j.value
+         FROM team_projects t
          JOIN projects p ON p.id = t.project_id
          ORDER BY t.team_id, p.slug`,
-      ).bind(JSON.stringify(teamIds)),
+      ),
+      availableMembersStmt,
+      env.DB.prepare('SELECT id, slug, name_en, name_ar FROM projects ORDER BY slug LIMIT 1000'),
     ]);
+    teamsOn = (swRes!.results[0] as { value_json?: string } | undefined)?.value_json === 'true';
+    if (!teamsOn) throw new ApiError('feature_off', 'This feature is off.');
+    if (ownerRes!.results.length === 0) throw new ApiError('forbidden', 'Only the owner can do this.');
+    teams = teamsRes!.results as typeof teams;
     memberRows = mRes!.results as typeof memberRows;
     projectRows = pRes!.results as typeof projectRows;
+    availableMembers = availMRes!.results as typeof availableMembers;
+    availableProjects = availPRes!.results as typeof availableProjects;
+  } else {
+    const [swRes, teamsRes, mRes, pRes, availMRes] = await env.DB.batch([
+      switchStmt,
+      env.DB.prepare(
+        `SELECT t.id, t.name, t.created_at FROM team_members my
+         JOIN teams t ON t.id = my.team_id
+         WHERE my.member_id = ? AND my.level = 4
+         ORDER BY t.name, t.id LIMIT 200`,
+      ).bind(person.memberId),
+      env.DB.prepare(
+        `SELECT t.team_id, t.member_id, m.name, t.level, t.set_at
+         FROM team_members my
+         CROSS JOIN team_members t ON t.team_id = my.team_id
+         JOIN members m ON m.id = t.member_id
+         WHERE my.member_id = ? AND my.level = 4
+         ORDER BY t.team_id, m.name, t.member_id`,
+      ).bind(person.memberId),
+      env.DB.prepare(
+        `SELECT t.team_id, p.slug, p.name_en, p.name_ar
+         FROM team_members my
+         CROSS JOIN team_projects t ON t.team_id = my.team_id
+         JOIN projects p ON p.id = t.project_id
+         WHERE my.member_id = ? AND my.level = 4
+         ORDER BY t.team_id, p.slug`,
+      ).bind(person.memberId),
+      availableMembersStmt,
+    ]);
+    teamsOn = (swRes!.results[0] as { value_json?: string } | undefined)?.value_json === 'true';
+    if (!teamsOn) throw new ApiError('feature_off', 'This feature is off.');
+    teams = teamsRes!.results as typeof teams;
+    if (teams.length === 0) throw new ApiError('forbidden', 'Your level does not allow this.');
+    memberRows = mRes!.results as typeof memberRows;
+    projectRows = pRes!.results as typeof projectRows;
+    availableMembers = availMRes!.results as typeof availableMembers;
   }
 
   return Response.json({
@@ -94,14 +122,8 @@ export async function listTeams(ctx: SignedIn): Promise<Response> {
         .filter((p) => p.team_id === t.id)
         .map((p) => ({ slug: p.slug, name: { en: p.name_en, ar: p.name_ar } })),
     })),
-    availableMembers: (availableMembersRes!.results as { id: string; name: string }[]).map((m) => ({
-      id: m.id,
-      name: m.name,
-    })),
-    availableProjects: (availableProjectsRes!.results as { slug: string; name_en: string; name_ar: string }[]).map((p) => ({
-      slug: p.slug,
-      name: { en: p.name_en, ar: p.name_ar },
-    })),
+    availableMembers: availableMembers.map((m) => ({ id: m.id, name: m.name })),
+    availableProjects: availableProjects.map((p) => ({ slug: p.slug, name: { en: p.name_en, ar: p.name_ar } })),
   });
 }
 
@@ -308,6 +330,7 @@ export async function addTeamProject(ctx: SignedIn): Promise<Response> {
     ]);
   } catch (error) {
     const msg = String(error);
+    if (msg.includes('FOREIGN KEY constraint failed')) throw notFound();
     if (msg.includes('too many projects')) throw conflict('A team can have at most 10 projects.');
     if (msg.includes('UNIQUE constraint failed') || msg.includes('PRIMARY KEY')) throw conflict('That project is already in this team.');
     if (msg.includes('malformed JSON')) throw new ApiError('forbidden', 'Only the owner can do this.');
