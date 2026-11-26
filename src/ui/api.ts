@@ -44,10 +44,13 @@ export interface Thread extends Comment {
 }
 
 export interface AgentKey { id: string; label: string | null; scopes: string[]; allProjects: boolean; projects: ProjectName[]; createdAt: number; expiresAt: number; lastUsedAt: number | null; revokedAt: number | null }
-export interface Agent { id: string; name: string; createdAt: number; disabledAt: number | null; keys: AgentKey[] }
+export interface Agent { id: string; name: string; createdAt: number; disabledAt: number | null; owner?: { id: string; name: string | null }; isMine?: boolean; keys: AgentKey[] }
+export interface TeamMemberItem { id: string; name: string | null; level: number; setAt: number }
+export interface TeamItem { id: string; name: string; createdAt: number; members: TeamMemberItem[]; projects: ProjectName[] }
+export interface TeamsResponse { items: TeamItem[]; availableMembers: { id: string; name: string }[]; availableProjects: ProjectName[] }
 export interface DeletedPage { id: string; project: ProjectName; slug: string; title: string; lang: 'en' | 'ar'; deletedAt: number; purgedAfter: number }
 export interface WebhookItem { id: string; project: ProjectName; url: string; eventTypes: string[]; enabled: boolean; createdBy: string | null; createdAt: number }
 export interface FailedDelivery { webhookId: string; eventSeq: number; url: string; project: ProjectName; eventType: string; attempts: number; lastCode: number | null; updatedAt: number; eventAt: number }
 
 /** `manages`: manages at least one project. */
-export interface Me { id: string; name: string; isOwner: boolean; instance: boolean; manages: boolean; webhooks: boolean }
+export interface Me { id: string; name: string; isOwner: boolean; instance: boolean; manages: boolean; webhooks: boolean; teams: boolean }

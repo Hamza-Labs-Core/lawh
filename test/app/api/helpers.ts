@@ -26,7 +26,7 @@ export async function seed(): Promise<void> {
 }
 
 let count = 0;
-export interface KeyOptions { agent?: 'ao' | 'am'; scopes?: readonly string[]; projects?: string[] | 'all'; expiresAt?: number }
+export interface KeyOptions { agent?: string; scopes?: readonly string[]; projects?: string[] | 'all'; expiresAt?: number }
 
 export async function makeKey({ agent = 'ao', scopes = SCOPES, projects = 'all', expiresAt = FAR }: KeyOptions = {}): Promise<{ id: string; token: string }> {
   const id = newId('key'), secret = `${String(count++).padStart(6, '0')}${'s'.repeat(37)}`;

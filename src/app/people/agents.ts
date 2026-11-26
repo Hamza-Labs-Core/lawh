@@ -1,12 +1,14 @@
 import { hmacHex, readSecret } from '../../shared/crypto';
 import { ApiError, conflict, invalid, notFound } from '../../shared/errors';
 import { newId } from '../../shared/ids';
+import { isOn } from '../../shared/switches';
 import { type Scope, SCOPES } from '../api/auth';
 import { integer, onlyKeys, readJson, text } from '../api/body';
 import { mustChange } from '../api/idempotency';
 import { openProject, visibleProjects } from './access';
 import type { SignedIn } from './router';
 import { auditStatement } from './session';
+import { ownerOnly, stillOwner } from './settings';
 
 /** A person's agents and their keys. Keys for CI and containers are made here; other agents connect (S11). */
 
@@ -20,22 +22,33 @@ async function managesSomething(ctx: SignedIn): Promise<void> {
 
 interface KeyRow { id: string; agent_id: string; label: string | null; scopes_json: string; all_projects: number; created_at: number; expires_at: number; last_used_at: number | null; revoked_at: number | null }
 
-/** Keys that were revoked or ended are listed for 30 days. */
+/** Keys that were revoked or ended are listed for 30 days. When teams is on, the owner sees every member's agents too. */
 export async function listAgents(ctx: SignedIn): Promise<Response> {
   await managesSomething(ctx);
   const { env, person } = ctx, since = Date.now() - 30 * DAY;
-  const [agents, keys, projects] = await env.DB.batch([
-    env.DB.prepare('SELECT id, name, created_at, disabled_at FROM agents WHERE member_id = ? ORDER BY name LIMIT 200').bind(person.memberId),
-    env.DB.prepare(`SELECT k.id, k.agent_id, k.label, k.scopes_json, k.all_projects, k.created_at, k.expires_at, k.last_used_at, k.revoked_at FROM agents a CROSS JOIN agent_keys k ON k.agent_id = a.id
-      WHERE a.member_id = ? AND (k.revoked_at IS NULL OR k.revoked_at > ?) AND k.expires_at > ?`).bind(person.memberId, since, since),
-    env.DB.prepare(`SELECT kp.key_id, p.slug, p.name_en, p.name_ar FROM agents a CROSS JOIN agent_keys k ON k.agent_id = a.id CROSS JOIN agent_key_projects kp ON kp.key_id = k.id CROSS JOIN projects p ON p.id = kp.project_id WHERE a.member_id = ?`).bind(person.memberId),
-  ]);
+  const allAgents = person.isOwner && (await isOn(env.DB, 'teams'));
+  const [agents, keys, projects] = await env.DB.batch(
+    allAgents
+      ? [
+          env.DB.prepare('SELECT a.id, a.name, a.created_at, a.disabled_at, a.member_id, m.name owner_name FROM agents a JOIN members m ON m.id = a.member_id ORDER BY a.name, a.id LIMIT 200'),
+          env.DB.prepare(`SELECT k.id, k.agent_id, k.label, k.scopes_json, k.all_projects, k.created_at, k.expires_at, k.last_used_at, k.revoked_at FROM agent_keys k
+            WHERE (k.revoked_at IS NULL OR k.revoked_at > ?) AND k.expires_at > ?`).bind(since, since),
+          env.DB.prepare(`SELECT kp.key_id, p.slug, p.name_en, p.name_ar FROM agent_key_projects kp JOIN projects p ON p.id = kp.project_id`),
+        ]
+      : [
+          env.DB.prepare('SELECT a.id, a.name, a.created_at, a.disabled_at, a.member_id, m.name owner_name FROM agents a JOIN members m ON m.id = a.member_id WHERE a.member_id = ? ORDER BY a.name LIMIT 200').bind(person.memberId),
+          env.DB.prepare(`SELECT k.id, k.agent_id, k.label, k.scopes_json, k.all_projects, k.created_at, k.expires_at, k.last_used_at, k.revoked_at FROM agents a CROSS JOIN agent_keys k ON k.agent_id = a.id
+            WHERE a.member_id = ? AND (k.revoked_at IS NULL OR k.revoked_at > ?) AND k.expires_at > ?`).bind(person.memberId, since, since),
+          env.DB.prepare(`SELECT kp.key_id, p.slug, p.name_en, p.name_ar FROM agents a CROSS JOIN agent_keys k ON k.agent_id = a.id CROSS JOIN agent_key_projects kp ON kp.key_id = k.id CROSS JOIN projects p ON p.id = kp.project_id WHERE a.member_id = ?`).bind(person.memberId),
+        ],
+  );
   const of = new Map<string, { slug: string; name: { en: string; ar: string } }[]>();
   for (const row of projects!.results as { key_id: string; slug: string; name_en: string; name_ar: string }[]) of.set(row.key_id, [...(of.get(row.key_id) ?? []), { slug: row.slug, name: { en: row.name_en, ar: row.name_ar } }]);
   const rows = (keys!.results as KeyRow[]).sort((a, b) => b.created_at - a.created_at);
   return Response.json({
-    items: (agents!.results as { id: string; name: string; created_at: number; disabled_at: number | null }[]).map((a) => ({
+    items: (agents!.results as { id: string; name: string; created_at: number; disabled_at: number | null; member_id: string; owner_name: string | null }[]).map((a) => ({
       id: a.id, name: a.name, createdAt: a.created_at, disabledAt: a.disabled_at,
+      owner: { id: a.member_id, name: a.owner_name }, isMine: a.member_id === person.memberId,
       keys: rows.filter((k) => k.agent_id === a.id).map((k) => ({
         id: k.id, label: k.label, scopes: JSON.parse(k.scopes_json) as string[], allProjects: k.all_projects === 1, projects: of.get(k.id) ?? [],
         createdAt: k.created_at, expiresAt: k.expires_at, lastUsedAt: k.last_used_at, revokedAt: k.revoked_at,
@@ -134,4 +147,33 @@ export async function setAgentOff(ctx: SignedIn): Promise<Response> {
     throw error;
   }
   return new Response(null, { status: 204 });
+}
+
+/** Owner takes over another member's agent to keep its history; trigger revokes all its old keys atomically. */
+export async function takeOverAgent(ctx: SignedIn): Promise<Response> {
+  if (!(await isOn(ctx.env.DB, 'teams'))) throw new ApiError('feature_off', 'This feature is off.');
+  ownerOnly(ctx);
+  const { env, person } = ctx, id = ctx.params[0]!;
+  const agent = await env.DB.prepare('SELECT id, member_id, name FROM agents WHERE id = ?').bind(id).first<{ id: string; member_id: string; name: string }>();
+  if (!agent) throw notFound();
+  if (agent.member_id === person.memberId) throw conflict('This agent is already yours.');
+
+  const collision = await env.DB.prepare('SELECT 1 FROM agents WHERE member_id = ? AND name = ?').bind(person.memberId, agent.name).first();
+  const suffix = ` (${agent.id})`;
+  const nextName = collision ? `${[...agent.name].slice(0, Math.max(1, 60 - suffix.length)).join('')}${suffix}` : agent.name;
+
+  try {
+    await env.DB.batch([
+      stillOwner(env, person.memberId),
+      env.DB.prepare('UPDATE agents SET member_id = ?, name = ? WHERE id = ? AND member_id <> ?').bind(person.memberId, nextName, id, person.memberId),
+      mustChange(env),
+      auditStatement(env, person.memberId, 'agent.takeover', id),
+    ]);
+  } catch (error) {
+    const msg = String(error);
+    if (msg.includes('UNIQUE constraint failed')) throw conflict('That agent name is already used.');
+    if (msg.includes('malformed JSON')) throw conflict('This agent could not be taken over.');
+    throw error;
+  }
+  return Response.json({ id, name: nextName });
 }

@@ -1,10 +1,10 @@
 import { useEffect, useId, useRef, useState } from 'preact/hooks';
-import { type Agent, call, CallError, type DeletedPage, type FailedDelivery, type Listed, type Me, problemOf, type ProjectName, type WebhookItem } from '../api';
+import { type Agent, call, CallError, type DeletedPage, type FailedDelivery, type Listed, type Me, problemOf, type ProjectName, type TeamItem, type TeamsResponse, type WebhookItem } from '../api';
 import { Failure, Fill, Heading, Link, useBusy, useSettings, useText } from '../app';
 import { day, digits, type Key } from '../i18n';
 import { Account } from './Account';
 
-type Problem = 'offline' | 'wait' | 'failed' | 'notAllowed' | 'taken' | 'badInput' | 'keyLate' | 'secretComment';
+type Problem = 'offline' | 'wait' | 'failed' | 'notAllowed' | 'taken' | 'badInput' | 'keyLate' | 'secretComment' | 'teamLimitConflict';
 const problemIn = (error: unknown): Problem =>
   error instanceof CallError && error.status === 403 ? 'notAllowed' : error instanceof CallError && error.code === 'secret_found' ? 'secretComment' : error instanceof CallError && error.status === 422 ? 'badInput' : problemOf(error);
 
@@ -25,8 +25,8 @@ function Loading({ problem, load }: { problem: 'offline' | 'wait' | 'failed' | n
   return problem ? <><Failure>{t(problem)}</Failure><button class="plain" onClick={load}>{t('retry')}</button></> : <p class="muted" role="status">{t('loading')}</p>;
 }
 
-const PARTS: [path: string, title: Key, who: 'all' | 'managers' | 'owner', need?: 'webhooks'][] = [
-  ['/settings', 'account', 'all'], ['/settings/agents', 'agents', 'managers'], ['/settings/projects', 'projects', 'owner'], ['/settings/deleted', 'deletedPages', 'managers'], ['/settings/webhooks', 'webhooks', 'managers', 'webhooks'], ['/settings/data', 'data', 'owner'],
+const PARTS: [path: string, title: Key, who: 'all' | 'managers' | 'owner', need?: 'webhooks' | 'teams'][] = [
+  ['/settings', 'account', 'all'], ['/settings/teams', 'teams', 'managers', 'teams'], ['/settings/agents', 'agents', 'managers'], ['/settings/projects', 'projects', 'owner'], ['/settings/deleted', 'deletedPages', 'managers'], ['/settings/webhooks', 'webhooks', 'managers', 'webhooks'], ['/settings/data', 'data', 'owner'],
 ];
 
 export function Settings({ path, me, onChange }: { path: string; me: Me; onChange: () => void }) {
@@ -38,12 +38,189 @@ export function Settings({ path, me, onChange }: { path: string; me: Me; onChang
       <Heading>{t('settings')}</Heading>
       <nav class="chips" aria-label={t('settings')}>{parts.map(([p, title]) => <Link key={p} class="chip" to={p} current={p === now[0]}>{t(title)}</Link>)}</nav>
       {now[0] === '/settings' && <Account me={me} onChange={onChange} inside />}
+      {now[0] === '/settings/teams' && <Teams me={me} />}
       {now[0] === '/settings/agents' && <Agents me={me} />}
       {now[0] === '/settings/projects' && <Projects />}
       {now[0] === '/settings/deleted' && <Deleted />}
       {now[0] === '/settings/webhooks' && <Webhooks />}
       {now[0] === '/settings/data' && <Data onChange={onChange} />}
     </>
+  );
+}
+
+// ---- Teams
+
+const LEVELS = [1, 2, 3, 4] as const;
+
+function Teams({ me }: { me: Me }) {
+  const t = useText(), { data, problem, load } = useLoad<TeamsResponse>('/teams');
+  const [making, setMaking] = useState(false), [name, setName] = useState(''), [busy, run] = useBusy(), [failed, setFailed] = useState<Problem | null>(null);
+  const newBtn = useRef<HTMLButtonElement>(null), first = useRef<HTMLInputElement>(null), id = useId();
+  useEffect(() => { if (making) first.current?.focus(); }, [making]);
+  if (data === null) return <Loading problem={problem} load={load} />;
+  const createTeam = () => run(async () => {
+    setFailed(null);
+    try {
+      await call('POST', '/teams', { name: name.trim() });
+      setName('');
+      setMaking(false);
+      load();
+      newBtn.current?.focus();
+    } catch (error) {
+      setFailed(error instanceof CallError && error.status === 409 ? 'teamLimitConflict' : problemIn(error));
+    }
+  });
+  return (
+    <>
+      <p class="muted">{t('teamsHelp')}</p>
+      {me.isOwner && !making && <button ref={newBtn} class="primary fit" onClick={() => setMaking(true)}>{t('newTeam')}</button>}
+      {me.isOwner && making && (
+        <form class="card form" onSubmit={(event) => { event.preventDefault(); if (name.trim()) createTeam(); }}>
+          <h2>{t('newTeam')}</h2>
+          <label class="muted" for={`${id}-tn`}>{t('teamName')}</label>
+          <input ref={first} id={`${id}-tn`} class="field" dir="auto" maxLength={60} autocomplete="off" value={name} onInput={(event) => setName(event.currentTarget.value)} />
+          {failed && <Failure>{t(failed)}</Failure>}
+          <button class="primary" type="submit" disabled={!name.trim() || busy}>{t('save')}</button>
+          <button class="plain wide" type="button" disabled={busy} onClick={() => { setMaking(false); setFailed(null); setName(''); }}>{t('cancel')}</button>
+        </form>
+      )}
+      {data.items.length === 0 && <div class="card empty"><p>{t('noTeams')}</p></div>}
+      <ul class="grid wide-cards">
+        {data.items.map((team) => (
+          <li key={team.id}>
+            <TeamCard me={me} team={team} availableMembers={data.availableMembers} availableProjects={data.availableProjects} onChanged={load} />
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+function TeamCard({
+  me,
+  team,
+  availableMembers,
+  availableProjects,
+  onChanged,
+}: {
+  me: Me;
+  team: TeamItem;
+  availableMembers: { id: string; name: string }[];
+  availableProjects: ProjectName[];
+  onChanged: () => void;
+}) {
+  const t = useText(), { lang } = useSettings(), id = useId(), [busy, run] = useBusy(), [problem, setProblem] = useState<Problem | null>(null);
+  const [renaming, setRenaming] = useState(false), [draftName, setDraftName] = useState(team.name);
+  const [askingDelete, setAskingDelete] = useState(false);
+  const memberIdsInTeam = new Set(team.members.map((m) => m.id));
+  const addableMembers = availableMembers.filter((m) => !memberIdsInTeam.has(m.id));
+  const projectSlugsInTeam = new Set(team.projects.map((p) => p.slug));
+  const addableProjects = availableProjects.filter((p) => !projectSlugsInTeam.has(p.slug));
+  const [pickedMember, setPickedMember] = useState('');
+  const [pickedLevel, setPickedLevel] = useState(1);
+  const [pickedProject, setPickedProject] = useState('');
+
+  const allowedLevels = me.isOwner ? LEVELS : ([1, 2, 3] as const);
+  const chosenMember = pickedMember && addableMembers.some((m) => m.id === pickedMember) ? pickedMember : (addableMembers[0]?.id ?? '');
+  const chosenProject = pickedProject && addableProjects.some((p) => p.slug === pickedProject) ? pickedProject : (addableProjects[0]?.slug ?? '');
+
+  const act = (what: () => Promise<void>) => run(async () => {
+    setProblem(null);
+    try {
+      await what();
+      onChanged();
+    } catch (error) {
+      setProblem(error instanceof CallError && error.status === 409 ? 'teamLimitConflict' : problemIn(error));
+    }
+  });
+
+  return (
+    <section class="card form">
+      {renaming ? (
+        <form class="form" onSubmit={(event) => { event.preventDefault(); if (draftName.trim()) act(async () => { await call('PATCH', `/teams/${team.id}`, { name: draftName.trim() }); setRenaming(false); }); }}>
+          <label class="muted" for={`${id}-rn`}>{t('teamName')}</label>
+          <input id={`${id}-rn`} class="field" dir="auto" maxLength={60} value={draftName} onInput={(event) => setDraftName(event.currentTarget.value)} />
+          <div class="row">
+            <button class="primary" type="submit" disabled={!draftName.trim() || busy}>{t('save')}</button>
+            <button class="plain" type="button" disabled={busy} onClick={() => { setRenaming(false); setDraftName(team.name); }}>{t('cancel')}</button>
+          </div>
+        </form>
+      ) : (
+        <div class="row">
+          <h2><bdi dir="auto">{team.name}</bdi></h2>
+          {me.isOwner && <button class="plain" disabled={busy} onClick={() => { setDraftName(team.name); setRenaming(true); }}>{t('rename')}</button>}
+        </div>
+      )}
+
+      <h3>{t('teamProjects')}</h3>
+      {team.projects.length === 0 && <p class="muted">{t('noTeamProjects')}</p>}
+      <ul class="rows">
+        {team.projects.map((p) => (
+          <li key={p.slug}>
+            <span><bdi>{p.name[lang]}</bdi> <span class="muted" dir="ltr">({p.slug})</span></span>
+            {me.isOwner && <button class="plain" disabled={busy} onClick={() => act(() => call('DELETE', `/teams/${team.id}/projects/${p.slug}`))}>{t('remove')}</button>}
+          </li>
+        ))}
+      </ul>
+      {me.isOwner && addableProjects.length > 0 && (
+        <form class="row" onSubmit={(event) => { event.preventDefault(); if (chosenProject) act(() => call('POST', `/teams/${team.id}/projects`, { project: chosenProject })); }}>
+          <select class="field" aria-label={t('addProjectToTeam')} value={chosenProject} onChange={(event) => setPickedProject(event.currentTarget.value)}>
+            {addableProjects.map((p) => <option key={p.slug} value={p.slug} selected={p.slug === chosenProject}>{p.name[lang]}</option>)}
+          </select>
+          <button class="plain" type="submit" disabled={!chosenProject || busy}>{t('addProjectToTeam')}</button>
+        </form>
+      )}
+
+      <h3>{t('teamMembers')}</h3>
+      {team.members.length === 0 && <p class="muted">{t('noTeamMembers')}</p>}
+      <ul class="rows">
+        {team.members.map((m) => {
+          const canEdit = me.isOwner || m.level < 4;
+          return (
+            <li key={m.id}>
+              <strong><bdi dir="auto">{m.name ?? t('former')}</bdi></strong>
+              {canEdit ? (
+                <div class="row">
+                  <select
+                    class="field"
+                    aria-label={`${m.name ?? t('former')} ${t('level')}`}
+                    value={String(m.level)}
+                    disabled={busy}
+                    onChange={(event) => act(() => call('PATCH', `/teams/${team.id}/members/${m.id}`, { level: Number(event.currentTarget.value) }))}
+                  >
+                    {allowedLevels.map((lvl) => <option key={lvl} value={String(lvl)} selected={lvl === m.level}>{t(`level${lvl}` as Key)}</option>)}
+                  </select>
+                  <button class="plain" disabled={busy} onClick={() => act(() => call('DELETE', `/teams/${team.id}/members/${m.id}`))}>{t('remove')}</button>
+                </div>
+              ) : (
+                <span class="status">{t(`level${m.level}` as Key)}</span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {addableMembers.length > 0 && (
+        <form class="row" onSubmit={(event) => { event.preventDefault(); if (chosenMember) act(() => call('POST', `/teams/${team.id}/members`, { memberId: chosenMember, level: pickedLevel })); }}>
+          <select class="field" aria-label={t('member')} value={chosenMember} onChange={(event) => setPickedMember(event.currentTarget.value)}>
+            {addableMembers.map((m) => <option key={m.id} value={m.id} selected={m.id === chosenMember}>{m.name}</option>)}
+          </select>
+          <select class="field" aria-label={t('level')} value={String(pickedLevel)} onChange={(event) => setPickedLevel(Number(event.currentTarget.value))}>
+            {allowedLevels.map((lvl) => <option key={lvl} value={String(lvl)} selected={lvl === pickedLevel}>{t(`level${lvl}` as Key)}</option>)}
+          </select>
+          <button class="plain" type="submit" disabled={!chosenMember || busy}>{t('addMember')}</button>
+        </form>
+      )}
+
+      {problem && <Failure>{t(problem)}</Failure>}
+      {me.isOwner && (askingDelete ? (
+        <div class="row">
+          <button class="plain danger" disabled={busy} onClick={() => act(() => call('DELETE', `/teams/${team.id}`))}>{t('deleteTeamSure')}</button>
+          <button class="plain" disabled={busy} onClick={() => setAskingDelete(false)}>{t('cancel')}</button>
+        </div>
+      ) : (
+        <button class="plain wide" disabled={busy} onClick={() => setAskingDelete(true)}>{t('deleteTeam')}</button>
+      ))}
+    </section>
   );
 }
 
@@ -58,25 +235,27 @@ function Agents({ me }: { me: Me }) {
   useEffect(() => { if (!open && wasOpen.current) newKey.current?.focus(); wasOpen.current = open; }, [open]);
   const off = (agent: Agent, value: boolean) => call('PUT', `/agents/${agent.id}/off`, { off: value }).then(() => set((now) => now && { items: now.items.map((a) => (a.id === agent.id ? { ...a, disabledAt: value ? Date.now() : null } : a)) }));
   const revoke = (id: string) => call('DELETE', `/agent-keys/${id}`).then(() => set((now) => now && { items: now.items.map((a) => ({ ...a, keys: a.keys.map((k) => (k.id === id ? { ...k, revokedAt: Date.now() } : k)) })) }));
+  const takeOver = (agent: Agent) => call<{ id: string; name: string }>('POST', `/agents/${agent.id}/take-over`).then(() => load());
   if (data === null) return <Loading problem={problem} load={load} />;
   return (
     <>
       {made !== null && <NewKey secret={made} onDone={() => setMade(null)} />}
-      {making && <MakeKey me={me} agents={data.items} onCancel={() => setMaking(false)} onMade={(secret) => { setMaking(false); setMade(secret); load(); }} />}
+      {making && <MakeKey me={me} agents={data.items.filter((a) => a.isMine !== false)} onCancel={() => setMaking(false)} onMade={(secret) => { setMaking(false); setMade(secret); load(); }} />}
       {!making && made === null && <button ref={newKey} class="primary fit" onClick={() => setMaking(true)}>{t('newKey')}</button>}
       <p class="muted">{t('newKeyHelp')}</p>
       {data.items.length === 0 && <div class="card empty"><p>{t('noAgents')}</p></div>}
-      <ul class="grid wide-cards">{data.items.map((agent) => <li key={agent.id}><AgentCard agent={agent} off={off} revoke={revoke} /></li>)}</ul>
+      <ul class="grid wide-cards">{data.items.map((agent) => <li key={agent.id}><AgentCard me={me} agent={agent} off={off} revoke={revoke} takeOver={takeOver} /></li>)}</ul>
     </>
   );
 }
 
-function AgentCard({ agent, off, revoke }: { agent: Agent; off: (agent: Agent, value: boolean) => Promise<void>; revoke: (id: string) => Promise<void> }) {
+function AgentCard({ me, agent, off, revoke, takeOver }: { me: Me; agent: Agent; off: (agent: Agent, value: boolean) => Promise<void>; revoke: (id: string) => Promise<void>; takeOver: (agent: Agent) => Promise<void> }) {
   const t = useText(), { lang } = useSettings(), [busy, run] = useBusy(), [problem, setProblem] = useState<Problem | null>(null), [asking, setAsking] = useState<string | null>(null);
   const act = (what: () => Promise<void>) => run(async () => { setProblem(null); try { await what(); setAsking(null); } catch (error) { setProblem(problemIn(error)); } });
+  const label = agent.owner && agent.isMine === false ? `${agent.name} (${agent.owner.name ?? t('former')})` : agent.name;
   return (
     <section class="card">
-      <h2><bdi dir="auto">{agent.name}</bdi>{agent.disabledAt !== null && <> <span class="status">{t('agentOff')}</span></>}</h2>
+      <h2><bdi dir="auto">{label}</bdi>{agent.disabledAt !== null && <> <span class="status">{t('agentOff')}</span></>}</h2>
       {agent.keys.length === 0 && <p class="muted">{t('noKeys')}</p>}
       <ul class="rows">
         {agent.keys.map((key) => {
@@ -98,6 +277,9 @@ function AgentCard({ agent, off, revoke }: { agent: Agent; off: (agent: Agent, v
       </ul>
       {problem && <Failure>{t(problem)}</Failure>}
       <button class="plain wide" disabled={busy} onClick={() => act(() => off(agent, agent.disabledAt === null))}>{t(agent.disabledAt === null ? 'turnAgentOff' : 'turnAgentOn')}</button>
+      {me.isOwner && agent.isMine === false && (asking === 'takeover'
+        ? <div class="row"><button class="plain" disabled={busy} onClick={() => act(() => takeOver(agent))}>{t('takeOverAgentSure')}</button><button class="plain" disabled={busy} onClick={() => setAsking(null)}>{t('cancel')}</button></div>
+        : <button class="plain wide" disabled={busy} onClick={() => setAsking('takeover')}>{t('takeOverAgent')}</button>)}
     </section>
   );
 }
