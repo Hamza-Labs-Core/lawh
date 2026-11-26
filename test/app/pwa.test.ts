@@ -93,6 +93,7 @@ describe('PWA manifest, icons, and service worker', () => {
     expect(sw).toContain("url.pathname.startsWith('/app-api/')");
     expect(sw).toContain("url.pathname.startsWith('/v1/')");
     expect(sw).toContain("url.pathname === '/link'");
+    expect(sw).toContain("key.startsWith('lawh-shell-')");
     expect(sw).not.toContain('cache.put');
 
     // HEAD works; POST and unknown icons return 404.
