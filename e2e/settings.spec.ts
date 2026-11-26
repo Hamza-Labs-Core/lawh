@@ -13,7 +13,11 @@ test('a key is made in the browser, shown once, works, and is revoked after a se
   try {
     await open(page, member, '/settings/agents');
     await expect(page.getByText('No agents yet.')).toBeVisible();
-    await page.getByRole('button', { name: 'New key for CI or a container' }).click();
+    const newKey = page.getByRole('button', { name: 'New key for CI or a container' });
+    await newKey.click();
+    await page.getByRole('button', { name: 'Cancel' }).click();
+    await expect(newKey).toBeFocused();
+    await newKey.click();
     const make = page.getByRole('button', { name: 'Make the key' });
     await expect(make).toBeDisabled();
     await page.getByLabel('Agent', { exact: true }).fill('ci');
@@ -31,6 +35,7 @@ test('a key is made in the browser, shown once, works, and is revoked after a se
     if (browserName === 'chromium') { await expect(page.getByText('Copied.')).toBeVisible(); expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(key); }
     await page.getByRole('button', { name: 'Done, hide it' }).click();
     await expect(page.getByText(key)).toHaveCount(0);
+    await expect(newKey).toBeFocused();
     const card = page.locator('.card').filter({ hasText: 'Build server' });
     await expect(card).toContainText('Garden app');
     await expect(card).toContainText('Read pages, Read decisions, Read comments, Reply to comments');
