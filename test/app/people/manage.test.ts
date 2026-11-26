@@ -209,7 +209,7 @@ describe('how many versions are kept', () => {
 
   it('all, until the owner says how many; then each publish drops the older ones, and their files go', async () => {
     const { cookie } = await enter('o');
-    expect(await (await api('GET', '/settings', { cookie })).json()).toEqual({ retention: null, webhooks: false, webhookHosts: [], teams: true });
+    expect(await (await api('GET', '/settings', { cookie })).json()).toEqual({ retention: null, webhooks: false, webhookHosts: [], teams: true, live: false });
     for (const n of [2, 3]) await version(n, `v${n}`);
     expect(await versions()).toBe('1,2,3');
     expect(await (await keep(cookie, 2)).json()).toEqual({ retention: 2 });

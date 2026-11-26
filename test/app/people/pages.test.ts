@@ -66,8 +66,8 @@ describe('what a person sees', () => {
       '/comments', '/projects/one/pages/a/comments', `/comments/cmt_${'0'.repeat(26)}`, `/comments/cmt_${'0'.repeat(26)}/replies`, `/comments/cmt_${'0'.repeat(26)}/resolved`,
       // In webhooks.test.ts, at every level.
       '/switches/webhooks', '/settings/webhook-hosts', '/webhooks', `/webhooks/whk_${'0'.repeat(26)}`, `/webhooks/whk_${'0'.repeat(26)}/deliveries/1/resend`,
-      // In connect.test.ts, at every level.
-      '/connect/look', '/connect/answer',
+      // In connect.test.ts and live.test.ts, at every level.
+      '/connect/look', '/connect/answer', '/switches/live',
       // In teams.test.ts, people.test.ts & matrix.test.ts, at every level.
       `/agents/agt_${'0'.repeat(26)}/take-over`, '/teams', '/teams/t1', '/teams/t1/members', '/teams/t1/members/m', '/teams/t1/projects', '/teams/t1/projects/one',
       '/switches/teams', '/account/keys', '/people', '/people/invite', '/people/m/invite-link', '/people/m/invite', '/people/m/reset', '/people/m'];

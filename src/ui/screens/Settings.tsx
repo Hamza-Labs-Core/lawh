@@ -892,7 +892,7 @@ function ConfirmDialog({ title, message, confirmLabel, busy, returnTo, onConfirm
 }
 
 function Data({ onChange }: { onChange: () => void }) {
-  const t = useText(), { lang } = useSettings(), id = useId(), { data, problem, load, set } = useLoad<{ retention: number | null; webhooks: boolean; webhookHosts: string[]; teams: boolean }>('/settings'), [busy, run] = useBusy(), [failed, setFailed] = useState<Problem | null>(null), [choice, setChoice] = useState<string | null>(null), [done, setDone] = useState(false);
+  const t = useText(), { lang } = useSettings(), id = useId(), { data, problem, load, set } = useLoad<{ retention: number | null; webhooks: boolean; webhookHosts: string[]; teams: boolean; live: boolean }>('/settings'), [busy, run] = useBusy(), [failed, setFailed] = useState<Problem | null>(null), [choice, setChoice] = useState<string | null>(null), [done, setDone] = useState(false);
   const [hostsDraft, setHostsDraft] = useState<string | null>(null), [hostsDone, setHostsDone] = useState(false);
   const [teamsOffFrom, setTeamsOffFrom] = useState<HTMLElement | null>(null);
   const [parts, setParts] = useState<{ after: string; last: string; files: number; bytes: number }[] | null>(null);
@@ -940,6 +940,16 @@ function Data({ onChange }: { onChange: () => void }) {
         {value !== now && fewer && <p class="failure">{t('retentionWarn')}</p>}
         <div aria-live="polite">{done && <p class="done">{t('saved')}</p>}</div>
         <button class="primary" disabled={busy || value === now} onClick={() => act(async () => { const next = await call<{ retention: number | null }>('PUT', '/settings/retention', { keep: value === '' ? null : Number(value) }); set((cur) => cur && { ...cur, retention: next.retention }); setChoice(null); setDone(true); })}>{t('save')}</button>
+      </section>
+      <section class="card form">
+        <h2>{t('livePings')}</h2>
+        <p class="muted">{t('livePingsHelp')}</p>
+        <p>{t(data.live ? 'livePingsOn' : 'livePingsOff')}</p>
+        <button class="plain wide" disabled={busy} onClick={() => act(async () => {
+          const next = await call<{ live: boolean }>('PUT', '/switches/live', { on: !data.live });
+          set((cur) => cur && { ...cur, live: next.live });
+          onChange();
+        })}>{t(data.live ? 'turnLiveOff' : 'turnLiveOn')}</button>
       </section>
       <section class="card form">
         <h2>{t('webhooks')}</h2>

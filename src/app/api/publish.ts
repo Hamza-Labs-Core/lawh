@@ -7,6 +7,7 @@ import { indexStatements } from '../search';
 import { pruneVersions, versionsKept } from '../housekeeping';
 import { entryText } from '../search/entry';
 import { dispatchOutbox } from '../webhooks/deliver';
+import { notifyLiveBySlug } from './live';
 import { type Project, projectById, projectBySlug } from './auth';
 import { integer, isObject, onlyKeys, readJson, text } from './body';
 import { idempotent, type Idempotent, mustChange, replay, type Stored, writeOnce } from './idempotency';
@@ -191,6 +192,7 @@ export async function commitPublish(ctx: Context): Promise<Response> {
     const stored = await commitNew(ctx, idem);
     ctx.ctx.waitUntil(keepVersions(ctx.env, String(stored.json.id), Number(stored.json.currentVersion)).catch(() => undefined));
     ctx.ctx.waitUntil(dispatchOutbox(ctx.env).catch(() => undefined));
+    ctx.ctx.waitUntil(notifyLiveBySlug(ctx.env, String(stored.json.project)).catch(() => undefined));
     return Response.json(stored.json, { status: stored.status });
   } catch (error) {
     // The same request, sent twice at once, may have finished meanwhile: then its reply is the answer.

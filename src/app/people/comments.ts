@@ -6,6 +6,7 @@ import { type CommentRow, commentJson, DECIDER, findComment, openThreadsStatemen
 import { encodeCursor, pageLimit, readCursor } from '../pages/list';
 import { levelOn, openProject, visibleProjects } from './access';
 import { dispatchOutbox } from '../webhooks/deliver';
+import { notifyLive } from '../api/live';
 import type { SignedIn } from './router';
 
 const COMMENTER = 2, MANAGER = 4;
@@ -82,6 +83,7 @@ async function write(ctx: SignedIn, comment: New): Promise<void> {
         .bind(comment.projectId, comment.pageId, comment.id, comment.at, person.memberId),
     ]);
     ctx.ctx.waitUntil(dispatchOutbox(env).catch(() => undefined));
+    ctx.ctx.waitUntil(notifyLive(env, comment.projectId).catch(() => undefined));
   } catch (error) {
     const text = String(error);
     if (text.includes('UNIQUE constraint failed: comments.id')) {
@@ -171,7 +173,10 @@ export async function setResolved(ctx: SignedIn): Promise<Response> {
     if (!mayResolve(latest.comment, latest.level, ctx)) throw new ApiError('forbidden', 'Your level does not allow this.');
     throw conflict('The page or the thread changed meanwhile.');
   }
-  if (body.resolved) ctx.ctx.waitUntil(dispatchOutbox(ctx.env).catch(() => undefined));
+  if (body.resolved) {
+    ctx.ctx.waitUntil(dispatchOutbox(ctx.env).catch(() => undefined));
+    ctx.ctx.waitUntil(notifyLive(ctx.env, comment.project_id).catch(() => undefined));
+  }
   return answer(ctx, comment.id);
 }
 
