@@ -110,6 +110,8 @@ test('the owner turns webhooks on, allows a host, and a manager adds, resends, a
   await expect(failedSection).toContainText('HTTP 502');
   await failedSection.getByRole('button', { name: 'Send again' }).click();
   await expect(page.getByText('Failed deliveries')).toHaveCount(0);
+  await expect(page.getByText('Queued to send again.')).toBeVisible();
+  expect(await page.evaluate(() => document.activeElement !== document.body)).toBe(true);
 
   await hookCard.getByRole('button', { name: 'Delete' }).click();
   await hookCard.getByRole('button', { name: 'Delete for good' }).click();

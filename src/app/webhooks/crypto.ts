@@ -65,6 +65,7 @@ export function checkWebhookUrl(raw: unknown, allowedHosts: string[]): { url: st
   let parsed: URL;
   try { parsed = new URL(trimmed); } catch { throw invalid('url must be a valid HTTPS address.'); }
   if (parsed.protocol !== 'https:') throw invalid('Webhooks must use HTTPS.');
+  if (parsed.port) throw invalid('Webhook URLs must use the standard HTTPS port.');
   if (parsed.username || parsed.password || parsed.hash) throw invalid('url must not contain credentials or a fragment.');
   const host = parsed.hostname.toLowerCase().replace(/\.$/, '');
   if (!HOST_RE.test(host) || IPV4_RE.test(host) || RESERVED_SUFFIXES.some((s) => host.endsWith(s))) {

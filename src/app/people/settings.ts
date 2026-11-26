@@ -51,22 +51,21 @@ export async function setRetention(ctx: SignedIn): Promise<Response> {
   return Response.json({ retention: keep });
 }
 
-/** Turn outbound webhooks on or off. Turning them on skips earlier events so old history is not replayed. */
+/** Turn outbound webhooks on or off. Turning them on records the current event high-water mark atomically so earlier history is never replayed. */
 export async function setWebhooksSwitch(ctx: SignedIn): Promise<Response> {
   ownerOnly(ctx);
   const { env, person } = ctx, { body } = await readJson(ctx.request), now = Date.now();
   onlyKeys(body, ['on']);
   if (typeof body.on !== 'boolean') throw invalid('on must be true or false.');
-  if (body.on && !(await isOn(env.DB, 'webhooks'))) {
-    // Drain un-enqueued pre-switch events in bounded indexed slices so enabling webhooks only sends new events.
-    for (let i = 0; i < 50; i++) {
-      const res = await env.DB.prepare('UPDATE events SET enqueued_at = ? WHERE seq IN (SELECT seq FROM events WHERE enqueued_at IS NULL ORDER BY seq LIMIT 100)').bind(now).run();
-      if ((res.meta.changes ?? 0) < 100) break;
-    }
-  }
   try {
     await env.DB.batch([
       stillOwner(env, person.memberId),
+      ...(body.on
+        ? [env.DB.prepare(`INSERT INTO settings(key, value_json, updated_at)
+            SELECT 'webhooks_since', CAST(COALESCE((SELECT MAX(seq) FROM events), 0) AS TEXT), ?
+            WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'webhooks' AND value_json = 'true')
+            ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`).bind(now)]
+        : []),
       env.DB.prepare("INSERT INTO settings(key, value_json, updated_at) VALUES('webhooks', ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at")
         .bind(String(body.on), now),
       auditStatement(env, person.memberId, body.on ? 'webhooks.on' : 'webhooks.off', null),

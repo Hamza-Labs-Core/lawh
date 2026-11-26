@@ -102,9 +102,20 @@ describe('webhooks switch, allowlist, CRUD, and delivery', () => {
     expect(await code(await api('PUT', '/settings/webhook-hosts', { cookie: mgr, body: { hosts: ['hooks.example.com'] } }))).toEqual([403, 'forbidden']);
 
     expect((await api('PUT', '/switches/webhooks', { cookie: owner, body: { on: true } })).status).toBe(200);
-    // Pre-switch event was drained so it will not be replayed.
-    expect(await count('events', 'enqueued_at IS NULL')).toBe(0);
     expect((await json(await api('GET', '/me', { cookie: owner }))).webhooks).toBe(true);
+    // Turning webhooks on skips all pre-switch events (even arbitrarily large backlogs) via atomic watermark.
+    await api('PUT', '/settings/webhook-hosts', { cookie: owner, body: { hosts: ['hooks.example.com'] } });
+    await api('POST', '/webhooks', { cookie: owner, body: { project: 'one', url: 'https://hooks.example.com/a', eventTypes: ['page.published'] } });
+    const sent: WebhookMessage[] = [];
+    const queue = { send: async (msg: WebhookMessage) => { sent.push(msg); } } as unknown as Queue<WebhookMessage>;
+    await dispatchOutbox({ ...env, WEBHOOKS: queue });
+    expect(sent).toEqual([]);
+    // Turning off, recording a huge backlog (seq 6000), and re-enabling still replays nothing.
+    await api('PUT', '/switches/webhooks', { cookie: owner, body: { on: false } });
+    await sql("INSERT INTO events(seq,project_id,page_id,type,subject_id,actor_type,actor_id,created_at) VALUES(6000,'p1',NULL,'page.published','pg_old','agent','ao',1)");
+    await api('PUT', '/switches/webhooks', { cookie: owner, body: { on: true } });
+    await dispatchOutbox({ ...env, WEBHOOKS: queue });
+    expect(sent).toEqual([]);
   });
 
   it('validates hosts, encrypts secrets with webhook-id AAD, and enforces manager permissions atomically', async () => {
@@ -124,8 +135,8 @@ describe('webhooks switch, allowlist, CRUD, and delivery', () => {
     await sql("UPDATE team_members SET level=4, set_by='o' WHERE member_id='m'");
     expect(await code(await api('POST', '/webhooks', { cookie: decider, body: { project: 'three', url: 'https://hooks.example.com/h', eventTypes: ['page.published'] } }))).toEqual([404, 'not_found']);
 
-    // Rejects HTTP, credentials, fragments, and unlisted hosts.
-    for (const url of ['http://hooks.example.com/a', 'https://other.example.com/a', 'https://u:p@hooks.example.com/a', 'https://hooks.example.com/a#frag']) {
+    // Rejects HTTP, non-default ports, credentials, fragments, and unlisted hosts.
+    for (const url of ['http://hooks.example.com/a', 'https://hooks.example.com:8443/a', 'https://other.example.com/a', 'https://u:p@hooks.example.com/a', 'https://hooks.example.com/a#frag']) {
       expect(await code(await api('POST', '/webhooks', { cookie: decider, body: { project: 'one', url, eventTypes: ['page.published'] } })), url).toEqual([422, 'invalid']);
     }
 
@@ -221,5 +232,92 @@ describe('webhooks switch, allowlist, CRUD, and delivery', () => {
     expect(await deliverOne(env, hook.id, 1, 1, 1_700_000_120_000)).toBe('ack');
     expect((await one<{ status: string; last_code: number }>('SELECT status, last_code FROM webhook_deliveries WHERE webhook_id=? AND event_seq=1', hook.id))).toEqual({ status: 'delivered', last_code: 200 });
     expect((await json(await api('GET', '/webhooks', { cookie: owner }))).failed).toEqual([]);
+  });
+
+  it('recovers interrupted dispatch, handles switch-off/host-removal mid-batch, guards delivered rows, and avoids PATCH lost updates', async () => {
+    const { cookie: owner } = await enter('o');
+    await api('PUT', '/switches/webhooks', { cookie: owner, body: { on: true } });
+    await api('PUT', '/settings/webhook-hosts', { cookie: owner, body: { hosts: ['hooks.example.com'] } });
+    const hook = await json(await api('POST', '/webhooks', { cookie: owner, body: { project: 'one', url: 'https://hooks.example.com/rx', eventTypes: ['page.published'] } }));
+
+    // 1) Interrupted dispatch (delivery row inserted as 'queuing', enqueued_at still NULL) recovers on next dispatch.
+    await sql(
+      "INSERT INTO events(seq,project_id,page_id,type,subject_id,actor_type,actor_id,created_at) VALUES(10,'p1',NULL,'page.published','pg1','agent','ao',1)",
+      `INSERT INTO webhook_deliveries(webhook_id,event_seq,attempts,status,updated_at) VALUES('${hook.id}',10,0,'queuing',1)`,
+    );
+    const recovered: WebhookMessage[] = [];
+    const queue = { send: async (msg: WebhookMessage) => { recovered.push(msg); } } as unknown as Queue<WebhookMessage>;
+    await dispatchOutbox({ ...env, WEBHOOKS: queue });
+    expect(recovered).toEqual([{ webhookId: hook.id, eventSeq: 10 }]);
+    expect((await one<{ status: string }>('SELECT status FROM webhook_deliveries WHERE webhook_id=? AND event_seq=10', hook.id))!.status).toBe('pending');
+    expect((await one<{ enqueued_at: number | null }>('SELECT enqueued_at FROM events WHERE seq=10'))!.enqueued_at).not.toBeNull();
+
+    // 2) Attempt 5 stays 'retrying' (max_retries=5 permits attempt 6); late 503 cannot overwrite a completed 204.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('err', { status: 503 }));
+    expect(await deliverOne(env, hook.id, 10, 5, 1_700_000_000_000)).toBe('retry');
+    expect((await one<{ status: string }>('SELECT status FROM webhook_deliveries WHERE webhook_id=? AND event_seq=10', hook.id))!.status).toBe('retrying');
+
+    let releaseSlow!: (r: Response) => void;
+    const slow = new Promise<Response>((r) => { releaseSlow = r; });
+    vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => slow)
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const pSlow = deliverOne(env, hook.id, 10, 6, 1_700_000_010_000);
+    expect(await deliverOne(env, hook.id, 10, 6, 1_700_000_011_000)).toBe('ack');
+    releaseSlow(new Response('late fail', { status: 503 }));
+    await pSlow;
+    expect((await one<{ status: string; last_code: number }>('SELECT status, last_code FROM webhook_deliveries WHERE webhook_id=? AND event_seq=10', hook.id))).toEqual({ status: 'delivered', last_code: 204 });
+
+    // 3) Host removal mid-batch takes effect for the very next message in the same batch.
+    await sql(
+      "INSERT INTO events(seq,project_id,page_id,type,subject_id,actor_type,actor_id,created_at,enqueued_at) VALUES(11,'p1',NULL,'page.published','pg2','agent','ao',1,1),(12,'p1',NULL,'page.published','pg3','agent','ao',1,1)",
+      `INSERT INTO webhook_deliveries(webhook_id,event_seq,attempts,status,updated_at) VALUES('${hook.id}',11,0,'pending',1),('${hook.id}',12,0,'pending',1)`,
+    );
+    let fetchCount = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      fetchCount++;
+      await api('PUT', '/settings/webhook-hosts', { cookie: owner, body: { hosts: [] } });
+      return new Response('ok', { status: 200 });
+    });
+    await handleWebhookQueue({
+      queue: 'lawh-webhooks',
+      messages: [
+        { id: 'b1', timestamp: new Date(), attempts: 1, body: { webhookId: hook.id, eventSeq: 11 }, ack: () => {}, retry: () => {} },
+        { id: 'b2', timestamp: new Date(), attempts: 1, body: { webhookId: hook.id, eventSeq: 12 }, ack: () => {}, retry: () => {} },
+      ],
+      ackAll: () => {},
+      retryAll: () => {},
+    } as unknown as MessageBatch<WebhookMessage>, env, 1_700_000_020_000);
+    expect(fetchCount).toBe(1);
+    expect((await one<{ status: string }>('SELECT status FROM webhook_deliveries WHERE webhook_id=? AND event_seq=12', hook.id))!.status).toBe('failed');
+
+    // 4) Turning webhooks off marks queued deliveries failed so re-enabling exposes Send again.
+    await api('PUT', '/settings/webhook-hosts', { cookie: owner, body: { hosts: ['hooks.example.com'] } });
+    await sql(
+      "INSERT INTO events(seq,project_id,page_id,type,subject_id,actor_type,actor_id,created_at,enqueued_at) VALUES(13,'p1',NULL,'page.published','pg4','agent','ao',1,1)",
+      `INSERT INTO webhook_deliveries(webhook_id,event_seq,attempts,status,updated_at) VALUES('${hook.id}',13,0,'pending',1)`,
+    );
+    await api('PUT', '/switches/webhooks', { cookie: owner, body: { on: false } });
+    await handleWebhookQueue({
+      queue: 'lawh-webhooks',
+      messages: [{ id: 'b3', timestamp: new Date(), attempts: 1, body: { webhookId: hook.id, eventSeq: 13 }, ack: () => {}, retry: () => {} }],
+      ackAll: () => {},
+      retryAll: () => {},
+    } as unknown as MessageBatch<WebhookMessage>, env, 1_700_000_030_000);
+    expect((await one<{ status: string }>('SELECT status FROM webhook_deliveries WHERE webhook_id=? AND event_seq=13', hook.id))!.status).toBe('failed');
+
+    // 5) Event-types-only PATCH overlapping a pause preserves enabled=false.
+    await api('PUT', '/switches/webhooks', { cookie: owner, body: { on: true } });
+    let paused = false;
+    const raceDb = new Proxy(env.DB, { get(target, key) {
+      if (key === 'batch') return async (statements: D1PreparedStatement[]) => {
+        if (!paused) { paused = true; await sql(`UPDATE webhooks SET enabled=0 WHERE id='${hook.id}'`); }
+        return target.batch(statements);
+      };
+      const v = Reflect.get(target, key); return typeof v === 'function' ? v.bind(target) : v;
+    } });
+    const patched = await json(await api('PATCH', `/webhooks/${hook.id}`, { cookie: owner, body: { eventTypes: ['comment.created'] } }, { DB: raceDb }));
+    expect(patched).toEqual({ id: hook.id, enabled: false, eventTypes: ['comment.created'] });
+    expect((await one<{ enabled: number }>('SELECT enabled FROM webhooks WHERE id=?', hook.id))!.enabled).toBe(0);
   });
 });
