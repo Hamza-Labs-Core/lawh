@@ -1,5 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
+import type { AppEnv } from '../shared/env';
 import { errorResponse } from '../shared/errors';
+import { isOn } from '../shared/switches';
 
 const MAX_CONNECTION_MS = 3_600_000;
 const MAX_PER_KEY = 5;
@@ -14,7 +16,7 @@ interface SocketMeta {
  * Enforces 1-hour maximum connection lifetime and at most 5 active connections per key per project.
  * Carries only `{ seq }` numbers, ignores incoming client messages, and closes expired sockets on alarm or ping.
  */
-export class LiveProject extends DurableObject {
+export class LiveProject extends DurableObject<AppEnv> {
   private readMeta(ws: WebSocket): SocketMeta {
     try {
       const att = ws.deserializeAttachment() as Partial<SocketMeta> | null;
@@ -85,6 +87,10 @@ export class LiveProject extends DurableObject {
     if (request.method === 'GET' && url.pathname === '/connect') {
       if ((request.headers.get('Upgrade') ?? '').toLowerCase() !== 'websocket') {
         return errorResponse('invalid', 'WebSocket upgrade required.');
+      }
+      // Recheck the live switch inside the single-threaded DO so an in-flight upgrade paused across `live = false` cannot open a socket after `/close`.
+      if (!(await isOn(this.env.DB, 'live'))) {
+        return errorResponse('feature_off', 'This feature is off.');
       }
       const keyId = request.headers.get('X-Lawh-Key-Id')?.trim() ?? '';
       if (!keyId) return errorResponse('unauthorized', 'Missing key id.');

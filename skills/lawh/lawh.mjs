@@ -641,7 +641,7 @@ function acquireLock(cursorFile) {
       }
     }
 
-    // Serialize stale-lock recovery through a dedicated atomic recover lock so two racing watchers never unlink each other's fresh lock.
+    // Serialize stale-lock recovery through a dedicated atomic recover lock and claim the replacement lock BEFORE releasing .recover.
     const recPayload = `${JSON.stringify({ pid: process.pid, startedAt: Date.now() })}\n`;
     if (tryLinkLock(recoverFile, recPayload)) {
       try {
@@ -659,6 +659,9 @@ function acquireLock(cursorFile) {
           }
         }
         try { unlinkSync(lockFile); } catch { /* already gone */ }
+        if (tryLinkLock(lockFile, payload)) {
+          return { lockFile, token };
+        }
       } finally {
         try { unlinkSync(recoverFile); } catch { /* ignore */ }
       }
@@ -690,17 +693,23 @@ function releaseLocks(locks) {
   }
 }
 
-function writeStdoutLine(line) {
+async function writeStdoutLine(line, signal) {
   const buf = Buffer.from(line, 'utf8');
   let offset = 0;
   while (offset < buf.length) {
+    if (signal?.aborted) throw new Error('Aborted.');
     try {
       const written = writeSync(1, buf, offset, buf.length - offset);
       if (written <= 0) throw new Error('Failed to write event to stdout.');
       offset += written;
     } catch (err) {
       if (err && typeof err === 'object' && 'code' in err && err.code === 'EAGAIN') {
-        // Brief spin on non-blocking stdout pipe; EPIPE throws immediately and synchronously before cursor save.
+        // Yield to the event loop on full nonblocking stdout pipes so --timeout and SIGTERM remain responsive; EPIPE still throws immediately before cursor save.
+        await new Promise((resolve) => {
+          const onAbort = () => { clearTimeout(t); resolve(); };
+          const t = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, 10);
+          signal?.addEventListener('abort', onAbort, { once: true });
+        });
         continue;
       }
       throw err;
@@ -787,6 +796,7 @@ async function cmdWatch(mode, cred, flags, command) {
   };
   const cleanup = () => {
     if (timeoutTimer) { clearTimeout(timeoutTimer); timeoutTimer = null; }
+    runAbort.abort();
     closeSockets();
     releaseLocks(acquiredLocks);
   };
@@ -898,8 +908,8 @@ async function cmdWatch(mode, cred, flags, command) {
           if (!matchesEvent(ev, filterOpts)) continue;
           const out = { project: s.slug, ...ev };
           if (mode === 'wait') {
-            // Confirm stdout write succeeds synchronously BEFORE advancing the saved cursor so broken pipes never drop an event.
-            writeStdoutLine(`${JSON.stringify(out)}\n`);
+            // Confirm stdout write succeeds BEFORE advancing the saved cursor so broken pipes or timed-out full pipes never drop an event.
+            await writeStdoutLine(`${JSON.stringify(out)}\n`, runAbort.signal);
             s.seq = ev.seq;
             writeSavedCursor(s.file, s.seq);
             return 'done';
