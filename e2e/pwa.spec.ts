@@ -8,12 +8,14 @@ test('manifest, icons, theme-color, and shell-only service worker work across br
   const asked = await ask([{ question: 'Which storage?' }], { level: 3 });
   // Seed caches before signing in (the service worker only registers once signed in), so activation cleanup is deterministic.
   await page.goto(`${APP}/`);
+  await expect(page.getByRole('button', { name: 'Sign in with a passkey' })).toBeVisible();
   await page.evaluate(async () => {
     await caches.open('lawh-shell-000000000000');
     await caches.open('other-origin-cache');
   });
   await enter(page.context(), member);
   await page.goto(`${APP}/`);
+  await expect(page.getByRole('link', { name: 'Decisions' })).toBeVisible();
 
   // Manifest and icon links are present and theme-color follows dark/light mode.
   await expect(page.locator('link[rel="manifest"]')).toHaveAttribute('href', '/manifest.webmanifest');
