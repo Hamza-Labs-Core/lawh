@@ -83,7 +83,7 @@ export function PageView({ project, slug, search, me }: { project: string; slug:
     call<Threads>('GET', `${path}/comments`, undefined, stop.signal).then(setThreads, failed);
     return () => stop.abort();
   }, [path, tries, asksTries]);
-  const changeThread = (next: Thread) => setThreads((now) => now && { ...now, items: now.items.map((c) => (c.id === next.id ? next : c)) });
+  const changeThread = (id: string, update: (now: Thread) => Thread) => setThreads((now) => now && { ...now, items: now.items.map((c) => (c.id === id ? update(c) : c)) });
   const removeThread = (id: string) => setThreads((now) => now && { ...now, items: now.items.filter((c) => c.id !== id) });
   const addThread = (next: Thread) => setThreads((now) => now && { ...now, items: [next, ...now.items.filter((c) => c.id !== next.id)] });
   const moreThreads = async () => {
