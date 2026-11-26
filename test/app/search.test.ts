@@ -25,12 +25,19 @@ describe('text', () => {
   it.each([
     ['<p>One</p><p>two</p>', 'One two'], ['<b>bo</b>ld', 'bold'], ['a<br>b', 'a b'], ['<script>var x="no"</script><style>.no{}</style><template>no</template><noscript>no</noscript>yes', 'yes'],
     ['<p hidden>secret</p><div style="color:red; display: none">gone</div><span hidden="until-found">found</span> ok', 'found ok'],
-    ['Caf&eacute; Tom &amp; Jerry &lt;3 &#1605;&#x631;&nbsp;x &unknown; &#0; &#xD800;', 'Café Tom & Jerry <3 مر x &unknown;'], ['<title>T</title><h1>H</h1>', 'T H'], ['<svg><style/><text>in a chart</text></svg> after', 'in a chart after'], ['<!-- no -->yes', 'yes'],
+    ['<p hidden>hiddenword<p>visibleword</p>', 'visibleword'],
+    ['<div hidden><p hidden>a<p>b</p></div>c', 'c'],
+    ['<ul><li hidden>a<li>b</ul><dl><dt hidden>x<dd>y</dl><div><p hidden>z</div>w', 'b y w'],
+    ['<img hidden src="x">shown<input hidden value="1">too', 'shown too'],
+    ['<p style="display:none; display:block">shown</p><p style="display:none !important; display:block">gone</p><p style="display:none !important; display:flex !important">back</p><p style="content: \'; display: none\'">kept</p>', 'shown back kept'],
+    ['Caf&eacute; h&aacute;&ccaron;ek &frac12; Tom &amp; Jerry &lt;3 &#1605;&#x631;&nbsp;x &unknown; &toString; &#0; &#xD800;', 'Café háček ½ Tom & Jerry <3 مر x &unknown; &toString;'], ['<title>T</title><h1>H</h1>', 'T H'], ['<svg><style/><text>in a chart</text></svg> after', 'in a chart after'], ['<!-- no -->yes', 'yes'],
     ['<div><script>1</script>a<script>2</script>b</div>', 'ab'], ['<p title="no">x', 'x'], ['', ''],
   ])('reads %s as %s', async (source, expected) => { expect(await text(source)).toBe(expected); });
 
   it('stops after 200 KB of UTF-8 text and 3 MB of HTML, wherever that is', async () => {
     expect(await text(`<p>${'word '.repeat(100_000)}</p>`)).toHaveLength(199_999);
+    expect(await text(`${' '.repeat(205_000)}<p>after</p>`)).toBe('after');
+    expect(await text(`<p>before${' '.repeat(205_000)}after</p>`)).toBe('before after');
     expect(await text(`<script>${'x'.repeat(3_500_000)}</script><p>far</p>`)).toBe('');
     const ar = await text(`<p>${'م'.repeat(1_700_000)}`);
     expect(new TextEncoder().encode(ar).byteLength).toBe(200_000);
@@ -45,6 +52,8 @@ describe('text', () => {
     expect(await visibleText(new ReadableStream({ pull(c) { const next = parts.shift(); if (next) c.enqueue(next); else c.close(); } }))).toBe('a & b');
     const pad = 'a'.repeat(65_534), split = [`<p>${pad}&am`, 'p; tail</p>'].map((part) => new TextEncoder().encode(part));
     expect((await visibleText(new ReadableStream({ pull(c) { const next = split.shift(); if (next) c.enqueue(next); else c.close(); } }))).endsWith('a& tail')).toBe(true);
+    const longPad = 'a'.repeat(65_520), longSplit = [`<p>${longPad}&CounterClockwise`, 'ContourIntegral; end</p>'].map((part) => new TextEncoder().encode(part));
+    expect((await visibleText(new ReadableStream({ pull(c) { const next = longSplit.shift(); if (next) c.enqueue(next); else c.close(); } }))).endsWith('a∳ end')).toBe(true);
   });
 
   it('makes words of a search, keeping every word typed', () => {
