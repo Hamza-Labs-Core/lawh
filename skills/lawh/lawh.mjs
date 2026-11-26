@@ -614,85 +614,97 @@ function tryLinkLock(targetFile, payload) {
   }
 }
 
-function acquireLock(cursorFile) {
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function withLockGate(lockFile, fn) {
+  const gateFile = `${lockFile}.gate`;
+  const gateToken = randomBytes(8).toString('hex');
+  const gatePayload = `${JSON.stringify({ pid: process.pid, token: gateToken, startedAt: Date.now() })}\n`;
+  let acquired = false;
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if (tryLinkLock(gateFile, gatePayload)) {
+      acquired = true;
+      break;
+    }
+    let fd = null;
+    try { fd = openSync(gateFile, 'r'); } catch { fd = null; }
+    if (fd !== null) {
+      let stale = false;
+      try {
+        const raw = readFileSync(fd, 'utf8');
+        const st = fstatSync(fd);
+        let info = null;
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed.pid === 'number') info = parsed;
+        } catch { /* empty or corrupt */ }
+        if (info !== null && !isPidAlive(info.pid)) stale = true;
+        else if (info === null && Date.now() - st.mtimeMs >= 5_000) stale = true;
+      } finally {
+        closeSync(fd);
+      }
+      if (stale) {
+        try { unlinkSync(gateFile); } catch { /* raced */ }
+        continue;
+      }
+    }
+    await sleepMs(15);
+  }
+  if (!acquired) throw new Error('Could not acquire cursor lock gate.');
+  try {
+    return fn();
+  } finally {
+    try {
+      const current = readLockInfo(gateFile);
+      if (current && current.pid === process.pid && current.token === gateToken) {
+        unlinkSync(gateFile);
+      }
+    } catch { /* ignore */ }
+  }
+}
+
+async function acquireLock(cursorFile) {
   const lockFile = `${cursorFile}.lock`;
-  const recoverFile = `${lockFile}.recover`;
   mkdirSync(dirname(lockFile), { recursive: true, mode: 0o700 });
   const token = randomBytes(8).toString('hex');
   const payload = `${JSON.stringify({ pid: process.pid, token, startedAt: Date.now() })}\n`;
 
-  for (let attempt = 0; attempt < 6; attempt++) {
+  // Serialize ALL lock creation and stale-lock recovery through `.gate` so no other caller can claim `lockFile` while stale recovery inspects and replaces it.
+  return withLockGate(lockFile, () => {
     if (tryLinkLock(lockFile, payload)) {
       return { lockFile, token };
     }
-
-    const existing = readLockInfo(lockFile);
-    if (existing !== null && isPidAlive(existing.pid)) {
-      throw new Error(`Another process (pid ${existing.pid}) is already using this cursor.`);
-    }
-    if (existing === null) {
+    let shouldUnlink = false;
+    let fd = null;
+    try { fd = openSync(lockFile, 'r'); } catch { fd = null; }
+    if (fd !== null) {
       try {
-        if (Date.now() - statSync(lockFile).mtimeMs < 5_000) {
+        const raw = readFileSync(fd, 'utf8');
+        const st = fstatSync(fd);
+        let recheck = null;
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed.pid === 'number') recheck = parsed;
+        } catch { /* empty or corrupt */ }
+        if (recheck !== null && isPidAlive(recheck.pid)) {
+          throw new Error(`Another process (pid ${recheck.pid}) is already using this cursor.`);
+        }
+        if (recheck === null && Date.now() - st.mtimeMs < 5_000) {
           throw new Error('Another process is already using this cursor.');
         }
-      } catch (err) {
-        if (err instanceof Error && err.message.includes('already using')) throw err;
-        continue; // lock disappeared; retry
-      }
-    }
-
-    // Serialize stale-lock recovery through a dedicated atomic recover lock and claim the replacement lock BEFORE releasing .recover.
-    const recPayload = `${JSON.stringify({ pid: process.pid, startedAt: Date.now() })}\n`;
-    if (tryLinkLock(recoverFile, recPayload)) {
-      try {
-        let shouldUnlink = false;
-        let fd = null;
-        try { fd = openSync(lockFile, 'r'); } catch { fd = null; }
-        if (fd !== null) {
-          try {
-            const raw = readFileSync(fd, 'utf8');
-            const st = fstatSync(fd);
-            let recheck = null;
-            try {
-              const parsed = JSON.parse(raw);
-              if (parsed && typeof parsed.pid === 'number') recheck = parsed;
-            } catch { /* empty or corrupt */ }
-            if (recheck !== null && isPidAlive(recheck.pid)) {
-              throw new Error(`Another process (pid ${recheck.pid}) is already using this cursor.`);
-            }
-            if (recheck === null && Date.now() - st.mtimeMs < 5_000) {
-              throw new Error('Another process is already using this cursor.');
-            }
-            shouldUnlink = true;
-          } finally {
-            closeSync(fd);
-          }
-        }
-        // Only unlink a stale lock that we opened and verified dead/expired on the same inode; never unlink if absent.
-        if (shouldUnlink) {
-          try { unlinkSync(lockFile); } catch { /* already gone */ }
-        }
-        if (tryLinkLock(lockFile, payload)) {
-          return { lockFile, token };
-        }
+        shouldUnlink = true;
       } finally {
-        try { unlinkSync(recoverFile); } catch { /* ignore */ }
-      }
-    } else {
-      // Another process is actively recovering or owns the recover lock; clean up only if that recoverer died.
-      const recInfo = readLockInfo(recoverFile);
-      if (recInfo !== null && !isPidAlive(recInfo.pid)) {
-        try { unlinkSync(recoverFile); } catch { /* raced */ }
-      } else if (recInfo === null) {
-        try {
-          if (Date.now() - statSync(recoverFile).mtimeMs >= 5_000) unlinkSync(recoverFile);
-        } catch { /* ignore */ }
-      } else {
-        throw new Error('Another process is already using this cursor.');
+        closeSync(fd);
       }
     }
-  }
-  throw new Error('Could not acquire cursor lock.');
+    if (shouldUnlink) {
+      try { unlinkSync(lockFile); } catch { /* owner already exited and unlinked it */ }
+    }
+    if (tryLinkLock(lockFile, payload)) {
+      return { lockFile, token };
+    }
+    throw new Error('Could not acquire cursor lock.');
+  });
 }
 
 function releaseLocks(locks) {
@@ -877,7 +889,7 @@ async function cmdWatch(mode, cred, flags, command) {
     });
 
     for (const s of states) {
-      s.lock = acquireLock(s.file);
+      s.lock = await acquireLock(s.file);
       acquiredLocks.push(s.lock);
     }
 
