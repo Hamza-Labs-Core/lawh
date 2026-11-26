@@ -105,15 +105,17 @@ export async function runOwnerTransfer({ targetArg, sql, prompt, log = console.l
       `INSERT INTO audit(at, actor_type, action, subject_id) VALUES(${ts}, 'command', 'owner.transfer', ${sqlText(target.id)});`,
     ];
 
+    const batchSql = statements.join('\n');
     try {
-      sql(statements.join('\n'));
+      sql(batchSql);
     } catch (error) {
-      const msg = [
-        String(error),
-        error && typeof error === 'object' && 'stderr' in error ? String(error.stderr ?? '') : '',
-        error && typeof error === 'object' && 'stdout' in error ? String(error.stdout ?? '') : '',
-      ].join('\n');
-      if (msg.includes('malformed JSON') || msg.includes('UNIQUE constraint failed')) {
+      const stderr = error && typeof error === 'object' && 'stderr' in error ? String(error.stderr ?? '') : '';
+      const stdout = error && typeof error === 'object' && 'stdout' in error ? String(error.stdout ?? '') : '';
+      // Prefer subprocess stderr/stdout so echoed SQL commands (which may contain arbitrary agent names)
+      // never masquerade as a SQLite error. If a test throws a plain Error, strip the SQL command text first.
+      const output = `${stderr}\n${stdout}`.trim();
+      const diagnostic = output || String(error).replace(batchSql, '');
+      if (diagnostic.includes('malformed JSON') || /UNIQUE constraint failed:\s*agents\.member_id,\s*agents\.name/i.test(diagnostic)) {
         continue;
       }
       throw error;
