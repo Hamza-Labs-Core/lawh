@@ -5,7 +5,7 @@ import { endSession, listSessions, setInstance, whoAmI } from './account';
 import { listMyPages, listMyProjects, listMyTags, listMyVersions, readPage } from './pages';
 import { addComment, deleteComment, listMyThreads, listReplies, listThreads, reply, setResolved } from './comments';
 import { answerDecision, countMyDecisions, listMyDecisions, listPageDecisions, readDecision } from './decisions';
-import { addKey, listAgents, revokeKey, setAgentOff, takeOverAgent } from './agents';
+import { addKey, listAgents, listMyActiveKeys, revokeKey, setAgentOff, takeOverAgent } from './agents';
 import { answerConnect, lookAtConnect } from './connect';
 import { exportFiles, exportPlan, exportRows } from './exportData';
 import { deletePage, listDeleted, restorePage, setStatus } from './manage';
@@ -61,6 +61,7 @@ export const peopleRoutes: PeopleRoute[] = [
   person('GET', '/deleted', false, listDeleted),
   person('POST', '/deleted/(pag_[0-9A-Z]{26})/restore', false, restorePage),
   person('GET', '/agents', false, listAgents),
+  person('GET', '/account/keys', false, listMyActiveKeys),
   person('PUT', '/agents/(agt_[0-9A-Z]{26})/off', false, setAgentOff),
   person('POST', '/agents/(agt_[0-9A-Z]{26})/take-over', false, takeOverAgent),
   person('POST', '/agent-keys', false, addKey),

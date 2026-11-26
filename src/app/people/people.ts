@@ -14,6 +14,43 @@ const DAY = 86_400_000;
 const INVITE_TTL = 3 * DAY;
 const RESET_TTL = DAY;
 const MANAGER = 4;
+const DEFAULT_LIMIT = 50;
+const MAX_LIMIT = 200;
+
+function encodeCursor(parts: [string | number, string]): string {
+  return base64url(new TextEncoder().encode(JSON.stringify(parts)));
+}
+
+function decodeMemberCursor(raw: string): [string, string] {
+  try {
+    const pad = raw.replaceAll('-', '+').replaceAll('_', '/');
+    const bytes = Uint8Array.from(atob(pad + '='.repeat((4 - (pad.length % 4)) % 4)), (c) => c.charCodeAt(0));
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    if (Array.isArray(parsed) && parsed.length === 2 && typeof parsed[0] === 'string' && typeof parsed[1] === 'string') {
+      return [parsed[0], parsed[1]];
+    }
+  } catch { /* fall through */ }
+  throw invalid('membersCursor is not valid.');
+}
+
+function decodeInviteCursor(raw: string): [number, string] {
+  try {
+    const pad = raw.replaceAll('-', '+').replaceAll('_', '/');
+    const bytes = Uint8Array.from(atob(pad + '='.repeat((4 - (pad.length % 4)) % 4)), (c) => c.charCodeAt(0));
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    if (Array.isArray(parsed) && parsed.length === 2 && typeof parsed[0] === 'number' && Number.isSafeInteger(parsed[0]) && typeof parsed[1] === 'string') {
+      return [parsed[0], parsed[1]];
+    }
+  } catch { /* fall through */ }
+  throw invalid('invitesCursor is not valid.');
+}
+
+function readLimit(url: URL): number {
+  const raw = url.searchParams.get('limit');
+  if (raw === null) return DEFAULT_LIMIT;
+  if (!/^[1-9][0-9]*$/.test(raw)) throw invalid(`limit must be a whole number from 1 to ${MAX_LIMIT}.`);
+  return Math.min(Number(raw), MAX_LIMIT);
+}
 
 async function needTeams(env: AppEnv): Promise<void> {
   if (!(await isOn(env.DB, 'teams'))) throw new ApiError('feature_off', 'This feature is off.');
@@ -36,32 +73,56 @@ function makeLinkToken(): string {
 
 /**
  * GET /app-api/people
- * Owner sees all active joined members, all pending invites, and all teams.
- * A team manager sees pending invites for the teams they manage and those teams.
+ * Owner sees all active joined members (paginated), all pending invites (paginated), and all teams.
+ * A team manager sees pending invites for the teams they manage (paginated) and those teams.
  */
 export async function listPeople(ctx: SignedIn): Promise<Response> {
-  const { env, person } = ctx, now = Date.now();
+  const { env, person, url } = ctx, now = Date.now();
+  const limit = readLimit(url);
+  const rawMembersCursor = url.searchParams.get('membersCursor');
+  const rawInvitesCursor = url.searchParams.get('invitesCursor');
+  const memberAfter = rawMembersCursor ? decodeMemberCursor(rawMembersCursor) : null;
+  const inviteAfter = rawInvitesCursor ? decodeInviteCursor(rawInvitesCursor) : null;
   const switchStmt = env.DB.prepare("SELECT value_json FROM settings WHERE key = 'teams'");
 
   if (person.isOwner) {
+    const memberWhere = memberAfter
+      ? "role = 'member' AND joined_at IS NOT NULL AND removed_at IS NULL AND (name, id) > (?, ?)"
+      : "role = 'member' AND joined_at IS NOT NULL AND removed_at IS NULL";
+    const memberBinds: unknown[] = memberAfter ? [memberAfter[0], memberAfter[1]] : [];
+
+    const inviteWhere = inviteAfter
+      ? "m.role = 'member' AND m.joined_at IS NULL AND m.removed_at IS NULL AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))"
+      : "m.role = 'member' AND m.joined_at IS NULL AND m.removed_at IS NULL";
+    const inviteBinds: unknown[] = inviteAfter ? [inviteAfter[0], inviteAfter[0], inviteAfter[1]] : [];
+
     const [swRes, ownerRes, membersRes, membershipsRes, resetLinksRes, invitesRes, teamsRes] = await env.DB.batch([
       switchStmt,
       env.DB.prepare("SELECT 1 FROM members WHERE id = ? AND role = 'owner' AND removed_at IS NULL").bind(person.memberId),
       env.DB.prepare(
         `SELECT id, name, created_at, joined_at FROM members
-         WHERE role = 'member' AND joined_at IS NOT NULL AND removed_at IS NULL
-         ORDER BY name, id LIMIT 500`,
-      ),
+         WHERE ${memberWhere}
+         ORDER BY name, id LIMIT ?`,
+      ).bind(...memberBinds, limit + 1),
       env.DB.prepare(
-        `SELECT tm.member_id, tm.team_id, t.name team_name, tm.level
-         FROM team_members tm
+        `WITH member_page AS (
+           SELECT id FROM members WHERE ${memberWhere} ORDER BY name, id LIMIT ?
+         )
+         SELECT tm.member_id, tm.team_id, t.name team_name, tm.level
+         FROM member_page mp
+         CROSS JOIN team_members tm ON tm.member_id = mp.id
          JOIN teams t ON t.id = tm.team_id
          ORDER BY tm.member_id, t.name, tm.team_id`,
-      ),
+      ).bind(...memberBinds, limit),
       env.DB.prepare(
-        `SELECT member_id, expires_at FROM access_links
-         WHERE kind = 'reset' AND used_at IS NULL AND expires_at > ?`,
-      ).bind(now),
+        `WITH member_page AS (
+           SELECT id FROM members WHERE ${memberWhere} ORDER BY name, id LIMIT ?
+         )
+         SELECT l.member_id, l.expires_at
+         FROM member_page mp
+         CROSS JOIN access_links l ON l.member_id = mp.id
+         WHERE l.kind = 'reset' AND l.used_at IS NULL AND l.expires_at > ?`,
+      ).bind(...memberBinds, limit, now),
       env.DB.prepare(
         `SELECT m.id, m.name, m.created_by, m.created_at,
                 l.team_id, t.name team_name, l.level, l.expires_at, c.name inviter_name
@@ -69,21 +130,34 @@ export async function listPeople(ctx: SignedIn): Promise<Response> {
          LEFT JOIN access_links l ON l.member_id = m.id AND l.kind = 'invite' AND l.used_at IS NULL
          LEFT JOIN teams t ON t.id = l.team_id
          LEFT JOIN members c ON c.id = m.created_by
-         WHERE m.role = 'member' AND m.joined_at IS NULL AND m.removed_at IS NULL
-         ORDER BY m.created_at DESC, m.id DESC LIMIT 500`,
-      ),
-      env.DB.prepare('SELECT id, name FROM teams ORDER BY name, id LIMIT 200'),
+         WHERE ${inviteWhere}
+         ORDER BY m.created_at DESC, m.id DESC LIMIT ?`,
+      ).bind(...inviteBinds, limit + 1),
+      env.DB.prepare('SELECT id, name FROM teams ORDER BY name, id LIMIT 1000'),
     ]);
 
     const teamsOn = (swRes!.results[0] as { value_json?: string } | undefined)?.value_json === 'true';
     if (!teamsOn) throw new ApiError('feature_off', 'This feature is off.');
     if (ownerRes!.results.length === 0) throw new ApiError('forbidden', 'Only the owner can do this.');
 
+    const rawMembers = membersRes!.results as { id: string; name: string; created_at: number; joined_at: number }[];
+    const hasMoreMembers = rawMembers.length > limit;
+    const memberPage = hasMoreMembers ? rawMembers.slice(0, limit) : rawMembers;
+    const membersNext = hasMoreMembers ? encodeCursor([memberPage.at(-1)!.name, memberPage.at(-1)!.id]) : null;
+
+    const rawInvites = invitesRes!.results as {
+      id: string; name: string; created_by: string | null; created_at: number;
+      team_id: string | null; team_name: string | null; level: number | null; expires_at: number | null; inviter_name: string | null;
+    }[];
+    const hasMoreInvites = rawInvites.length > limit;
+    const invitePage = hasMoreInvites ? rawInvites.slice(0, limit) : rawInvites;
+    const invitesNext = hasMoreInvites ? encodeCursor([invitePage.at(-1)!.created_at, invitePage.at(-1)!.id]) : null;
+
     const memberships = membershipsRes!.results as { member_id: string; team_id: string; team_name: string; level: number }[];
     const resets = new Map<string, number>();
     for (const r of resetLinksRes!.results as { member_id: string; expires_at: number }[]) resets.set(r.member_id, r.expires_at);
 
-    const members = (membersRes!.results as { id: string; name: string; created_at: number; joined_at: number }[]).map((m) => ({
+    const members = memberPage.map((m) => ({
       id: m.id,
       name: m.name,
       createdAt: m.created_at,
@@ -94,10 +168,7 @@ export async function listPeople(ctx: SignedIn): Promise<Response> {
         .map((tm) => ({ id: tm.team_id, name: tm.team_name, level: tm.level })),
     }));
 
-    const invites = (invitesRes!.results as {
-      id: string; name: string; created_by: string | null; created_at: number;
-      team_id: string | null; team_name: string | null; level: number | null; expires_at: number | null; inviter_name: string | null;
-    }[]).map((inv) => ({
+    const invites = invitePage.map((inv) => ({
       id: inv.id,
       name: inv.name,
       teamId: inv.team_id,
@@ -112,17 +183,24 @@ export async function listPeople(ctx: SignedIn): Promise<Response> {
     }));
 
     const teams = (teamsRes!.results as { id: string; name: string }[]).map((t) => ({ id: t.id, name: t.name }));
-    return Response.json({ members, invites, teams });
+    return Response.json({ members, membersNext, invites, invitesNext, teams });
   }
 
-  // Team manager: read switch, managed teams, and those teams' pending invites in one snapshot.
+  // Team manager: read switch, managed teams, and those teams' pending invites (paginated) in one snapshot.
+  const managerInviteWhere = inviteAfter
+    ? 'WHERE my.member_id = ? AND my.level = 4 AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))'
+    : 'WHERE my.member_id = ? AND my.level = 4';
+  const managerInviteBinds: unknown[] = inviteAfter
+    ? [person.memberId, inviteAfter[0], inviteAfter[0], inviteAfter[1], limit + 1]
+    : [person.memberId, limit + 1];
+
   const [swRes, teamsRes, invitesRes] = await env.DB.batch([
     switchStmt,
     env.DB.prepare(
       `SELECT t.id, t.name FROM team_members my
        JOIN teams t ON t.id = my.team_id
        WHERE my.member_id = ? AND my.level = 4
-       ORDER BY t.name, t.id LIMIT 200`,
+       ORDER BY t.name, t.id LIMIT 100`,
     ).bind(person.memberId),
     env.DB.prepare(
       `SELECT m.id, m.name, m.created_by, m.created_at,
@@ -132,9 +210,9 @@ export async function listPeople(ctx: SignedIn): Promise<Response> {
        JOIN members m ON m.id = l.member_id AND m.role = 'member' AND m.joined_at IS NULL AND m.removed_at IS NULL
        JOIN teams t ON t.id = l.team_id
        LEFT JOIN members c ON c.id = m.created_by
-       WHERE my.member_id = ? AND my.level = 4
-       ORDER BY m.created_at DESC, m.id DESC LIMIT 500`,
-    ).bind(person.memberId),
+       ${managerInviteWhere}
+       ORDER BY m.created_at DESC, m.id DESC LIMIT ?`,
+    ).bind(...managerInviteBinds),
   ]);
 
   const teamsOn = (swRes!.results[0] as { value_json?: string } | undefined)?.value_json === 'true';
@@ -142,10 +220,15 @@ export async function listPeople(ctx: SignedIn): Promise<Response> {
   const teams = (teamsRes!.results as { id: string; name: string }[]).map((t) => ({ id: t.id, name: t.name }));
   if (teams.length === 0) throw new ApiError('forbidden', 'Your level does not allow this.');
 
-  const invites = (invitesRes!.results as {
+  const rawInvites = invitesRes!.results as {
     id: string; name: string; created_by: string | null; created_at: number;
     team_id: string; team_name: string; level: number; expires_at: number; inviter_name: string | null;
-  }[]).map((inv) => ({
+  }[];
+  const hasMoreInvites = rawInvites.length > limit;
+  const invitePage = hasMoreInvites ? rawInvites.slice(0, limit) : rawInvites;
+  const invitesNext = hasMoreInvites ? encodeCursor([invitePage.at(-1)!.created_at, invitePage.at(-1)!.id]) : null;
+
+  const invites = invitePage.map((inv) => ({
     id: inv.id,
     name: inv.name,
     teamId: inv.team_id,
@@ -160,7 +243,7 @@ export async function listPeople(ctx: SignedIn): Promise<Response> {
     canCancel: true,
   }));
 
-  return Response.json({ members: [], invites, teams });
+  return Response.json({ members: [], membersNext: null, invites, invitesNext, teams });
 }
 
 /**

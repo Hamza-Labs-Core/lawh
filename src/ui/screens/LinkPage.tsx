@@ -4,10 +4,10 @@ import { call, CallError, problemOf } from '../api';
 import { Failure, Fill, Heading, useBusy, useText } from '../app';
 import type { Key } from '../i18n';
 
-interface Offer { challengeId: string; options: Parameters<typeof startRegistration>[0]['optionsJSON']; link: { kind: 'owner' | 'invite' | 'reset'; name: string; team: string | null; level: number | null; inviter: string | null } }
+interface Offer { challengeId: string; options: Parameters<typeof startRegistration>[0]['optionsJSON']; recovery?: boolean; link: { kind: 'owner' | 'invite' | 'reset'; name: string; team: string | null; level: number | null; inviter: string | null } }
 
 /** Setup, invite and reset links. The token is after the `#`, so it never reaches a server in an address. */
-export function LinkPage({ token, onDone }: { token: string; onDone: (kind: 'owner' | 'invite' | 'reset') => void }) {
+export function LinkPage({ token, onDone }: { token: string; onDone: (recovery: boolean) => void }) {
   const t = useText(), [busy, run] = useBusy(), [link, setLink] = useState<Offer['link'] | 'bad' | 'offline' | 'wait' | 'failed' | null>(null), [problem, setProblem] = useState<string | null>(null);
   const fetchOffer = () => call<Offer>('POST', '/link/options', { token });
   const load = async () => {
@@ -23,9 +23,9 @@ export function LinkPage({ token, onDone }: { token: string; onDone: (kind: 'own
     setProblem(null);
     try {
       // A challenge made now: one from when the page opened may be old or used, and the new passkey would be lost.
-      const { challengeId, options } = await fetchOffer();
+      const { challengeId, options, recovery } = await fetchOffer();
       await call('POST', '/link', { token, challengeId, response: await startRegistration({ optionsJSON: options }) });
-      onDone(link.kind);
+      onDone(Boolean(recovery));
     } catch (error) {
       if (error instanceof CallError && error.status === 404) setLink('bad');
       // Closing the browser's own window is no failure to show.

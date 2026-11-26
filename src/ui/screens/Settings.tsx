@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'preact/hooks';
-import { type Agent, call, CallError, type DeletedPage, type FailedDelivery, type Listed, type Me, type PeopleResponse, problemOf, type ProjectName, type TeamItem, type TeamsResponse, type WebhookItem } from '../api';
+import { type Agent, call, CallError, type DeletedPage, type FailedDelivery, type Listed, type Me, type MyActiveKey, type PeopleResponse, problemOf, type ProjectName, type TeamItem, type TeamsResponse, type WebhookItem } from '../api';
 import { Failure, Fill, Heading, Link, useBusy, useSettings, useText } from '../app';
 import { day, digits, type Key } from '../i18n';
 import { Account } from './Account';
@@ -38,7 +38,7 @@ export function Settings({ path, search = '', me, onChange }: { path: string; se
     <>
       <Heading>{t('settings')}</Heading>
       <nav class="chips" aria-label={t('settings')}>{parts.map(([p, title]) => <Link key={p} class="chip" to={p} current={p === now[0]}>{t(title)}</Link>)}</nav>
-      {now[0] === '/settings' && <>{afterReset && <div class="card" role="status"><p>{t('postResetDone')}</p></div>}<Account me={me} onChange={onChange} inside /></>}
+      {now[0] === '/settings' && <>{afterReset && <PostResetReview />}<Account me={me} onChange={onChange} inside /></>}
       {now[0] === '/settings/people' && <People me={me} />}
       {now[0] === '/settings/teams' && <Teams me={me} />}
       {now[0] === '/settings/agents' && <Agents me={me} afterReset={afterReset} />}
@@ -47,6 +47,35 @@ export function Settings({ path, search = '', me, onChange }: { path: string; se
       {now[0] === '/settings/webhooks' && <Webhooks />}
       {now[0] === '/settings/data' && <Data onChange={onChange} />}
     </>
+  );
+}
+
+/** Shown after a passkey reset so every member — including a former manager — can review and revoke their active agent keys. */
+function PostResetReview() {
+  const t = useText(), { lang } = useSettings();
+  const { data, problem, load, set } = useLoad<{ items: MyActiveKey[] }>('/account/keys');
+  const [busy, run] = useBusy(), [asking, setAsking] = useState<string | null>(null), [failed, setFailed] = useState<Problem | null>(null);
+  return (
+    <section class="card form" role="status">
+      <p>{data && data.items.length > 0 ? t('postResetBanner') : t('postResetDone')}</p>
+      {data === null && problem && <Loading problem={problem} load={load} />}
+      {data && data.items.length > 0 && (
+        <ul class="rows">
+          {data.items.map((key) => (
+            <li key={key.id}>
+              <div>
+                <strong><bdi dir="auto">{key.agentName}</bdi>{key.label ? <> — <bdi dir="auto">{key.label}</bdi></> : null}</strong>
+                <p class="muted"><Fill text="endsOn" date={day(lang, key.expiresAt)} />{lang === 'ar' ? '، ' : ', '}{key.lastUsedAt === null ? t('neverUsed') : <Fill text="lastUsed" date={day(lang, key.lastUsedAt)} />}</p>
+              </div>
+              {asking === key.id
+                ? <div class="row"><button class="plain" disabled={busy} onClick={() => run(async () => { setFailed(null); try { await call('DELETE', `/agent-keys/${key.id}`); set((cur) => cur && { items: cur.items.filter((k) => k.id !== key.id) }); setAsking(null); } catch (error) { setFailed(problemIn(error)); } })}>{t('revokeSure')}</button><button class="plain" disabled={busy} onClick={() => setAsking(null)}>{t('cancel')}</button></div>
+                : <button class="plain" disabled={busy} onClick={() => setAsking(key.id)}>{t('revoke')}</button>}
+            </li>
+          ))}
+        </ul>
+      )}
+      {failed && <Failure>{t(failed)}</Failure>}
+    </section>
   );
 }
 
@@ -71,7 +100,7 @@ function OneTimeLink({ ready, onDone }: { ready: ReadyLink; onDone: () => void }
 
 function People({ me }: { me: Me }) {
   const t = useText(), { lang } = useSettings(), id = useId();
-  const { data, problem, load } = useLoad<PeopleResponse>('/people');
+  const { data, problem, load, set } = useLoad<PeopleResponse>('/people');
   const [busy, run] = useBusy(), [failed, setFailed] = useState<Problem | null>(null);
   const [inviting, setInviting] = useState(false), [readyLink, setReadyLink] = useState<ReadyLink | null>(null);
   const [inviteName, setInviteName] = useState(''), [inviteTeam, setInviteTeam] = useState(''), [inviteLevel, setInviteLevel] = useState(1);
@@ -163,6 +192,16 @@ function People({ me }: { me: Me }) {
             </li>
           ))}
         </ul>
+        {data.invitesNext && (
+          <button class="plain wide" disabled={busy} onClick={() => act(async () => {
+            const next = await call<PeopleResponse>('GET', `/people?invitesCursor=${encodeURIComponent(data.invitesNext!)}`);
+            set((cur) => cur && {
+              ...cur,
+              invites: [...cur.invites, ...next.invites.filter((i) => !cur.invites.some((o) => o.id === i.id))],
+              invitesNext: next.invitesNext,
+            });
+          })}>{t('more')}</button>
+        )}
       </section>
 
       {me.isOwner && (
@@ -195,6 +234,16 @@ function People({ me }: { me: Me }) {
               </li>
             ))}
           </ul>
+          {data.membersNext && (
+            <button class="plain wide" disabled={busy} onClick={() => act(async () => {
+              const next = await call<PeopleResponse>('GET', `/people?membersCursor=${encodeURIComponent(data.membersNext!)}`);
+              set((cur) => cur && {
+                ...cur,
+                members: [...cur.members, ...next.members.filter((m) => !cur.members.some((o) => o.id === m.id))],
+                membersNext: next.membersNext,
+              });
+            })}>{t('more')}</button>
+          )}
         </section>
       )}
       {failed && !inviting && <Failure>{t(failed)}</Failure>}
@@ -720,10 +769,31 @@ function NewSecret({ secret, onDone }: { secret: string; onDone: () => void }) {
 
 const KEEP = [null, 100, 50, 20, 10, 5, 1] as const;
 
+function ConfirmDialog({ title, message, confirmLabel, busy, returnTo, onConfirm, onClose }: { title: string; message: string; confirmLabel: string; busy: boolean; returnTo: HTMLElement | null; onConfirm: () => void; onClose: () => void }) {
+  const t = useText(), dialog = useRef<HTMLDialogElement>(null), cancelBtn = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    dialog.current?.showModal();
+    cancelBtn.current?.focus();
+    return () => { if (returnTo?.isConnected) returnTo.focus(); };
+  }, []);
+  return (
+    <dialog ref={dialog} tabIndex={-1} aria-label={title} onClose={onClose} onClick={(event) => { if (event.target === dialog.current) dialog.current?.close(); }}>
+      <div class="dialog">
+        <h2>{title}</h2>
+        <p class="failure">{message}</p>
+        <div class="row">
+          <button ref={cancelBtn} class="plain" type="button" disabled={busy} onClick={onClose}>{t('cancel')}</button>
+          <button class="plain danger" type="button" disabled={busy} onClick={onConfirm}>{confirmLabel}</button>
+        </div>
+      </div>
+    </dialog>
+  );
+}
+
 function Data({ onChange }: { onChange: () => void }) {
   const t = useText(), { lang } = useSettings(), id = useId(), { data, problem, load, set } = useLoad<{ retention: number | null; webhooks: boolean; webhookHosts: string[]; teams: boolean }>('/settings'), [busy, run] = useBusy(), [failed, setFailed] = useState<Problem | null>(null), [choice, setChoice] = useState<string | null>(null), [done, setDone] = useState(false);
   const [hostsDraft, setHostsDraft] = useState<string | null>(null), [hostsDone, setHostsDone] = useState(false);
-  const [askingTeamsOff, setAskingTeamsOff] = useState(false);
+  const [teamsOffFrom, setTeamsOffFrom] = useState<HTMLElement | null>(null);
   const [parts, setParts] = useState<{ after: string; last: string; files: number; bytes: number }[] | null>(null);
   if (data === null) return <Loading problem={problem} load={load} />;
   const act = (what: () => Promise<void>) => run(async () => { setFailed(null); setDone(false); setHostsDone(false); try { await what(); } catch (error) { setFailed(problemIn(error)); } });
@@ -736,22 +806,9 @@ function Data({ onChange }: { onChange: () => void }) {
       <section class="card form">
         <h2>{t('teamsSwitchTitle')}</h2>
         <p class="muted">{t(data.teams ? 'teamsSwitchOn' : 'teamsSwitchOff')}</p>
-        {data.teams ? (askingTeamsOff ? (
-          <>
-            <p class="failure">{t('turnTeamsOffWarn')}</p>
-            <div class="row">
-              <button class="plain danger" disabled={busy} onClick={() => act(async () => {
-                const next = await call<{ teams: boolean }>('PUT', '/switches/teams', { on: false });
-                set((cur) => cur && { ...cur, teams: next.teams });
-                setAskingTeamsOff(false);
-                onChange();
-              })}>{t('turnTeamsOffSure')}</button>
-              <button class="plain" disabled={busy} onClick={() => setAskingTeamsOff(false)}>{t('cancel')}</button>
-            </div>
-          </>
+        {data.teams ? (
+          <button class="plain wide" disabled={busy} aria-haspopup="dialog" onClick={(event) => setTeamsOffFrom(event.currentTarget)}>{t('turnTeamsOff')}</button>
         ) : (
-          <button class="plain wide" disabled={busy} onClick={() => setAskingTeamsOff(true)}>{t('turnTeamsOff')}</button>
-        )) : (
           <button class="plain wide" disabled={busy} onClick={() => act(async () => {
             const next = await call<{ teams: boolean }>('PUT', '/switches/teams', { on: true });
             set((cur) => cur && { ...cur, teams: next.teams });
@@ -759,6 +816,22 @@ function Data({ onChange }: { onChange: () => void }) {
           })}>{t('turnTeamsOn')}</button>
         )}
       </section>
+      {teamsOffFrom && (
+        <ConfirmDialog
+          title={t('turnTeamsOff')}
+          message={t('turnTeamsOffWarn')}
+          confirmLabel={t('turnTeamsOffSure')}
+          busy={busy}
+          returnTo={teamsOffFrom}
+          onClose={() => setTeamsOffFrom(null)}
+          onConfirm={() => act(async () => {
+            const next = await call<{ teams: boolean }>('PUT', '/switches/teams', { on: false });
+            set((cur) => cur && { ...cur, teams: next.teams });
+            setTeamsOffFrom(null);
+            onChange();
+          })}
+        />
+      )}
       <section class="card form">
         <h2>{t('retention')}</h2>
         <label class="muted" for={id}>{t('retentionHelp')}</label>

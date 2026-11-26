@@ -78,7 +78,7 @@ function App() {
   const arrive = (after = '/') => { linkToken = ''; go(after, true); setMe(null); void load(); };
   const { path, search } = place, reading = /^\/p\/([a-z0-9-]+)\/([a-z0-9-]+)$/.exec(path);
   let screen;
-  if (path === '/link') screen = <LinkPage token={linkToken} onDone={(kind) => arrive(kind === 'invite' ? '/' : '/settings/agents?reset=1')} />;
+  if (path === '/link') screen = <LinkPage token={linkToken} onDone={(recovery) => arrive(recovery ? '/settings/agents?reset=1' : '/')} />;
   else if (me === null) screen = <section class="card narrow"><p class="muted">{t('loading')}</p></section>;
   else if (me === 'failed') screen = <section class="card narrow"><Failure>{t('offline')}</Failure><button class="plain wide" onClick={() => { setMe(null); void load(); }}>{t('retry')}</button></section>;
   else if (me === 'nobody') screen = path === '/device' ? <AskDevice onDone={arrive} /> : <SignIn onDone={() => { setMe(null); void load(); }} />;

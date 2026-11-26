@@ -71,14 +71,14 @@ export async function signIn(ctx: AppContext): Promise<Response> {
 
 // ---- Registering, from a link
 
-interface Link { kind: 'owner' | 'invite' | 'reset'; member_id: string; name: string; team: string | null; level: number | null; inviter: string | null; hash: string }
+interface Link { kind: 'owner' | 'invite' | 'reset'; member_id: string; name: string; joined_at: number | null; team: string | null; level: number | null; inviter: string | null; hash: string }
 
 /** A link that works now. Its token is in the body, never in an address that reaches the server. */
 async function findLink(env: AppEnv, token: unknown): Promise<Link> {
   if (typeof token !== 'string' || !TOKEN.test(token)) throw notFound();
   const hash = await sha256Hex(token);
   const link = await env.DB.prepare(
-    `SELECT l.kind, l.member_id, m.name, t.name team, l.level, c.name inviter FROM access_links l JOIN members m ON m.id = l.member_id AND m.removed_at IS NULL
+    `SELECT l.kind, l.member_id, m.name, m.joined_at, t.name team, l.level, c.name inviter FROM access_links l JOIN members m ON m.id = l.member_id AND m.removed_at IS NULL
      LEFT JOIN teams t ON t.id = l.team_id LEFT JOIN members c ON c.id = l.created_by
      WHERE l.token_sha256 = ? AND l.used_at IS NULL AND l.expires_at > ?`,
   ).bind(hash, Date.now()).first<Omit<Link, 'hash'>>();
@@ -92,8 +92,9 @@ export async function linkOptions(ctx: AppContext): Promise<Response> {
   onlyKeys(body, ['token']);
   const link = await findLink(ctx.env, body.token);
   const options = await registrationOptions(ctx.env, link.member_id, link.name, []);
+  const recovery = link.kind === 'reset' || (link.kind === 'owner' && link.joined_at !== null);
   return Response.json({
-    challengeId: await saveChallenge(ctx.env, 'register', link.member_id, options.challenge), options,
+    challengeId: await saveChallenge(ctx.env, 'register', link.member_id, options.challenge), options, recovery,
     link: { kind: link.kind, name: link.name, team: link.team, level: link.level, inviter: link.inviter },
   });
 }
@@ -105,15 +106,22 @@ export async function linkRegister(ctx: AppContext): Promise<Response> {
   const credential = await verifyRegistration(ctx, body, link.member_id);
   const session = await newSession(env, ctx.request, link.member_id, { passkeyId: credential.id });
   try {
+    // Re-check the `instance` and `teams` switches atomically inside the write batch so an in-flight invite or reset cannot finish after teams turns off.
+    const switchGuard = link.kind === 'owner'
+      ? []
+      : [env.DB.prepare("SELECT CASE WHEN (SELECT COUNT(*) FROM settings WHERE key IN ('instance','teams') AND value_json = 'true') = 2 THEN 1 ELSE json('feature_off') END")];
     // The link is used by the INSERT itself; a second use, an expired link or a removed person refuses it.
     await env.DB.batch([
+      ...switchGuard,
       env.DB.prepare('INSERT INTO passkeys(credential_id, member_id, public_key, sign_count, label, created_at, last_used_at, link_id) VALUES(?,?,?,?,?,?,?,?)')
         .bind(credential.id, link.member_id, credential.publicKey, credential.counter, deviceLabel(ctx.request), Date.now(), Date.now(), link.hash),
       session.statement,
       auditStatement(env, link.member_id, `link.${link.kind}`, link.member_id),
     ]);
   } catch (error) {
-    if (/not allowed|UNIQUE constraint failed: passkeys/.test(String(error))) throw notFound();
+    const msg = String(error);
+    if (msg.includes('malformed JSON')) throw new ApiError('feature_off', 'This feature is off.');
+    if (/not allowed|UNIQUE constraint failed: passkeys/.test(msg)) throw notFound();
     throw error;
   }
   return new Response(null, { status: 204, headers: { 'Set-Cookie': sessionCookie(env, session.token) } });
