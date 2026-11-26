@@ -23,7 +23,10 @@ export function SettingsProvider({ children }: { children: ComponentChildren }) 
   const [lang, setLang] = useState<Lang>(root.lang === 'ar' ? 'ar' : 'en');
   const [mode, setMode] = useState<'dark' | 'light'>(root.dataset.mode === 'light' ? 'light' : 'dark');
   useEffect(() => { root.lang = lang; root.dir = lang === 'ar' ? 'rtl' : 'ltr'; document.title = translate(lang, 'app'); }, [lang]);
-  useEffect(() => { root.dataset.mode = mode; }, [mode]);
+  useEffect(() => {
+    root.dataset.mode = mode;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', mode === 'light' ? '#f6f4ef' : '#12161a');
+  }, [mode]);
   return (
     <SettingsContext.Provider value={{ lang, mode, setLang: (l) => { keep('lawh-lang', l); setLang(l); }, setMode: (m) => { keep('lawh-mode', m); setMode(m); } }}>
       {children}
