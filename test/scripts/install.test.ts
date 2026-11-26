@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -86,8 +86,8 @@ function runAsync(cmd: string, args: string[], opts: { env?: NodeJS.ProcessEnv; 
 }
 
 describe('no-clone installer (install.sh) and lawh CLI', () => {
-  it('installs with relative/spaced paths, supports legacy v1.0.0 bootstrap, persists custom bin/repo on self-update, and rolls back post-swap failures cleanly', () => {
-    const work = mkdtempSync(join(tmpdir(), 'lawh install test '));
+  it('installs with relative/spaced paths, migrates round-1 wrappers, persists custom bin/repo on self-update, normalizes 0600 modes, and rolls back post-metadata failures cleanly', () => {
+    const work = realpathSync(mkdtempSync(join(tmpdir(), 'lawh install test ')));
     cleanups.push(() => rmSync(work, { recursive: true, force: true }));
 
     const legacyTar = makeReleaseTarball(work, '1.0.0', { legacyV100: true });
@@ -97,7 +97,53 @@ describe('no-clone installer (install.sh) and lawh CLI', () => {
     const fakeHome = join(work, 'fake-home');
     mkdirSync(fakeHome, { recursive: true });
 
-    // Install using RELATIVE LAWH_HOME and custom LAWH_BIN_DIR + custom fork LAWH_REPO.
+    const lawhHome = join(work, 'my lawh home');
+    const binDir = join(work, 'my custom bin');
+    const wrapper = join(binDir, 'lawh');
+
+    // Simulate a round-1 managed install (real directory at app/, no install.json or install.sh, round-1 wrapper without marker).
+    mkdirSync(join(lawhHome, 'app/scripts'), { recursive: true });
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(lawhHome, 'app/package.json'), JSON.stringify({ name: 'lawh', version: '1.0.0' }));
+    writeFileSync(join(lawhHome, 'app/scripts/lawh.mjs'), 'process.exit(2);\n');
+    writeFileSync(join(lawhHome, 'version'), 'v1.0.0\n');
+    writeFileSync(
+      wrapper,
+      [
+        '#!/usr/bin/env sh',
+        'set -eu',
+        `if [ -z "\${LAWH_HOME:-}" ]; then LAWH_HOME='${lawhHome}'; fi`,
+        'export LAWH_HOME',
+        'export LAWH_MANAGED_INSTALL=1',
+        'exec node "$LAWH_HOME/app/scripts/lawh.mjs" "$@"',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+
+    // 1) Post-metadata rollback on an update where install.json and install.sh were previously ABSENT must remove those newly published files and restore the old real-dir app + wrapper!
+    const failBeforeCommit = spawnSync('bash', [installerPath], {
+      cwd: work,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        HOME: fakeHome,
+        LAWH_HOME: './my lawh home',
+        LAWH_BIN_DIR: './my custom bin',
+        LAWH_REPO: 'myfork/lawh',
+        LAWH_VERSION: 'v1.0.1',
+        LAWH_TARBALL_URL: `file://${tar101}`,
+        LAWH_SKIP_INSTALL_DEPS: '1',
+        LAWH_TEST_FAIL_BEFORE_COMMIT: '1',
+      },
+    });
+    expect(failBeforeCommit.status).not.toBe(0);
+    expect(existsSync(join(lawhHome, 'install.json'))).toBe(false);
+    expect(existsSync(join(lawhHome, 'install.sh'))).toBe(false);
+    expect(readFileSync(join(lawhHome, 'version'), 'utf8').trim()).toBe('v1.0.0');
+    expect(readFileSync(wrapper, 'utf8')).not.toContain('# managed-by-lawh-installer');
+
+    // 2) Migrating that round-1 wrapper with the new installer succeeds (even against a legacy v1.0.0 tarball).
     const runLegacy = spawnSync('bash', [installerPath], {
       cwd: work,
       encoding: 'utf8',
@@ -113,33 +159,30 @@ describe('no-clone installer (install.sh) and lawh CLI', () => {
       },
     });
     expect(runLegacy.status, runLegacy.stdout + runLegacy.stderr).toBe(0);
-
-    const lawhHome = join(work, 'my lawh home');
-    const binDir = join(work, 'my custom bin');
-    const wrapper = join(binDir, 'lawh');
-
     expect(statSync(lawhHome).mode & 0o777).toBe(0o700);
     expect(readFileSync(join(lawhHome, 'version'), 'utf8').trim()).toBe('v1.0.0');
 
-    // Run wrapper from a DIFFERENT working directory (verifies relative LAWH_HOME was normalized to absolute)
+    // Run wrapper from a DIFFERENT working directory (verifies relative LAWH_HOME was normalized)
     // AND verifies legacy v1.0.0 wrapper fallback handles `version`.
     const verLegacy = spawnSync(wrapper, ['version'], { cwd: tmpdir(), encoding: 'utf8', env: { PATH: process.env.PATH, HOME: fakeHome } });
     expect(verLegacy.status, verLegacy.stderr).toBe(0);
     expect(verLegacy.stdout.trim()).toBe('lawh v1.0.0');
 
-    // Seed local instance state.
+    // Seed local instance state with looser 0644 modes to verify installer normalizes all config files to 0600.
     const cfgPath = join(lawhHome, 'app/lawh.config.json');
     const appWrangler = join(lawhHome, 'app/wrangler.app.jsonc');
     const contentWrangler = join(lawhHome, 'app/wrangler.content.jsonc');
     const wranglerDir = join(lawhHome, 'app/.wrangler');
     mkdirSync(wranglerDir, { recursive: true });
-    writeFileSync(cfgPath, '{"instance":{"name":{"en":"KeepMe"}}}\n', { mode: 0o600 });
-    chmodSync(cfgPath, 0o600);
-    writeFileSync(appWrangler, '{"name":"lawh-app"}\n');
-    writeFileSync(contentWrangler, '{"name":"lawh-content"}\n');
-    writeFileSync(join(wranglerDir, 'lawh-upgrade.json'), '{"bookmark":"bm-1"}\n', { mode: 0o600 });
+    writeFileSync(cfgPath, '{"instance":{"name":{"en":"KeepMe"}}}\n', { mode: 0o644 });
+    chmodSync(cfgPath, 0o644);
+    writeFileSync(appWrangler, '{"name":"lawh-app"}\n', { mode: 0o644 });
+    chmodSync(appWrangler, 0o644);
+    writeFileSync(contentWrangler, '{"name":"lawh-content"}\n', { mode: 0o644 });
+    chmodSync(contentWrangler, 0o644);
+    writeFileSync(join(wranglerDir, 'lawh-upgrade.json'), '{"bookmark":"bm-1"}\n', { mode: 0o644 });
 
-    // Run `lawh self-update` from legacy v1.0.0 WITHOUT re-exporting LAWH_HOME, LAWH_BIN_DIR, or LAWH_REPO!
+    // 3) Run `lawh self-update` from legacy v1.0.0 WITHOUT re-exporting LAWH_HOME, LAWH_BIN_DIR, or LAWH_REPO!
     const runUp = spawnSync(wrapper, ['self-update'], {
       cwd: tmpdir(),
       encoding: 'utf8',
@@ -153,7 +196,6 @@ describe('no-clone installer (install.sh) and lawh CLI', () => {
     });
     expect(runUp.status, runUp.stdout + runUp.stderr).toBe(0);
     expect(runUp.stdout).toContain('Existing instance config preserved');
-    // Custom bin dir & fork repo must be preserved — no second wrapper leaked into $HOME/.local/bin.
     expect(existsSync(join(fakeHome, '.local/bin/lawh'))).toBe(false);
     const meta = JSON.parse(readFileSync(join(lawhHome, 'install.json'), 'utf8'));
     expect(meta).toMatchObject({ home: lawhHome, binDir, repo: 'myfork/lawh', version: 'v1.0.1' });
@@ -163,11 +205,11 @@ describe('no-clone installer (install.sh) and lawh CLI', () => {
     expect(ver101.stdout.trim()).toBe('lawh v1.0.1');
     expect(readFileSync(cfgPath, 'utf8')).toContain('KeepMe');
     expect(statSync(cfgPath).mode & 0o777).toBe(0o600);
-    expect(readFileSync(appWrangler, 'utf8')).toContain('lawh-app');
-    expect(readFileSync(contentWrangler, 'utf8')).toContain('lawh-content');
-    expect(readFileSync(join(wranglerDir, 'lawh-upgrade.json'), 'utf8')).toContain('bm-1');
+    expect(statSync(appWrangler).mode & 0o777).toBe(0o600);
+    expect(statSync(contentWrangler).mode & 0o777).toBe(0o600);
+    expect(statSync(join(wranglerDir, 'lawh-upgrade.json')).mode & 0o777).toBe(0o600);
 
-    // Malformed package.json fails in staging before activation and leaves existing install intact with zero staging leftovers.
+    // 4) Malformed package.json fails in staging before activation and leaves existing install intact with zero staging leftovers.
     const runBadPkg = spawnSync('bash', [installerPath], {
       encoding: 'utf8',
       env: {
@@ -184,9 +226,9 @@ describe('no-clone installer (install.sh) and lawh CLI', () => {
     expect(readFileSync(join(lawhHome, 'version'), 'utf8').trim()).toBe('v1.0.1');
     expect(readdirSync(lawhHome).filter((n) => n.startsWith('.staging.'))).toEqual([]);
 
-    // Post-swap failure rolls back app symlink, version, wrapper, and removes failed release dir + staging dirs.
+    // 5) Post-metadata failure rolls back app symlink, version, install.json, wrapper, and removes failed release + staging dirs.
     const releasesBefore = readdirSync(join(lawhHome, 'releases'));
-    const runPostSwapFail = spawnSync(wrapper, ['self-update'], {
+    const runPostMetaFail = spawnSync(wrapper, ['self-update'], {
       cwd: tmpdir(),
       encoding: 'utf8',
       env: {
@@ -195,20 +237,21 @@ describe('no-clone installer (install.sh) and lawh CLI', () => {
         LAWH_VERSION: 'v1.0.2',
         LAWH_TARBALL_URL: `file://${tar102}`,
         LAWH_SKIP_INSTALL_DEPS: '1',
-        LAWH_TEST_FAIL_AFTER_SWAP: '1',
+        LAWH_TEST_FAIL_BEFORE_COMMIT: '1',
       },
     });
-    expect(runPostSwapFail.status).not.toBe(0);
-    expect(runPostSwapFail.stderr).toContain('Simulated failure after app swap');
+    expect(runPostMetaFail.status).not.toBe(0);
+    expect(runPostMetaFail.stderr).toContain('Simulated failure after metadata publication');
     expect(readFileSync(join(lawhHome, 'version'), 'utf8').trim()).toBe('v1.0.1');
+    expect(JSON.parse(readFileSync(join(lawhHome, 'install.json'), 'utf8')).version).toBe('v1.0.1');
     expect(readFileSync(cfgPath, 'utf8')).toContain('KeepMe');
     expect(spawnSync(wrapper, ['version'], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: fakeHome } }).stdout.trim()).toBe('lawh v1.0.1');
     expect(readdirSync(join(lawhHome, 'releases'))).toEqual(releasesBefore);
     expect(readdirSync(lawhHome).filter((n) => n.startsWith('.staging.') || n.startsWith('.version.') || n.startsWith('.app.'))).toEqual([]);
   });
 
-  it('rejects reserved archive entries, wrapper collisions, invalid tags/repos/URLs, and concurrent installs', async () => {
-    const work = mkdtempSync(join(tmpdir(), 'lawh-install-guards-'));
+  it('rejects reserved archive entries, wrapper collisions, invalid tags/repos/URLs, preserves external app symlink targets, and serializes concurrent installs via flock', async () => {
+    const work = realpathSync(mkdtempSync(join(tmpdir(), 'lawh-install-guards-')));
     cleanups.push(() => rmSync(work, { recursive: true, force: true }));
 
     const lawhHome = join(work, 'home');
@@ -268,23 +311,39 @@ describe('no-clone installer (install.sh) and lawh CLI', () => {
       expect(r.stderr, label).toContain(expected);
     }
 
-    // Concurrent installer serialization: holding a live PID lock causes the second installer to exit cleanly without touching state.
-    mkdirSync(join(lawhHome, '.install.lock'), { recursive: true });
-    writeFileSync(join(lawhHome, '.install.lock/pid'), `${process.pid}\n`);
-    const resLocked = spawnSync('bash', [installerPath], {
-      encoding: 'utf8',
+    // Kernel flock serialization: a live process holding .install.lock causes a concurrent installer to fail cleanly.
+    mkdirSync(lawhHome, { recursive: true });
+    const lockHolder = spawn('python3', [
+      '-c',
+      'import fcntl, os, sys; fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR, 0o600); fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB); print("LOCKED", flush=True); sys.stdin.read()',
+      join(lawhHome, '.install.lock'),
+    ]);
+    cleanups.push(() => { try { lockHolder.kill(); } catch { /* ignore */ } });
+    await new Promise<void>((resolve, reject) => {
+      lockHolder.stdout.once('data', () => resolve());
+      lockHolder.once('error', reject);
+    });
+    const resLocked = await runAsync('bash', [installerPath], {
       env: { ...process.env, LAWH_HOME: lawhHome, LAWH_BIN_DIR: binDir, LAWH_VERSION: 'v1.0.1', LAWH_TARBALL_URL: `file://${validTar}`, LAWH_SKIP_INSTALL_DEPS: '1' },
     });
     expect(resLocked.status).not.toBe(0);
     expect(resLocked.stderr).toContain('already running');
-    rmSync(join(lawhHome, '.install.lock'), { recursive: true, force: true });
+    lockHolder.stdin.end();
+    await new Promise<void>((resolve) => lockHolder.once('close', () => resolve()));
 
-    // Symlinked local state file in an existing install is refused rather than followed.
-    const okInstall = spawnSync('bash', [installerPath], {
+    // Upgrading when $LAWH_HOME/app is a symlink pointing OUTSIDE $LAWH_HOME/releases/ must NOT delete the external directory!
+    const externalApp = join(work, 'external-checkout');
+    mkdirSync(externalApp, { recursive: true });
+    writeFileSync(join(externalApp, 'important-user-file.txt'), 'do-not-delete');
+    symlinkSync(externalApp, join(lawhHome, 'app'));
+    const resExt = spawnSync('bash', [installerPath], {
       encoding: 'utf8',
       env: { ...process.env, LAWH_HOME: lawhHome, LAWH_BIN_DIR: binDir, LAWH_VERSION: 'v1.0.1', LAWH_TARBALL_URL: `file://${validTar}`, LAWH_SKIP_INSTALL_DEPS: '1' },
     });
-    expect(okInstall.status, okInstall.stdout + okInstall.stderr).toBe(0);
+    expect(resExt.status, resExt.stdout + resExt.stderr).toBe(0);
+    expect(readFileSync(join(externalApp, 'important-user-file.txt'), 'utf8')).toBe('do-not-delete');
+
+    // Symlinked local state file in an existing install is refused rather than followed.
     const outside = join(work, 'outside.txt');
     writeFileSync(outside, 'secret-outside');
     symlinkSync(outside, join(lawhHome, 'app/lawh.config.json'));
@@ -296,19 +355,26 @@ describe('no-clone installer (install.sh) and lawh CLI', () => {
     expect(resSym.stderr).toContain('symlinked local state file');
   });
 
-  it('resolves latest release via loopback HTTP API and downloads tarball over HTTP', async () => {
-    const work = mkdtempSync(join(tmpdir(), 'lawh-install-http-'));
+  it('resolves latest release via loopback HTTP API, rejects trailing-newline API tags, and blocks loopback redirects', async () => {
+    const work = realpathSync(mkdtempSync(join(tmpdir(), 'lawh-install-http-')));
     cleanups.push(() => rmSync(work, { recursive: true, force: true }));
     const tar = makeReleaseTarball(work, '1.0.1');
     const tarBytes = readFileSync(tar);
 
+    let apiTag = 'v1.0.1';
+    let redirectDownload = false;
     const server: Server = createServer((req, res) => {
       if (req.url === '/repos/example/lawh/releases/latest') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ tag_name: 'v1.0.1' }));
+        res.end(JSON.stringify({ tag_name: apiTag }));
         return;
       }
       if (req.url === '/example/lawh/archive/refs/tags/v1.0.1.tar.gz') {
+        if (redirectDownload) {
+          res.writeHead(302, { Location: 'http://example.com/evil.tar.gz' });
+          res.end();
+          return;
+        }
         res.writeHead(200, { 'Content-Type': 'application/gzip' });
         res.end(tarBytes);
         return;
@@ -322,6 +388,43 @@ describe('no-clone installer (install.sh) and lawh CLI', () => {
 
     const lawhHome = join(work, 'home');
     const binDir = join(work, 'bin');
+
+    // Trailing newline in JSON tag_name is rejected before Bash strips it.
+    apiTag = 'v1.0.1\n';
+    const badNewline = await runAsync('bash', [installerPath], {
+      env: {
+        ...process.env,
+        LAWH_HOME: lawhHome,
+        LAWH_BIN_DIR: binDir,
+        LAWH_REPO: 'example/lawh',
+        LAWH_API_URL: `http://127.0.0.1:${port}`,
+        LAWH_ARCHIVE_BASE: `http://127.0.0.1:${port}`,
+        LAWH_VERSION: 'latest',
+        LAWH_SKIP_INSTALL_DEPS: '1',
+      },
+    });
+    expect(badNewline.status).not.toBe(0);
+    expect(badNewline.stderr).toContain('Invalid release tag');
+
+    // Loopback HTTP redirect to non-loopback HTTP is blocked (--max-redirs 0).
+    apiTag = 'v1.0.1';
+    redirectDownload = true;
+    const redirFail = await runAsync('bash', [installerPath], {
+      env: {
+        ...process.env,
+        LAWH_HOME: lawhHome,
+        LAWH_BIN_DIR: binDir,
+        LAWH_REPO: 'example/lawh',
+        LAWH_API_URL: `http://127.0.0.1:${port}`,
+        LAWH_ARCHIVE_BASE: `http://127.0.0.1:${port}`,
+        LAWH_VERSION: 'latest',
+        LAWH_SKIP_INSTALL_DEPS: '1',
+      },
+    });
+    expect(redirFail.status).not.toBe(0);
+
+    // Clean direct loopback HTTP install succeeds.
+    redirectDownload = false;
     const run = await runAsync('bash', [installerPath], {
       env: {
         ...process.env,
@@ -338,17 +441,22 @@ describe('no-clone installer (install.sh) and lawh CLI', () => {
     expect(readFileSync(join(lawhHome, 'version'), 'utf8').trim()).toBe('v1.0.1');
   });
 
-  it('aligns Wrangler credential resolution (~/.wrangler + expiry), interactive init login, and managed recovery messages', async () => {
-    const work = mkdtempSync(join(tmpdir(), 'lawh-cli-auth-'));
+  it('aligns Wrangler 4.164 credential resolution (~/.wrangler exclusive dir & exact expiry), interactive init login, and quoted managed recovery messages', async () => {
+    const work = realpathSync(mkdtempSync(join(tmpdir(), 'lawh-cli-auth ')));
     cleanups.push(() => rmSync(work, { recursive: true, force: true }));
 
-    // 1) Legacy ~/.wrangler/config/default.toml is discovered when ~/.wrangler exists.
+    // 1) Legacy ~/.wrangler/config/default.toml is used exclusively when ~/.wrangler exists (does not fall back to XDG).
     const legacyHome = join(work, 'legacy-home');
     mkdirSync(join(legacyHome, '.wrangler/config'), { recursive: true });
+    mkdirSync(join(legacyHome, '.config/.wrangler/config'), { recursive: true });
+    writeFileSync(join(legacyHome, '.config/.wrangler/config/default.toml'), 'oauth_token = "xdg-fallback"\n');
+    expect(() => readCloudflareToken({}, legacyHome)).toThrow(MissingCloudflareTokenError);
+    const soon = new Date(Date.now() + 10_000).toISOString();
     writeFileSync(
       join(legacyHome, '.wrangler/config/default.toml'),
-      'oauth_token = "legacy-tok"\nexpiration_time = "2099-01-01T00:00:00.000Z"\n',
+      `oauth_token = "legacy-tok"\nexpiration_time = "${soon}"\n`,
     );
+    // Token expiring in 10s is still valid (matches Wrangler's `now >= expiry`, no premature 30s cutoff).
     expect(readCloudflareToken({}, legacyHome)).toBe('legacy-tok');
 
     // 2) Expired OAuth token throws MissingCloudflareTokenError with expired=true.
@@ -386,7 +494,6 @@ describe('no-clone installer (install.sh) and lawh CLI', () => {
     expect(nonTty.stderr).toContain('Not signed in to Cloudflare');
     expect(nonTty.stdout).not.toContain('MOCK_WRANGLER_login');
 
-    // Mock Cloudflare API returning an error after login succeeds, proving `init` picked up the token written by mock Wrangler login.
     let sawAuth = '';
     const cfServer: Server = createServer((req, res) => {
       sawAuth = req.headers.authorization ?? '';
@@ -411,12 +518,12 @@ describe('no-clone installer (install.sh) and lawh CLI', () => {
     expect(sawAuth).toBe('Bearer fresh-login-tok');
     expect(ttyRun.stderr).toContain('Mock stop after auth');
 
-    // 4) Managed-mode `runUpgrade` prints `lawh init` when config is missing and absolute runnable restore command on migration failure.
+    // 4) Managed-mode `runUpgrade` prints `lawh init` when config is missing and shell-quoted absolute restore command on migration failure.
     const emptyRoot = join(work, 'managed-root');
     mkdirSync(emptyRoot, { recursive: true });
     await expect(runUpgrade({ root: emptyRoot, cf: {} as never, bin: 'lawh', managed: true })).rejects.toThrow('Run `lawh init` first.');
 
-    const managedMigRoot = join(work, 'managed-mig-root');
+    const managedMigRoot = join(work, 'managed mig root');
     mkdirSync(join(managedMigRoot, 'migrations'), { recursive: true });
     writeFileSync(join(managedMigRoot, 'migrations/0001_bad.sql'), 'BROKEN SQL;');
     writeFileSync(join(managedMigRoot, 'lawh.config.json'), JSON.stringify({
@@ -449,12 +556,14 @@ describe('no-clone installer (install.sh) and lawh CLI', () => {
     } catch (e) {
       upgradeErr = e as Error & { restoreCommand?: string };
     }
-    expect(upgradeErr?.restoreCommand).toContain(`node "${join(managedMigRoot, 'node_modules/wrangler/bin/wrangler.js')}" d1 time-travel restore lawh-db --bookmark=bm-managed-123 -c "${join(managedMigRoot, 'wrangler.app.jsonc')}"`);
+    expect(upgradeErr?.restoreCommand).toBe(
+      `node '${join(managedMigRoot, 'node_modules/wrangler/bin/wrangler.js')}' d1 time-travel restore lawh-db --bookmark=bm-managed-123 -c '${join(managedMigRoot, 'wrangler.app.jsonc')}'`,
+    );
 
     // 5) Repo-mode `version` and `self-update` guidance.
     const ver = spawnSync(process.execPath, [join(repoRoot, 'scripts/lawh.mjs'), 'version'], { encoding: 'utf8' });
     expect(ver.status, ver.stderr).toBe(0);
-    expect(ver.stdout.trim()).toMatch(/^lawh v\d+\.\d+\.\d+/);
+    expect(ver.stdout.trim()).toBe('lawh v1.0.1');
 
     const selfUp = spawnSync(process.execPath, [join(repoRoot, 'scripts/lawh.mjs'), 'self-update'], {
       encoding: 'utf8',

@@ -587,11 +587,12 @@ export async function runUpgrade({
       state.appliedMigrations = [...(state.appliedMigrations ?? []), ...applied];
       writeUpgradeState(root, state);
     } catch (err) {
+      const shQuote = (s) => (/^[A-Za-z0-9._:=/-]+$/.test(String(s)) ? String(s) : `'${String(s).replaceAll("'", "'\\''")}'`);
       const wranglerBin = join(root, 'node_modules/wrangler/bin/wrangler.js');
       const wranglerCfg = join(root, 'wrangler.app.jsonc');
       const restoreCmd = managed
-        ? `node "${wranglerBin}" d1 time-travel restore ${cfg.resources.database.name} --bookmark=${state.bookmark} -c "${wranglerCfg}"`
-        : `pnpm exec wrangler d1 time-travel restore ${cfg.resources.database.name} --bookmark=${state.bookmark} -c wrangler.app.jsonc`;
+        ? `node ${shQuote(wranglerBin)} d1 time-travel restore ${shQuote(cfg.resources.database.name)} ${shQuote(`--bookmark=${state.bookmark}`)} -c ${shQuote(wranglerCfg)}`
+        : `pnpm exec wrangler d1 time-travel restore ${shQuote(cfg.resources.database.name)} ${shQuote(`--bookmark=${state.bookmark}`)} -c wrangler.app.jsonc`;
       log(`\nMigration failed (${err.message}).\nRestore the database to its pre-upgrade bookmark with:\n\n  ${restoreCmd}\n`);
       err.restoreCommand = restoreCmd;
       throw err;

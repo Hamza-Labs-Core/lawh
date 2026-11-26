@@ -27,7 +27,7 @@ pnpm lawh init
 
 `lawh init` uses the owner's own Wrangler sign-in and can be run again safely:
 
-1. Asks for the instance name (en and ar) and hosts: `workers.dev` (default) or the owner's domain.
+1. Asks for the instance name (en and ar) and hosts: `workers.dev` (default; registers a `workers.dev` subdomain first if the account does not have one yet) or the owner's domain.
 2. Shows everything it will create, with the cost notes, and waits for a yes.
 3. Creates D1, R2 and the queue, writes the Durable Object class into the generated Wrangler config (step 4 creates it), and generates the secrets on that machine.
 4. Applies migrations and deploys both Workers with the `instance` switch off.
