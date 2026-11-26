@@ -105,7 +105,7 @@ def check_repo(root: pathlib.Path) -> list[str]:
                 ("resources.secretsStore.id", resources.get("secretsStore", {}).get("id", "")),
             ]:
                 if val:
-                    bad.append(f"lawh.config.example.json must leave {label} empty (got {val!r})")
+                    bad.append(f"lawh.config.example.json must leave {label} empty")
             if resources.get("secretsStore", {}).get("secrets"):
                 bad.append("lawh.config.example.json must leave resources.secretsStore.secrets empty")
             hosts = example.get("hosts", {})
