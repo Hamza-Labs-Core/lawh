@@ -62,8 +62,8 @@ async function currentWorkerVersion(cf, accountId, scriptName) {
   return versionId;
 }
 
-export async function defaultDeployWorker({ root, cf, accountId, workerName, configFile, kind, env = process.env }) {
-  if (kind === 'app') {
+export async function defaultDeployWorker({ root, cf, accountId, workerName, configFile, kind, env = process.env, skipBuild = false }) {
+  if (kind === 'app' && !skipBuild) {
     execFileSync(process.execPath, [join(root, 'scripts/build-ui.mjs')], {
       cwd: root,
       env: { ...env, WRANGLER_SEND_METRICS: 'false' },
@@ -376,7 +376,7 @@ export async function runInit({
   }
 
   // Refuse to overwrite an unrelated pre-existing Worker script!
-  // If deploy fails before creating the Worker remotely (e.g. local build failure), clear *Deploying so a retry re-checks existence.
+  // Build UI assets BEFORE setting appDeploying so a local build failure never leaves a deploy-in-progress marker.
   async function deployInitialWorker(kind, workerName, configFile) {
     const createdKey = kind === 'app' ? 'app' : 'content';
     const deployingKey = kind === 'app' ? 'appDeploying' : 'contentDeploying';
@@ -384,10 +384,23 @@ export async function runInit({
     if (!cfg.resources.workersCreated[deployingKey] && (await cf.workerExists(accountId, workerName))) {
       throw new Error(`Worker "${workerName}" already exists in this account. Choose a different worker name or remove it first.`);
     }
+    let skipBuild = false;
+    if (kind === 'app' && deployWorker === defaultDeployWorker) {
+      execFileSync(process.execPath, [join(root, 'scripts/build-ui.mjs')], {
+        cwd: root,
+        env: { ...env, WRANGLER_SEND_METRICS: 'false' },
+        stdio: 'inherit',
+      });
+      skipBuild = true;
+      // Re-check existence right before setting deployingKey so nothing that appeared during the local build is overwritten.
+      if (!cfg.resources.workersCreated[deployingKey] && (await cf.workerExists(accountId, workerName))) {
+        throw new Error(`Worker "${workerName}" already exists in this account. Choose a different worker name or remove it first.`);
+      }
+    }
     cfg.resources.workersCreated[deployingKey] = true;
     writeConfig(root, cfg);
     try {
-      await deployWorker({ root, cf, accountId, workerName, configFile, kind, env });
+      await deployWorker({ root, cf, accountId, workerName, configFile, kind, env, skipBuild });
       cfg.resources.workersCreated[createdKey] = true;
       cfg.resources.workersCreated[deployingKey] = false;
       writeConfig(root, cfg);

@@ -30,7 +30,7 @@ export async function buildUi({ root = fileURLToPath(new URL('..', import.meta.u
   });
   const script = Object.keys(result.metafile.outputs).find((path) => path.endsWith('.js')).split('/').at(-1);
   let css = readFileSync(join(root, 'src/ui/style.css'), 'utf8');
-  if (accent && accent !== '#e0b15a') css += `\n:root{--ac:${accent};}\n`;
+  if (accent && accent !== '#e0b15a') css += `\n:root,:root[data-mode=light]{--ac:${accent};}\n`;
   const style = `style-${createHash('sha256').update(css).digest('hex').slice(0, 8)}.css`;
   writeFileSync(join(out, 'assets', style), css);
   // The first script sets the theme and language before anything is drawn. It is a file: the CSP allows nothing inline.
