@@ -4,7 +4,8 @@ import { matchesEtag } from '../../shared/etag';
 import { newId } from '../../shared/ids';
 import { encodeCursor, listPageRows, pageLimit, readCursor, tagsOf } from '../pages/list';
 import { type Project, projectBySlug, projectJson, usableProjects } from './auth';
-import { detailStatements } from '../search';
+import { detailStatements, indexStatements } from '../search';
+import { entryTextOf } from '../search/entry';
 import { onlyKeys, oneOf, readJson, text } from './body';
 import { idempotent, mustChange, replay, writeOnce } from './idempotency';
 import type { Context } from './router';
@@ -109,6 +110,9 @@ export async function updatePage(ctx: Context): Promise<Response> {
     ...page, title: meta.title ?? page.title, summary: meta.summary ?? page.summary, lang: meta.lang ?? page.lang,
     status: meta.status ?? page.status, updated_at: now,
   };
+  const indexed = await env.DB.prepare('SELECT 1 FROM pages_fts_map WHERE page_id = ?').bind(page.id).first();
+  const bodyText = indexed ? null : await entryTextOf(env, page.id, page.current_version);
+  const metaForIndex = { title: changed.title, summary: changed.summary, tags };
   const statements = [
     // Nothing matches when someone else changed or deleted the page meanwhile; the next statement then fails the batch.
     env.DB.prepare('UPDATE pages SET title=?, summary=?, lang=?, status=?, updated_at=? WHERE id=? AND updated_at=? AND deleted_at IS NULL')
@@ -116,7 +120,7 @@ export async function updatePage(ctx: Context): Promise<Response> {
     mustChange(env),
     ...(meta.tags ? tagStatements(env, page.id, project.id, tags, now) : []),
     ...(changed.status !== page.status ? [eventStatement(env, project.id, page.id, 'page.status', page.id, caller.agentId, now)] : []),
-    ...detailStatements(env, page.id, { title: changed.title, summary: changed.summary, tags }),
+    ...(bodyText === null ? detailStatements(env, page.id, metaForIndex) : indexStatements(env, page.id, metaForIndex, bodyText)),
   ];
   try {
     const stored = await writeOnce(env, caller, idem, { status: 200, json: pageJson(ctx, project, changed, [...tags].sort()) }, statements);

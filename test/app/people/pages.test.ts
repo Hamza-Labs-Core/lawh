@@ -224,6 +224,6 @@ it('people’s queries never scan a table, and never sort without an index', asy
     const marks = (query.match(/\?(?!\d)/g) ?? []).length, numbered = Math.max(0, ...[...query.matchAll(/\?(\d+)/g)].map((m) => Number(m[1])));
     const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${query}`).bind(...Array(marks + numbered).fill(null)).all<{ detail: string }>();
     // The recursive table of the tags list holds at most 51 rows.
-    for (const { detail } of results) expect(/^SCAN (?!j\b|json_each\b|CONSTANT ROW|t$|\w+ VIRTUAL TABLE INDEX)/.test(detail) || detail.includes('TEMP B-TREE'), `${detail} | ${query}`).toBe(false);
+    for (const { detail } of results) expect(/^SCAN (?!j\b|json_each\b|CONSTANT ROW|t$|\w+(?: EXISTS)? VIRTUAL TABLE INDEX)/.test(detail) || detail.includes('TEMP B-TREE'), `${detail} | ${query}`).toBe(false);
   }
 });

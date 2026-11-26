@@ -24,27 +24,34 @@ describe('text', () => {
 
   it.each([
     ['<p>One</p><p>two</p>', 'One two'], ['<b>bo</b>ld', 'bold'], ['a<br>b', 'a b'], ['<script>var x="no"</script><style>.no{}</style><template>no</template><noscript>no</noscript>yes', 'yes'],
-    ['Tom &amp; Jerry &lt;3 &#1605;&#x631;&nbsp;x &unknown; &#0; &#xD800;', 'Tom & Jerry <3 مر x &unknown;'], ['<title>T</title><h1>H</h1>', 'T H'], ['<svg><style/><text>in a chart</text></svg> after', 'in a chart after'], ['<!-- no -->yes', 'yes'],
+    ['<p hidden>secret</p><div style="color:red; display: none">gone</div><span hidden="until-found">found</span> ok', 'found ok'],
+    ['Caf&eacute; Tom &amp; Jerry &lt;3 &#1605;&#x631;&nbsp;x &unknown; &#0; &#xD800;', 'Café Tom & Jerry <3 مر x &unknown;'], ['<title>T</title><h1>H</h1>', 'T H'], ['<svg><style/><text>in a chart</text></svg> after', 'in a chart after'], ['<!-- no -->yes', 'yes'],
     ['<div><script>1</script>a<script>2</script>b</div>', 'ab'], ['<p title="no">x', 'x'], ['', ''],
   ])('reads %s as %s', async (source, expected) => { expect(await text(source)).toBe(expected); });
 
-  it('stops after 200,000 characters and 3 MB, wherever that is', async () => {
+  it('stops after 200 KB of UTF-8 text and 3 MB of HTML, wherever that is', async () => {
     expect(await text(`<p>${'word '.repeat(100_000)}</p>`)).toHaveLength(199_999);
     expect(await text(`<script>${'x'.repeat(3_500_000)}</script><p>far</p>`)).toBe('');
-    expect(await text(`<p>${'م'.repeat(1_700_000)}`)).toHaveLength(200_000);
-    expect((await text(`<p>${'😀'.repeat(150_000)}`)).isWellFormed()).toBe(true);
+    const ar = await text(`<p>${'م'.repeat(1_700_000)}`);
+    expect(new TextEncoder().encode(ar).byteLength).toBe(200_000);
+    expect(ar).toHaveLength(100_000);
+    const emoji = await text(`<p>${'😀'.repeat(150_000)}`);
+    expect(new TextEncoder().encode(emoji).byteLength).toBe(200_000);
+    expect(emoji.isWellFormed()).toBe(true);
   });
 
-  it('finds an entity cut between two chunks', async () => {
+  it('finds an entity cut between two chunks or across the 64 KB buffer split', async () => {
     const parts = ['<p>a &am', 'p; b</p>'].map((part) => new TextEncoder().encode(part));
     expect(await visibleText(new ReadableStream({ pull(c) { const next = parts.shift(); if (next) c.enqueue(next); else c.close(); } }))).toBe('a & b');
+    const pad = 'a'.repeat(65_534), split = [`<p>${pad}&am`, 'p; tail</p>'].map((part) => new TextEncoder().encode(part));
+    expect((await visibleText(new ReadableStream({ pull(c) { const next = split.shift(); if (next) c.enqueue(next); else c.close(); } }))).endsWith('a& tail')).toBe(true);
   });
 
-  it('makes words of a search, whatever is typed', () => {
+  it('makes words of a search, keeping every word typed', () => {
     expect(words('stor cost')).toBe('"stor"* AND "cost"*');
     expect(words('a"b')).toBe('"a""b"*');
     for (const nothing of ['', '  ', '"', '*', '- ^ () : {} \u0000']) expect(words(nothing), nothing).toBeNull();
-    expect(words('a b c d e f g h i j k l')!.split(' AND ')).toHaveLength(10);
+    expect(words('a b c d e f g h i j k l')!.split(' AND ')).toHaveLength(12);
     expect(matchOf('x', { projects: [], status: null, tag: null })).toBeNull();
   });
 });
@@ -78,8 +85,36 @@ describe('what is found', () => {
     for (const query of ['&project=two', '&status=in_review', '&tag=api', '&project=two&status=in_review&tag=api']) expect(await find('storage', query), query).toBe('old');
     for (const query of ['&project=one&tag=api', '&status=archived', '&tag=ap', '&tag=api-v2']) expect(await find('storage', query), query).toBe('');
     expect((await find('storage', '&limit=5')).split(',')).toHaveLength(5);
-    expect((await json(await call('/v1/pages?q=storage', { token }))).next).toBeNull();
+    // Search paginates cleanly with a cursor without repeating or truncating.
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: { items: { slug: string }[]; next: string | null } = await json(await call(`/v1/pages?q=storage&limit=40${cursor ? `&cursor=${cursor}` : ''}`, { token }));
+      seen.push(...page.items.map((p) => p.slug));
+      cursor = page.next;
+    } while (cursor);
+    expect(seen).toHaveLength(121);
+    expect(new Set(seen).size).toBe(121);
     expect(await find('p7031')).toBe('');
+  });
+
+  it('requires every word even past ten, backfills pre-S9 pages on PATCH, and never reuses deleted rowids', async () => {
+    await put('ten', 'w1 w2 w3 w4 w5 w6 w7 w8 w9 w10');
+    expect(await find('w1 w2 w3 w4 w5 w6 w7 w8 w9 w10')).toBe('ten');
+    expect(await find('w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11')).toBe('');
+    // Simulate a page published before S9 (no FTS rows yet).
+    const pre = await put('legacy', 'vintage body');
+    await sql(`DELETE FROM pages_fts WHERE rowid=(SELECT rowid FROM pages_fts_map WHERE page_id='${pre}')`, `DELETE FROM pages_fts_map WHERE page_id='${pre}'`);
+    expect(await find('vintage')).toBe('');
+    expect((await call('/v1/projects/one/pages/legacy', { method: 'PATCH', token, json: { summary: 'Refreshed' }, idem: 'pre' })).status).toBe(200);
+    expect(await find('vintage')).toBe('legacy');
+    expect(await find('refreshed')).toBe('legacy');
+    // Deleting the highest rowid and PATCHing an earlier page allocates a strictly higher rowid.
+    const high = (await one<{ rowid: number }>(`SELECT rowid FROM pages_fts_map WHERE page_id='${pre}'`))!.rowid;
+    await sql(`DELETE FROM pages_fts WHERE rowid=${high}`, `DELETE FROM pages_fts_map WHERE rowid=${high}`);
+    expect((await call('/v1/projects/one/pages/ten', { method: 'PATCH', token, json: { summary: 'Moved' }, idem: 'mov' })).status).toBe(200);
+    const moved = (await one<{ rowid: number }>("SELECT m.rowid FROM pages_fts_map m JOIN pages p ON p.id=m.page_id WHERE p.slug='ten'"))!.rowid;
+    expect(moved).toBeGreaterThan(high);
   });
 
   it('newest change first', async () => {
