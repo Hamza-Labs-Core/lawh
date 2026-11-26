@@ -2,7 +2,7 @@
 // Lawh agent CLI — single file, zero dependencies, Node >= 22.
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { chmodSync, closeSync, existsSync, fstatSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { hostname, homedir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 
@@ -574,97 +574,8 @@ function writeSavedCursor(file, seq) {
   try { chmodSync(file, 0o600); } catch { /* Windows */ }
 }
 
-function isPidAlive(pid) {
-  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; }
-  catch (err) { return err && typeof err === 'object' && 'code' in err && err.code === 'EPERM'; }
-}
-
-function readLockInfo(lockFile) {
-  try {
-    const parsed = JSON.parse(readFileSync(lockFile, 'utf8'));
-    if (parsed && typeof parsed.pid === 'number') return parsed;
-  } catch { /* empty or unreadable */ }
-  return null;
-}
-
-function tryLinkLock(targetFile, payload) {
-  const tmp = `${targetFile}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
-  try {
-    writeFileSync(tmp, payload, { mode: 0o600 });
-    try { chmodSync(tmp, 0o600); } catch { /* Windows */ }
-    try {
-      linkSync(tmp, targetFile);
-      return true;
-    } catch (linkErr) {
-      const code = linkErr && typeof linkErr === 'object' && 'code' in linkErr ? linkErr.code : '';
-      if (code === 'EEXIST') return false;
-      // Fallback on filesystems that disallow hard links.
-      try {
-        const fd = openSync(targetFile, 'wx', 0o600);
-        try { writeFileSync(fd, payload); } finally { closeSync(fd); }
-        return true;
-      } catch (openErr) {
-        if (openErr && typeof openErr === 'object' && 'code' in openErr && openErr.code === 'EEXIST') return false;
-        throw openErr;
-      }
-    }
-  } finally {
-    try { unlinkSync(tmp); } catch { /* ignore */ }
-  }
-}
-
-const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
-
-async function withLockGate(lockFile, fn) {
-  const gateFile = `${lockFile}.gate`;
-  const gateToken = randomBytes(8).toString('hex');
-  const gatePayload = `${JSON.stringify({ pid: process.pid, token: gateToken, startedAt: Date.now() })}\n`;
-  let acquired = false;
-  for (let attempt = 0; attempt < 50; attempt++) {
-    if (tryLinkLock(gateFile, gatePayload)) {
-      acquired = true;
-      break;
-    }
-    let fd = null;
-    try { fd = openSync(gateFile, 'r'); } catch { fd = null; }
-    if (fd !== null) {
-      let stale = false;
-      try {
-        const raw = readFileSync(fd, 'utf8');
-        const st = fstatSync(fd);
-        let info = null;
-        try {
-          const parsed = JSON.parse(raw);
-          if (parsed && typeof parsed.pid === 'number') info = parsed;
-        } catch { /* empty or corrupt */ }
-        if (info !== null && !isPidAlive(info.pid)) stale = true;
-        else if (info === null && Date.now() - st.mtimeMs >= 5_000) stale = true;
-      } finally {
-        closeSync(fd);
-      }
-      if (stale) {
-        try { unlinkSync(gateFile); } catch { /* raced */ }
-        continue;
-      }
-    }
-    await sleepMs(15);
-  }
-  if (!acquired) throw new Error('Could not acquire cursor lock gate.');
-  try {
-    return fn();
-  } finally {
-    try {
-      const current = readLockInfo(gateFile);
-      if (current && current.pid === process.pid && current.token === gateToken) {
-        unlinkSync(gateFile);
-      }
-    } catch { /* ignore */ }
-  }
-}
-
 const FLOCK_HELPER = `
-import fcntl, os, signal, sys
+import fcntl, json, os, signal, sys
 signal.signal(signal.SIGINT, signal.SIG_IGN)
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
 path, pid = sys.argv[1], sys.argv[2]
@@ -682,6 +593,24 @@ except BlockingIOError:
     except OSError:
         pass
     sys.exit(2)
+# Also honor any still-alive legacy file-lock record (with a token field) so mixed-version watchers cannot overlap.
+try:
+    os.lseek(fd, 0, os.SEEK_SET)
+    raw = os.read(fd, 256).decode('utf-8', 'replace').strip()
+    if raw:
+        existing = json.loads(raw)
+        if isinstance(existing, dict) and 'token' in existing and isinstance(existing.get('pid'), int) and existing['pid'] > 0:
+            try:
+                os.kill(existing['pid'], 0)
+                sys.stderr.write(raw)
+                sys.exit(2)
+            except PermissionError:
+                sys.stderr.write(raw)
+                sys.exit(2)
+            except ProcessLookupError:
+                pass
+except Exception:
+    pass
 os.ftruncate(fd, 0)
 os.lseek(fd, 0, os.SEEK_SET)
 os.write(fd, f'{{"pid":{pid}}}\\n'.encode('utf-8'))
@@ -689,31 +618,39 @@ os.write(1, b'OK\\n')
 sys.stdin.buffer.read()
 `;
 
-function tryAcquireKernelFlock(lockFile) {
+function acquireLock(cursorFile, onLost) {
+  const lockFile = `${cursorFile}.lock`;
+  mkdirSync(dirname(lockFile), { recursive: true, mode: 0o700 });
   return new Promise((resolve, reject) => {
     let settled = false;
     const child = spawn('python3', ['-c', FLOCK_HELPER, lockFile, String(process.pid)], {
       shell: false,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+    const lock = { child, lockFile, releasing: false };
     let out = '';
     let errText = '';
     child.stdout.on('data', (chunk) => {
       out += chunk.toString('utf8');
       if (!settled && out.includes('OK\n')) {
         settled = true;
-        resolve({ kind: 'flock', child, lockFile });
+        resolve(lock);
       }
     });
     child.stderr.on('data', (chunk) => { errText += chunk.toString('utf8'); });
-    child.on('error', () => {
+    child.on('error', (err) => {
       if (!settled) {
         settled = true;
-        resolve(null); // python3 unavailable -> fall back to file lock
+        reject(new Error(`Could not acquire cursor lock: ${err.message}`));
+      } else if (!lock.releasing) {
+        onLost?.(lockFile);
       }
     });
     child.on('close', (code) => {
-      if (settled) return;
+      if (settled) {
+        if (!lock.releasing) onLost?.(lockFile);
+        return;
+      }
       settled = true;
       if (code === 2) {
         let existingPid = null;
@@ -725,81 +662,23 @@ function tryAcquireKernelFlock(lockFile) {
         ));
         return;
       }
-      resolve(null); // unexpected python3 failure -> fall back to file lock
+      reject(new Error(errText.trim() || `Could not acquire cursor lock (exit ${code ?? 'unknown'}).`));
     });
-  });
-}
-
-async function acquireLock(cursorFile) {
-  const lockFile = `${cursorFile}.lock`;
-  mkdirSync(dirname(lockFile), { recursive: true, mode: 0o700 });
-
-  // Prefer real OS kernel flock(2) on the lock inode (never unlinked, zero stale-lock or pathname races, automatically released by kernel on crash/SIGKILL).
-  if (process.env.LAWH_NO_FLOCK !== '1') {
-    const flockLock = await tryAcquireKernelFlock(lockFile);
-    if (flockLock) return flockLock;
-  }
-
-  // Fallback for environments without python3 (e.g. minimal Windows/containers).
-  const token = randomBytes(8).toString('hex');
-  const payload = `${JSON.stringify({ pid: process.pid, token, startedAt: Date.now() })}\n`;
-  return withLockGate(lockFile, () => {
-    if (tryLinkLock(lockFile, payload)) {
-      return { kind: 'file', lockFile, token };
-    }
-    let shouldUnlink = false;
-    let fd = null;
-    try { fd = openSync(lockFile, 'r'); } catch { fd = null; }
-    if (fd !== null) {
-      try {
-        const raw = readFileSync(fd, 'utf8');
-        const st = fstatSync(fd);
-        let recheck = null;
-        try {
-          const parsed = JSON.parse(raw);
-          if (parsed && typeof parsed.pid === 'number') recheck = parsed;
-        } catch { /* empty or corrupt */ }
-        if (recheck !== null && isPidAlive(recheck.pid)) {
-          throw new Error(`Another process (pid ${recheck.pid}) is already using this cursor.`);
-        }
-        if (recheck === null && Date.now() - st.mtimeMs < 5_000) {
-          throw new Error('Another process is already using this cursor.');
-        }
-        shouldUnlink = true;
-      } finally {
-        closeSync(fd);
-      }
-    }
-    if (shouldUnlink) {
-      try { unlinkSync(lockFile); } catch { /* owner already exited and unlinked it */ }
-    }
-    if (tryLinkLock(lockFile, payload)) {
-      return { kind: 'file', lockFile, token };
-    }
-    throw new Error('Could not acquire cursor lock.');
   });
 }
 
 async function releaseLocks(locks) {
   const waits = [];
   for (const lock of locks) {
-    if (lock.kind === 'flock') {
-      const { child } = lock;
-      if (child.exitCode === null && child.signalCode === null) {
-        waits.push(new Promise((resolve) => {
-          const t = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* ignore */ } resolve(); }, 500);
-          child.once('close', () => { clearTimeout(t); resolve(); });
-          try { child.stdin.end(); } catch { /* ignore */ }
-        }));
-      }
-      continue;
+    lock.releasing = true;
+    const { child } = lock;
+    if (child.exitCode === null && child.signalCode === null) {
+      waits.push(new Promise((resolve) => {
+        const t = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* ignore */ } resolve(); }, 500);
+        child.once('close', () => { clearTimeout(t); resolve(); });
+        try { child.stdin.end(); } catch { /* ignore */ }
+      }));
     }
-    try {
-      const current = readLockInfo(lock.lockFile);
-      if (current && current.pid === process.pid && current.token === lock.token) {
-        unlinkSync(lock.lockFile);
-      }
-    } catch { /* ignore */ }
   }
   locks.length = 0;
   if (waits.length > 0) await Promise.all(waits);
@@ -871,6 +750,7 @@ async function cmdWatch(mode, cred, flags, command) {
 
   let stopping = false;
   let timedOut = false;
+  let lostLock = false;
   let exitSignal = null;
   let activeChild = null;
   const runAbort = new AbortController();
@@ -975,8 +855,21 @@ async function cmdWatch(mode, cred, flags, command) {
       return { slug, file, lock: null, seq: 0, ws: null, wsOpen: false, connecting: false, reconnectAt: 0 };
     });
 
+    const onLockLost = () => {
+      if (lostLock) return;
+      lostLock = true;
+      stopping = true;
+      process.stderr.write('Cursor lock was lost; exiting.\n');
+      closeSockets();
+      runAbort.abort();
+      wake();
+      if (activeChild) {
+        try { activeChild.kill('SIGTERM'); } catch { /* ignore */ }
+      }
+    };
+
     for (const s of states) {
-      s.lock = await acquireLock(s.file);
+      s.lock = await acquireLock(s.file, onLockLost);
       acquiredLocks.push(s.lock);
     }
 
@@ -1128,9 +1021,12 @@ async function cmdWatch(mode, cred, flags, command) {
       const waitMs = hadTransientError ? retryBackoff : allLiveOpen ? catchupMs : pollMs;
       await sleepInterruptible(waitMs);
     }
-    if (timedOut) exitCodeOnReturn = 124;
+    if (lostLock) exitCodeOnReturn = 1;
+    else if (timedOut) exitCodeOnReturn = 124;
   } catch (err) {
-    if (timedOut) {
+    if (lostLock) {
+      exitCodeOnReturn = 1;
+    } else if (timedOut) {
       exitCodeOnReturn = 124;
     } else if (exitSignal) {
       exitCodeOnReturn = 0;
