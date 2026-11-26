@@ -22,23 +22,47 @@ export const isSecretsStoreUnavailable = (err) =>
   (err.status === 403 || err.status === 404 || err.status === 409 || err.status === 429 ||
     /limit|quota|access|entitlement|not enabled|not available|permission|already exists/i.test(err.message));
 
-/** Reads CLOUDFLARE_API_TOKEN or Wrangler's saved OAuth token. */
-export function readCloudflareToken(env = process.env, homeDir = homedir()) {
+export class MissingCloudflareTokenError extends Error {
+  constructor(message, { expired = false } = {}) {
+    super(message);
+    this.name = 'MissingCloudflareTokenError';
+    this.expired = expired;
+  }
+}
+
+/** Reads CLOUDFLARE_API_TOKEN or Wrangler's saved OAuth token (matching Wrangler's legacy + XDG config locations). */
+export function readCloudflareToken(env = process.env, homeDir = homedir(), { now = Date.now(), platform = process.platform } = {}) {
   if (env.CLOUDFLARE_API_TOKEN && env.CLOUDFLARE_API_TOKEN.trim()) {
     return env.CLOUDFLARE_API_TOKEN.trim();
   }
+  const legacyDir = join(homeDir, '.wrangler');
+  const macPrefs = join(homeDir, 'Library/Preferences/.wrangler/config/default.toml');
+  const xdgDefault = join(homeDir, '.config/.wrangler/config/default.toml');
   const candidates = [
+    existsSync(legacyDir) ? join(legacyDir, 'config/default.toml') : null,
     env.XDG_CONFIG_HOME ? join(env.XDG_CONFIG_HOME, '.wrangler/config/default.toml') : null,
-    join(homeDir, '.config/.wrangler/config/default.toml'),
-    join(homeDir, 'Library/Preferences/.wrangler/config/default.toml'),
+    ...(platform === 'darwin' ? [macPrefs, xdgDefault] : [xdgDefault, macPrefs]),
   ].filter(Boolean);
-  for (const file of candidates) {
+  let sawExpired = false;
+  for (const file of [...new Set(candidates)]) {
     if (!existsSync(file)) continue;
     const text = readFileSync(file, 'utf8');
     const match = /^\s*oauth_token\s*=\s*"([^"]+)"/m.exec(text);
-    if (match?.[1]) return match[1];
+    if (!match?.[1]) continue;
+    const expMatch = /^\s*expiration_time\s*=\s*"([^"]+)"/m.exec(text);
+    if (expMatch?.[1]) {
+      const expMs = Date.parse(expMatch[1]);
+      if (!Number.isFinite(expMs) || expMs <= now + 30_000) {
+        sawExpired = true;
+        continue;
+      }
+    }
+    return match[1];
   }
-  throw new Error('Not signed in to Cloudflare. Run `lawh login` (or `pnpm lawh login`) or set CLOUDFLARE_API_TOKEN.');
+  if (sawExpired) {
+    throw new MissingCloudflareTokenError('Cloudflare OAuth token has expired. Run `lawh login` (or `pnpm lawh login`) or set CLOUDFLARE_API_TOKEN.', { expired: true });
+  }
+  throw new MissingCloudflareTokenError('Not signed in to Cloudflare. Run `lawh login` (or `pnpm lawh login`) or set CLOUDFLARE_API_TOKEN.');
 }
 
 export function createCloudflareClient({ apiBase = process.env.CLOUDFLARE_API_BASE_URL || DEFAULT_API_BASE, token, fetchImpl = fetch } = {}) {

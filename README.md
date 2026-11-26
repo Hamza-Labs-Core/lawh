@@ -12,13 +12,16 @@ Requires **Node.js `>= 22.12`**, **pnpm** (or Corepack), and a **Cloudflare Work
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Hamza-Labs-Core/lawh/main/install.sh | bash
+export PATH="$HOME/.local/bin:$PATH"   # add to ~/.zshrc or ~/.bashrc if not already on PATH
 lawh init
 ```
 
+> **Two CLI names:** `lawh` (installed above into `~/.local/bin/lawh`) is the **server admin CLI** for deploying and managing your Cloudflare copy. Agents use the separate zero-dependency client **`node lawh.mjs`** (downloaded from your deployed copy, see [Connecting an agent](#connecting-an-agent) below).
+
 What `lawh init` does step-by-step:
 1. **Cloudflare sign-in:** If you aren't signed in yet, `lawh init` offers to open `wrangler login` in your browser (or set `CLOUDFLARE_API_TOKEN` / run `lawh login` first).
-2. **Hosts & instance name:** Asks for your instance name (English & Arabic) and whether to use automatic `workers.dev` hosts (`https://lawh-app.<your-subdomain>.workers.dev` and `https://lawh-content.<your-subdomain>.workers.dev`) or two custom domains in your Cloudflare account.
-3. **Cloudflare deployment:** Shows every resource it will create (D1 database, R2 bucket, two Queues, Durable Object, random secrets, and both isolated Workers) with cost notes and waits for your `y` confirmation before deploying.
+2. **Hosts & instance name:** Asks for your instance name (English & Arabic) and whether to use automatic `workers.dev` hosts (`https://lawh-app.<your-subdomain>.workers.dev` and `https://lawh-content.<your-subdomain>.workers.dev` — registering a `workers.dev` subdomain if your account doesn't have one yet) or two custom domains in your Cloudflare account.
+3. **Cloudflare deployment:** Shows every resource it will create (D1 database, R2 bucket, two Queues, Durable Object, random secrets, and both isolated Workers) with cost notes and waits for your `y` confirmation before creating resources and deploying.
 4. **Owner passkey:** Creates your first project, turns the instance on after your confirmation, and prints a one-time link to register your passkey (Touch ID / Face ID / hardware key).
 
 ### Day-2 commands
@@ -32,7 +35,7 @@ lawh owner transfer <name>  # transfer ownership to another active member
 lawh destroy                # optional ZIP export, then delete Lawh's Cloudflare resources
 ```
 
-Pin a specific release or custom install directory with `LAWH_VERSION=v1.0.0`, `LAWH_HOME`, or `LAWH_BIN_DIR`.
+Pin a specific release or custom install directory with `LAWH_VERSION=v1.0.1`, `LAWH_HOME`, or `LAWH_BIN_DIR`. To migrate an earlier managed install, re-run the `curl ... install.sh | bash` command above.
 
 ### Or from a git clone
 
@@ -47,7 +50,7 @@ Never commit instance configuration (`lawh.config.json`, generated `wrangler.*.j
 
 ## Connecting an agent
 
-Once your copy is deployed, tell any agent to read your copy's skill endpoint (`https://<your-app-host>/connect.md`) or run the zero-dependency Node `>= 22` CLI from `https://<your-app-host>/lawh.mjs` (source in [`skills/lawh/`](skills/lawh/)):
+Once your copy is deployed, tell any agent to read your copy's skill endpoint (`https://<your-app-host>/connect.md`) or run the zero-dependency Node `>= 22` agent client from `https://<your-app-host>/lawh.mjs` (source in [`skills/lawh/`](skills/lawh/)):
 
 ```bash
 curl -fsSL "https://<your-app-host>/lawh.mjs" -o lawh.mjs
@@ -57,7 +60,7 @@ node lawh.mjs wait --project core
 node lawh.mjs listen --project core -- ./on-event.sh
 ```
 
-Pairing never puts secrets in chat: the CLI generates the secret locally, sends only its SHA-256 hash, prints a short 8-letter code, and waits until you sign in with your passkey at `https://<your-app-host>/connect` and explicitly approve the agent's name and projects.
+Pairing never puts secrets in chat or the browser: the client generates a 32-byte secret locally, sends only its SHA-256 hash to open a 5-minute code, and polls over HTTPS with the bearer credential until you sign in with your passkey at `https://<your-app-host>/connect`, type the code, and explicitly approve the agent's name and projects.
 
 ## Development
 

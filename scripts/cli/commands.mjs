@@ -533,10 +533,12 @@ export async function runUpgrade({
   fetchImpl = fetch,
   env = process.env,
   now = () => Date.now(),
+  bin = 'pnpm lawh',
+  managed = false,
 }) {
   const cfg = readConfig(root);
   if (!cfg || !cfg.resources.accountId || !cfg.resources.database.id) {
-    throw new Error(`${CONFIG_FILE} is missing or incomplete. Run \`pnpm lawh init\` first.`);
+    throw new Error(`${CONFIG_FILE} is missing or incomplete. Run \`${bin} init\` first.`);
   }
   const accountId = cfg.resources.accountId;
   writeWranglerConfigs(root, cfg);
@@ -585,7 +587,11 @@ export async function runUpgrade({
       state.appliedMigrations = [...(state.appliedMigrations ?? []), ...applied];
       writeUpgradeState(root, state);
     } catch (err) {
-      const restoreCmd = `pnpm exec wrangler d1 time-travel restore ${cfg.resources.database.name} --bookmark=${state.bookmark} -c wrangler.app.jsonc`;
+      const wranglerBin = join(root, 'node_modules/wrangler/bin/wrangler.js');
+      const wranglerCfg = join(root, 'wrangler.app.jsonc');
+      const restoreCmd = managed
+        ? `node "${wranglerBin}" d1 time-travel restore ${cfg.resources.database.name} --bookmark=${state.bookmark} -c "${wranglerCfg}"`
+        : `pnpm exec wrangler d1 time-travel restore ${cfg.resources.database.name} --bookmark=${state.bookmark} -c wrangler.app.jsonc`;
       log(`\nMigration failed (${err.message}).\nRestore the database to its pre-upgrade bookmark with:\n\n  ${restoreCmd}\n`);
       err.restoreCommand = restoreCmd;
       throw err;
