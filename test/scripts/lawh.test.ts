@@ -134,6 +134,33 @@ describe('pnpm lawh owner setup --local', { timeout: 120_000 }, () => {
     expect(query(`SELECT COUNT(*) n FROM agents WHERE member_id='${currentOwner}'`)).toEqual([{ n: 0 }]);
     expect(query("SELECT revoked_at IS NOT NULL revoked FROM agent_keys WHERE id='key_mid_prompt'")).toEqual([{ revoked: 1 }]);
   });
+
+  it('does not retry unrelated SQL errors whose exception text echoes inventory_changed from the command', async () => {
+    // @ts-expect-error plain script module
+    const { runOwnerTransfer } = await import('../../scripts/cli/transfer.mjs');
+    const currentOwner = query("SELECT id FROM members WHERE role='owner'")[0]!.id as string;
+    const otherMember = query(`SELECT id FROM members WHERE role='member' AND joined_at IS NOT NULL AND id <> '${currentOwner}'`)[0]!.id as string;
+    let promptCalls = 0;
+
+    await expect(
+      runOwnerTransfer({
+        targetArg: otherMember,
+        sql: (statements: string) => {
+          if (statements.includes('UPDATE members SET role')) {
+            const err = new Error(`Command failed: wrangler d1 execute --command "${statements}"\nSQLITE_CONSTRAINT: unrelated trigger failure`);
+            throw err;
+          }
+          return JSON.parse(execFileSync(process.execPath, [wrangler, 'd1', 'execute', 'DB', '--local', '--persist-to', state, '-c', join(state, 'entry.json'), '--json', '--command', statements], { cwd: root, env: env() }).toString());
+        },
+        prompt: async () => {
+          promptCalls++;
+          return 'yes';
+        },
+        log: () => {},
+      }),
+    ).rejects.toThrow('unrelated trigger failure');
+    expect(promptCalls).toBe(1);
+  });
 });
 
 it('reads JSON with comments', () => {

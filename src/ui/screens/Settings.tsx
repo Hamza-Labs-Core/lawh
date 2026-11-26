@@ -50,8 +50,8 @@ export function Settings({ path, search = '', me, onChange }: { path: string; se
   );
 }
 
-/** Shown after a passkey reset so every member — including a former manager — can review and revoke their active agent keys. */
-function PostResetReview() {
+/** Shown after a passkey reset so every member — including a current or former manager — can review and revoke all of their own active agent keys. */
+function PostResetReview({ onRevoked }: { onRevoked?: (keyId: string) => void }) {
   const t = useText(), { lang } = useSettings();
   const { data, problem, load, set } = useLoad<{ items: MyActiveKey[] }>('/account/keys');
   const [busy, run] = useBusy(), [asking, setAsking] = useState<string | null>(null), [failed, setFailed] = useState<Problem | null>(null);
@@ -68,7 +68,7 @@ function PostResetReview() {
                 <p class="muted"><Fill text="endsOn" date={day(lang, key.expiresAt)} />{lang === 'ar' ? '، ' : ', '}{key.lastUsedAt === null ? t('neverUsed') : <Fill text="lastUsed" date={day(lang, key.lastUsedAt)} />}</p>
               </div>
               {asking === key.id
-                ? <div class="row"><button class="plain" disabled={busy} onClick={() => run(async () => { setFailed(null); try { await call('DELETE', `/agent-keys/${key.id}`); set((cur) => cur && { items: cur.items.filter((k) => k.id !== key.id) }); setAsking(null); } catch (error) { setFailed(problemIn(error)); } })}>{t('revokeSure')}</button><button class="plain" disabled={busy} onClick={() => setAsking(null)}>{t('cancel')}</button></div>
+                ? <div class="row"><button class="plain" disabled={busy} onClick={() => run(async () => { setFailed(null); try { await call('DELETE', `/agent-keys/${key.id}`); set((cur) => cur && { items: cur.items.filter((k) => k.id !== key.id) }); onRevoked?.(key.id); setAsking(null); } catch (error) { setFailed(problemIn(error)); } })}>{t('revokeSure')}</button><button class="plain" disabled={busy} onClick={() => setAsking(null)}>{t('cancel')}</button></div>
                 : <button class="plain" disabled={busy} onClick={() => setAsking(key.id)}>{t('revoke')}</button>}
             </li>
           ))}
@@ -446,7 +446,7 @@ function Agents({ me, afterReset = false }: { me: Me; afterReset?: boolean }) {
   if (data === null) return <Loading problem={problem} load={load} />;
   return (
     <>
-      {afterReset && <div class="card" role="status"><p>{t('postResetBanner')}</p></div>}
+      {afterReset && <PostResetReview onRevoked={(id) => set((now) => now && { items: now.items.map((a) => ({ ...a, keys: a.keys.map((k) => (k.id === id ? { ...k, revokedAt: Date.now() } : k)) })) })} />}
       {made !== null && <NewKey secret={made} onDone={() => setMade(null)} />}
       {making && <MakeKey me={me} agents={data.items.filter((a) => a.isMine !== false)} onCancel={() => setMaking(false)} onMade={(secret) => { setMaking(false); setMade(secret); load(); }} />}
       {!making && made === null && <button ref={newKey} class="primary fit" onClick={() => setMaking(true)}>{t('newKey')}</button>}
