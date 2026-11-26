@@ -1,4 +1,4 @@
-// pnpm lawh <init|upgrade|rollback|destroy|owner setup [--local]>
+// pnpm lawh <init|upgrade|rollback|destroy|owner setup [--local]|owner transfer <member> [--local]>
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
@@ -7,6 +7,7 @@ import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { createCloudflareClient, readCloudflareToken } from './cli/cloudflare.mjs';
 import { runDestroy, runInit, runRollback, runUpgrade } from './cli/commands.mjs';
+import { runOwnerTransfer } from './cli/transfer.mjs';
 import { parseJsonc } from './local/jsonc.mjs';
 
 const USAGE = `Usage:
@@ -14,7 +15,8 @@ const USAGE = `Usage:
   pnpm lawh upgrade
   pnpm lawh rollback
   pnpm lawh destroy
-  pnpm lawh owner setup [--local]`;
+  pnpm lawh owner setup [--local]
+  pnpm lawh owner transfer <member> [--local]`;
 
 const fail = (message, code = 1) => {
   console.error(message);
@@ -24,33 +26,41 @@ const fail = (message, code = 1) => {
 const root = fileURLToPath(new URL('..', import.meta.url));
 const wrangler = join(root, 'node_modules/wrangler/bin/wrangler.js');
 
-async function runOwnerSetup(flags) {
-  if (flags.some((flag) => flag !== '--local')) fail(USAGE, 2);
-  const local = flags.includes('--local');
+function openD1(local) {
   const state = process.env.LAWH_LOCAL_STATE ?? join(root, '.wrangler/dev');
   const config = local ? join(state, 'entry.json') : join(root, 'wrangler.app.jsonc');
   if (!existsSync(config)) fail(local ? 'Run `pnpm dev` first.' : 'wrangler.app.jsonc is missing. `pnpm lawh init` makes it.');
-  // Read before anything is changed: without the address there is no link to print.
   const parsedConfig = parseJsonc(readFileSync(config, 'utf8'));
-  const app = new URL(parsedConfig.vars.APP_ORIGIN).origin;
   const accountEnv = !local && typeof parsedConfig.account_id === 'string' && parsedConfig.account_id
     ? { CLOUDFLARE_ACCOUNT_ID: parsedConfig.account_id }
     : {};
-
   const where = local ? ['--local', '--persist-to', state] : ['--remote'];
   const sql = (statements) => JSON.parse(execFileSync(
     process.execPath,
     [wrangler, 'd1', 'execute', 'DB', ...where, '--json', '-c', config, '--command', statements],
-    { cwd: root, env: { ...process.env, ...accountEnv, WRANGLER_SEND_METRICS: 'false' }, stdio: ['ignore', 'pipe', 'inherit'] },
+    { cwd: root, env: { ...process.env, ...accountEnv, WRANGLER_SEND_METRICS: 'false' }, stdio: ['ignore', 'pipe', 'pipe'] },
   ).toString());
+  return { parsedConfig, sql };
+}
+
+const askOnce = async (question) => {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try { return await rl.question(question); }
+  finally { rl.close(); }
+};
+
+async function runOwnerSetup(flags) {
+  if (flags.some((flag) => flag !== '--local')) fail(USAGE, 2);
+  const local = flags.includes('--local');
+  const { parsedConfig, sql } = openD1(local);
+  // Read before anything is changed: without the address there is no link to print.
+  const app = new URL(parsedConfig.vars.APP_ORIGIN).origin;
   const text = (value) => `'${value.replaceAll("'", "''")}'`;
 
   const [{ results: [owner] }] = sql("SELECT id, name, joined_at FROM members WHERE role = 'owner'");
   let id = owner?.id;
   if (!id) {
-    const ask = createInterface({ input: process.stdin, output: process.stdout });
-    const name = (await ask.question('Your name, as others will see it: ')).trim();
-    ask.close();
+    const name = (await askOnce('Your name, as others will see it: ')).trim();
     // eslint-disable-next-line no-control-regex
     if (!name || [...name].length > 80 || !name.isWellFormed() || /[\u0000-\u001F\u007F]/.test(name)) fail('A name of 1 to 80 characters is needed.');
     id = `mem_${randomBytes(13).toString('hex').toUpperCase()}`;
@@ -67,6 +77,20 @@ INSERT INTO audit(at, actor_type, action, subject_id) VALUES(${now}, 'command', 
   if (owner?.joined_at) console.log('Using it removes your other passkeys and ends your sessions.\n');
 }
 
+async function runOwnerTransferCli(args) {
+  const local = args.includes('--local');
+  const positional = args.filter((arg) => arg !== '--local');
+  if (positional.some((arg) => arg.startsWith('-')) || positional.length !== 1) {
+    fail('Usage: pnpm lawh owner transfer <member> [--local]', 2);
+  }
+  const { sql } = openD1(local);
+  try {
+    await runOwnerTransfer({ targetArg: positional[0], sql, prompt: askOnce });
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error), 1);
+  }
+}
+
 function makePrompt() {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   return {
@@ -79,6 +103,8 @@ const [cmd, ...rest] = process.argv.slice(2);
 
 if (cmd === 'owner' && rest[0] === 'setup') {
   await runOwnerSetup(rest.slice(1));
+} else if (cmd === 'owner' && rest[0] === 'transfer') {
+  await runOwnerTransferCli(rest.slice(1));
 } else if ((cmd === 'init' || cmd === 'upgrade' || cmd === 'rollback' || cmd === 'destroy') && rest.length === 0) {
   const io = makePrompt();
   try {

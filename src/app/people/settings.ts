@@ -20,12 +20,33 @@ export const stillOwner = (env: AppEnv, memberId: string): D1PreparedStatement =
 
 export async function readSettings(ctx: SignedIn): Promise<Response> {
   ownerOnly(ctx);
-  const [retention, webhooks, webhookHosts] = await Promise.all([
+  const [retention, webhooks, webhookHosts, teams] = await Promise.all([
     versionsKept(ctx.env),
     isOn(ctx.env.DB, 'webhooks'),
     readAllowedHosts(ctx.env),
+    isOn(ctx.env.DB, 'teams'),
   ]);
-  return Response.json({ retention, webhooks, webhookHosts });
+  return Response.json({ retention, webhooks, webhookHosts, teams });
+}
+
+/** Turn teams on or off. Turning teams off fires the settings_teams_off trigger which resets every project's answers_needed to 1. */
+export async function setTeamsSwitch(ctx: SignedIn): Promise<Response> {
+  ownerOnly(ctx);
+  const { env, person } = ctx, { body } = await readJson(ctx.request), now = Date.now();
+  onlyKeys(body, ['on']);
+  if (typeof body.on !== 'boolean') throw invalid('on must be true or false.');
+  try {
+    await env.DB.batch([
+      stillOwner(env, person.memberId),
+      env.DB.prepare("INSERT INTO settings(key, value_json, updated_at) VALUES('teams', ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at")
+        .bind(String(body.on), now),
+      auditStatement(env, person.memberId, body.on ? 'teams.on' : 'teams.off', null),
+    ]);
+  } catch (error) {
+    if (String(error).includes('malformed JSON')) throw new ApiError('forbidden', 'Only the owner can do this.');
+    throw error;
+  }
+  return Response.json({ teams: body.on });
 }
 
 /** How many versions each page keeps; null keeps all. Fewer than now removes the older ones, some each hour. */

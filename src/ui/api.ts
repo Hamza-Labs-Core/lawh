@@ -48,6 +48,9 @@ export interface Agent { id: string; name: string; createdAt: number; disabledAt
 export interface TeamMemberItem { id: string; name: string | null; level: number; setAt: number }
 export interface TeamItem { id: string; name: string; createdAt: number; members: TeamMemberItem[]; projects: ProjectName[] }
 export interface TeamsResponse { items: TeamItem[]; availableMembers: { id: string; name: string }[]; availableProjects: ProjectName[] }
+export interface PersonMember { id: string; name: string; createdAt: number; joinedAt: number; resetExpiresAt: number | null; teams: { id: string; name: string; level: number }[] }
+export interface PendingInvite { id: string; name: string; teamId: string | null; teamName: string | null; level: number | null; inviter: string | null; createdAt: number; expiresAt: number | null; expired: boolean; canRenew: boolean; canCancel: boolean }
+export interface PeopleResponse { members: PersonMember[]; invites: PendingInvite[]; teams: { id: string; name: string }[] }
 export interface DeletedPage { id: string; project: ProjectName; slug: string; title: string; lang: 'en' | 'ar'; deletedAt: number; purgedAfter: number }
 export interface WebhookItem { id: string; project: ProjectName; url: string; eventTypes: string[]; enabled: boolean; createdBy: string | null; createdAt: number }
 export interface FailedDelivery { webhookId: string; eventSeq: number; url: string; project: ProjectName; eventType: string; attempts: number; lastCode: number | null; updatedAt: number; eventAt: number }

@@ -37,6 +37,8 @@ interface Fixture {
   teamId: string;
   otherMemberId: string;
   teamMemberId: string;
+  pendingInviteId: string;
+  ownerInviteId: string;
   connectId: string;
   connectCode: string;
 }
@@ -95,6 +97,15 @@ const MATRIX: MatrixRow[] = [
   { method: 'DELETE', pattern: '^/app-api/teams/([a-zA-Z0-9_-]{1,64})/members/([a-zA-Z0-9_-]{1,64})$', request: (fx) => ({ path: `/teams/${fx.teamId}/members/${fx.teamMemberId}` }), expected: [403, 403, 403, 403, 204, 204] },
   { method: 'POST', pattern: '^/app-api/teams/([a-zA-Z0-9_-]{1,64})/projects$', request: (fx) => ({ path: `/teams/${fx.teamId}/projects`, body: { project: 'three' } }), expected: [403, 403, 403, 403, 403, 201] },
   { method: 'DELETE', pattern: '^/app-api/teams/([a-zA-Z0-9_-]{1,64})/projects/([a-z0-9][a-z0-9-]{0,79})$', request: (fx) => ({ path: `/teams/${fx.teamId}/projects/one` }), expected: [403, 403, 403, 403, 403, 204] },
+
+  // People & invites (list/invite/renew/cancel manager+; reset/remove/teams-switch owner only)
+  { method: 'GET', pattern: '^/app-api/people$', request: () => ({ path: '/people' }), expected: [403, 403, 403, 403, 200, 200] },
+  { method: 'POST', pattern: '^/app-api/people/invite$', request: (fx) => ({ path: '/people/invite', body: { name: 'New Person', teamId: fx.teamId, level: 2 } }), expected: [403, 403, 403, 403, 201, 201] },
+  { method: 'POST', pattern: '^/app-api/people/([a-zA-Z0-9_-]{1,64})/invite-link$', request: (fx) => ({ path: `/people/${fx.pendingInviteId}/invite-link` }), expected: [403, 403, 403, 403, 200, 200] },
+  { method: 'DELETE', pattern: '^/app-api/people/([a-zA-Z0-9_-]{1,64})/invite$', request: (fx) => ({ path: `/people/${fx.ownerInviteId}/invite` }), expected: [403, 403, 403, 403, 204, 204] },
+  { method: 'POST', pattern: '^/app-api/people/([a-zA-Z0-9_-]{1,64})/reset$', request: (fx) => ({ path: `/people/${fx.otherMemberId}/reset` }), expected: [403, 403, 403, 403, 403, 200] },
+  { method: 'DELETE', pattern: '^/app-api/people/([a-zA-Z0-9_-]{1,64})$', request: (fx) => ({ path: `/people/${fx.otherMemberId}` }), expected: [403, 403, 403, 403, 403, 204] },
+  { method: 'PUT', pattern: '^/app-api/switches/teams$', request: () => ({ path: '/switches/teams', body: { on: true } }), expected: [403, 403, 403, 403, 403, 200] },
 
   // Settings, switches, export (owner only)
   { method: 'GET', pattern: '^/app-api/settings$', request: () => ({ path: '/settings' }), expected: [403, 403, 403, 403, 403, 200] },
@@ -164,11 +175,19 @@ async function setupFixture(): Promise<Fixture> {
   const commentId = 'cmt_01MATRIXOWN000000000000001';
   await api('POST', '/projects/one/pages/page/comments', { cookie: owner, body: { id: commentId, versionN: 1, body: 'owner thread' } });
 
-  // Give Mona an agent + key so level 4 (Mona) & level 5 (owner) can toggle/revoke it.
+  // Give Mona an agent + key AND a pending invite she created in t1 (for renew), plus an owner-created pending invite in t1 (for cancel).
   const agentId = 'agt_01MATRIXMONA00000000000001';
+  const pendingInviteId = 'mem_01MATRIXPEND00000000000001';
+  const ownerInviteId = 'mem_01MATRIXOWNI00000000000001';
   await sql(`INSERT INTO agents(id, member_id, name, created_at) VALUES('${agentId}', 'm', 'mona-mx', 1)`);
   await sql(`INSERT INTO team_members(team_id, member_id, level, set_by, set_at) VALUES('t1', 'm', 4, 'o', 1)`);
   const { id: keyId } = await makeKey({ agent: agentId, projects: ['p1'] });
+  await sql(
+    `INSERT INTO members(id, name, role, created_by, created_at) VALUES('${pendingInviteId}', 'Pending', 'member', 'm', 1)`,
+    `INSERT INTO access_links(token_sha256, kind, member_id, created_by, created_at, expires_at, team_id, level) VALUES('${'c'.repeat(64)}', 'invite', '${pendingInviteId}', 'm', 1, ${Date.now() + 86_400_000}, 't1', 2)`,
+    `INSERT INTO members(id, name, role, created_by, created_at) VALUES('${ownerInviteId}', 'OwnerPending', 'member', 'o', 1)`,
+    `INSERT INTO access_links(token_sha256, kind, member_id, created_by, created_at, expires_at, team_id, level) VALUES('${'d'.repeat(64)}', 'invite', '${ownerInviteId}', 'o', 1, ${Date.now() + 86_400_000}, 't1', 2)`,
+  );
   await sql('DELETE FROM team_members');
   await sql("INSERT INTO team_members(team_id, member_id, level, set_by, set_at) VALUES('t1', 'q', 1, 'o', 1)");
 
@@ -194,6 +213,8 @@ async function setupFixture(): Promise<Fixture> {
     teamId: 't1',
     otherMemberId: 'r',
     teamMemberId: 'q',
+    pendingInviteId,
+    ownerInviteId,
     connectId: started.id ?? connectId,
     connectCode: started.code ?? connectCode,
   };
