@@ -78,14 +78,14 @@ export async function deletePage(ctx: SignedIn): Promise<Response> {
 export async function listDeleted(ctx: SignedIn): Promise<Response> {
   const { env, url, person } = ctx, limit = pageLimit(url), since = Date.now() - PURGE_AFTER;
   const from = (readCursor(url, ['number', 'string']) ?? [Number.MAX_SAFE_INTEGER, '']) as [number, string];
-  const visible = await visibleProjects(env, person), byId = new Map(visible.map((p) => [p.id, p]));
-  const query = (project: string | null) => env.DB.prepare(`SELECT * FROM pages WHERE ${project === null ? '' : 'project_id = ? AND '}deleted_at IS NOT NULL AND deleted_at >= ? AND (deleted_at, id) < (?, ?) ORDER BY deleted_at DESC, id DESC LIMIT ?`).bind(...(project === null ? [] : [project]), since, ...from, limit + 1);
-  const queries = person.isOwner ? [query(null)] : visible.filter((p) => p.level >= MANAGER).map((p) => query(p.id));
-  const found = queries.length === 0 ? [] : (await env.DB.batch<PageRow>(queries)).flatMap((r) => r.results);
+  type DeletedRow = PageRow & { p_slug: string; p_name_en: string; p_name_ar: string };
+  const query = (project: string | null) => env.DB.prepare(`SELECT p.*, pr.slug AS p_slug, pr.name_en AS p_name_en, pr.name_ar AS p_name_ar FROM pages p CROSS JOIN projects pr ON pr.id = p.project_id WHERE ${project === null ? '' : 'p.project_id = ? AND '}p.deleted_at IS NOT NULL AND p.deleted_at >= ? AND (p.deleted_at, p.id) < (?, ?) ORDER BY p.deleted_at DESC, p.id DESC LIMIT ?`).bind(...(project === null ? [] : [project]), since, ...from, limit + 1);
+  const queries = person.isOwner ? [query(null)] : (await visibleProjects(env, person)).filter((p) => p.level >= MANAGER).map((p) => query(p.id));
+  const found = queries.length === 0 ? [] : (await env.DB.batch<DeletedRow>(queries)).flatMap((r) => r.results);
   found.sort((a, b) => b.deleted_at! - a.deleted_at! || (a.id < b.id ? 1 : -1));
   const rows = found.slice(0, limit), last = rows.at(-1);
   return Response.json({
-    items: rows.map((p) => ({ id: p.id, project: { slug: byId.get(p.project_id)!.slug, name: { en: byId.get(p.project_id)!.name_en, ar: byId.get(p.project_id)!.name_ar } }, slug: p.slug, title: p.title, lang: p.lang, deletedAt: p.deleted_at, purgedAfter: p.deleted_at! + PURGE_AFTER })),
+    items: rows.map((p) => ({ id: p.id, project: { slug: p.p_slug, name: { en: p.p_name_en, ar: p.p_name_ar } }, slug: p.slug, title: p.title, lang: p.lang, deletedAt: p.deleted_at, purgedAfter: p.deleted_at! + PURGE_AFTER })),
     next: found.length > limit && last ? encodeCursor([last.deleted_at, last.id]) : null,
   });
 }
@@ -103,6 +103,8 @@ export async function restorePage(ctx: SignedIn): Promise<Response> {
   try {
     await env.DB.batch([
       stillManager(env, person.memberId, page.project_id),
+      // Purge drops current_version first, so checking it here prevents restoring a half-purged page.
+      env.DB.prepare("SELECT CASE WHEN EXISTS (SELECT 1 FROM page_versions WHERE page_id = ? AND n = ?) THEN 1 ELSE json('purged') END").bind(page.id, page.current_version),
       env.DB.prepare('UPDATE pages SET deleted_at = NULL, updated_at = MAX(updated_at + 1, ?) WHERE id = ? AND deleted_at = ?').bind(now, page.id, page.deleted_at),
       // Someone else restored or purged it first.
       env.DB.prepare("SELECT CASE WHEN changes() = 1 THEN 1 ELSE json('restored') END"),
@@ -114,7 +116,7 @@ export async function restorePage(ctx: SignedIn): Promise<Response> {
       const level = await levelOn(env, person, page.project_id);
       if (level < 1) throw notFound();
       if (level < MANAGER) throw refuse();
-      const exists = await env.DB.prepare('SELECT 1 FROM pages WHERE id = ?').bind(page.id).first();
+      const exists = await env.DB.prepare('SELECT 1 FROM pages p JOIN page_versions v ON v.page_id = p.id AND v.n = p.current_version WHERE p.id = ?').bind(page.id).first();
       if (!exists) throw notFound();
       throw conflict('It was restored meanwhile.');
     }

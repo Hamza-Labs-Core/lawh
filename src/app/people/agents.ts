@@ -96,7 +96,7 @@ export async function revokeKey(ctx: SignedIn): Promise<Response> {
   if (key.revoked_at === null) {
     try {
       await env.DB.batch([
-        env.DB.prepare("SELECT CASE WHEN EXISTS (SELECT 1 FROM members WHERE id = ?1 AND removed_at IS NULL AND (?1 = ?2 OR role = 'owner')) THEN 1 ELSE json('forbidden') END").bind(person.memberId, key.member_id),
+        env.DB.prepare("SELECT CASE WHEN EXISTS (SELECT 1 FROM agent_keys k JOIN agents a ON a.id = k.agent_id JOIN members m ON m.id = ?1 WHERE k.id = ?2 AND m.removed_at IS NULL AND (a.member_id = m.id OR m.role = 'owner')) THEN 1 ELSE json('forbidden') END").bind(person.memberId, id),
         env.DB.prepare('UPDATE agent_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL').bind(now, id),
         env.DB.prepare("INSERT INTO audit(at, actor_type, actor_id, action, subject_id) SELECT ?, 'member', ?, 'key.revoke', ? WHERE changes() = 1").bind(now, person.memberId, id),
       ]);
@@ -118,7 +118,7 @@ export async function setAgentOff(ctx: SignedIn): Promise<Response> {
   const now = Date.now();
   try {
     await env.DB.batch([
-      env.DB.prepare("SELECT CASE WHEN EXISTS (SELECT 1 FROM members WHERE id = ?1 AND removed_at IS NULL AND (?1 = ?2 OR role = 'owner')) THEN 1 ELSE json('forbidden') END").bind(person.memberId, agent.member_id),
+      env.DB.prepare("SELECT CASE WHEN EXISTS (SELECT 1 FROM agents a JOIN members m ON m.id = ?1 WHERE a.id = ?2 AND m.removed_at IS NULL AND (a.member_id = m.id OR m.role = 'owner')) THEN 1 ELSE json('forbidden') END").bind(person.memberId, id),
       env.DB.prepare(`UPDATE agents SET disabled_at = ? WHERE id = ? AND disabled_at IS ${body.off ? '' : 'NOT '}NULL`).bind(body.off ? now : null, id),
       env.DB.prepare("INSERT INTO audit(at, actor_type, actor_id, action, subject_id) SELECT ?, 'member', ?, ?, ? WHERE changes() = 1").bind(now, person.memberId, body.off ? 'agent.off' : 'agent.on', id),
     ]);

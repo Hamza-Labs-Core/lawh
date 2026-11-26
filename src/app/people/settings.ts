@@ -1,5 +1,6 @@
 import type { AppEnv } from '../../shared/env';
 import { ApiError, invalid } from '../../shared/errors';
+import { newId } from '../../shared/ids';
 import { versionsKept } from '../housekeeping';
 import { onlyKeys, readJson } from '../api/body';
 import type { SignedIn } from './router';
@@ -32,8 +33,8 @@ export async function setRetention(ctx: SignedIn): Promise<Response> {
     await env.DB.batch([
       stillOwner(env, person.memberId),
       set('retention', keep),
-      // Every page is looked at once, from the start.
-      keep === null ? env.DB.prepare("DELETE FROM settings WHERE key = 'retention_walk'") : set('retention_walk', ''),
+      // Every page is looked at once, from the start, with a unique walk id so an older walk can never erase a newer one.
+      keep === null ? env.DB.prepare("DELETE FROM settings WHERE key = 'retention_walk'") : set('retention_walk', { id: newId('wlk', now), after: '' }),
       auditStatement(env, person.memberId, 'retention.set', null),
     ]);
   } catch (error) {
