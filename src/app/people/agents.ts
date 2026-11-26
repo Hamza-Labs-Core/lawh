@@ -52,62 +52,52 @@ export async function listAgents(ctx: SignedIn): Promise<Response> {
   const after = rawCursor ? decodeAgentCursor(rawCursor) : null;
   const allAgents = person.isOwner && (await isOn(env.DB, 'teams'));
 
-  const agentStmt = allAgents
-    ? after
-      ? env.DB.prepare(
-          `SELECT a.id, a.name, a.created_at, a.disabled_at, a.member_id, m.name owner_name
-           FROM agents a JOIN members m ON m.id = a.member_id
-           WHERE a.name > ? OR (a.name = ? AND a.id > ?)
-           ORDER BY a.name, a.id LIMIT ?`,
-        ).bind(after[0], after[0], after[1], limit + 1)
-      : env.DB.prepare(
-          `SELECT a.id, a.name, a.created_at, a.disabled_at, a.member_id, m.name owner_name
-           FROM agents a JOIN members m ON m.id = a.member_id
-           ORDER BY a.name, a.id LIMIT ?`,
-        ).bind(limit + 1)
-    : after
-      ? env.DB.prepare(
-          `SELECT a.id, a.name, a.created_at, a.disabled_at, a.member_id, m.name owner_name
-           FROM agents a JOIN members m ON m.id = a.member_id
-           WHERE a.member_id = ? AND (a.name > ? OR (a.name = ? AND a.id > ?))
-           ORDER BY a.name, a.id LIMIT ?`,
-        ).bind(person.memberId, after[0], after[0], after[1], limit + 1)
-      : env.DB.prepare(
-          `SELECT a.id, a.name, a.created_at, a.disabled_at, a.member_id, m.name owner_name
-           FROM agents a JOIN members m ON m.id = a.member_id
-           WHERE a.member_id = ?
-           ORDER BY a.name, a.id LIMIT ?`,
-        ).bind(person.memberId, limit + 1);
+  const pageWhere = allAgents
+    ? after ? 'WHERE a.name > ? OR (a.name = ? AND a.id > ?)' : ''
+    : after ? 'WHERE a.member_id = ? AND (a.name > ? OR (a.name = ? AND a.id > ?))' : 'WHERE a.member_id = ?';
+  const pageBinds: unknown[] = allAgents
+    ? after ? [after[0], after[0], after[1]] : []
+    : after ? [person.memberId, after[0], after[0], after[1]] : [person.memberId];
 
-  const { results: rawAgents } = await agentStmt.all<{ id: string; name: string; created_at: number; disabled_at: number | null; member_id: string; owner_name: string | null }>();
+  // Read agents, keys, and key projects in one single atomic D1 snapshot so a concurrent takeover can never expose the new owner's keys.
+  const [agentsRes, keysRes, projectsRes] = await env.DB.batch([
+    env.DB.prepare(
+      `SELECT a.id, a.name, a.created_at, a.disabled_at, a.member_id, m.name owner_name
+       FROM agents a JOIN members m ON m.id = a.member_id
+       ${pageWhere}
+       ORDER BY a.name, a.id LIMIT ?`,
+    ).bind(...pageBinds, limit + 1),
+    env.DB.prepare(
+      `WITH page AS (
+         SELECT a.id FROM agents a ${pageWhere} ORDER BY a.name, a.id LIMIT ?
+       )
+       SELECT k.id, k.agent_id, k.label, k.scopes_json, k.all_projects, k.created_at, k.expires_at, k.last_used_at, k.revoked_at
+       FROM page
+       CROSS JOIN agent_keys k ON k.agent_id = page.id
+       WHERE (k.revoked_at IS NULL OR k.revoked_at > ?) AND k.expires_at > ?`,
+    ).bind(...pageBinds, limit, since, since),
+    env.DB.prepare(
+      `WITH page AS (
+         SELECT a.id FROM agents a ${pageWhere} ORDER BY a.name, a.id LIMIT ?
+       )
+       SELECT kp.key_id, p.slug, p.name_en, p.name_ar
+       FROM page
+       CROSS JOIN agent_keys k ON k.agent_id = page.id
+       CROSS JOIN agent_key_projects kp ON kp.key_id = k.id
+       CROSS JOIN projects p ON p.id = kp.project_id
+       WHERE (k.revoked_at IS NULL OR k.revoked_at > ?) AND k.expires_at > ?`,
+    ).bind(...pageBinds, limit, since, since),
+  ]);
+
+  const rawAgents = agentsRes!.results as { id: string; name: string; created_at: number; disabled_at: number | null; member_id: string; owner_name: string | null }[];
   const hasMore = rawAgents.length > limit;
   const page = hasMore ? rawAgents.slice(0, limit) : rawAgents;
   const next = hasMore ? encodeAgentCursor(page.at(-1)!.name, page.at(-1)!.id) : null;
 
-  let keyRows: KeyRow[] = [];
+  const keyRows = (keysRes!.results as KeyRow[]).sort((a, b) => b.created_at - a.created_at);
   const of = new Map<string, { slug: string; name: { en: string; ar: string } }[]>();
-  if (page.length > 0) {
-    const idsJson = JSON.stringify(page.map((a) => a.id));
-    const [keysRes, projectsRes] = await env.DB.batch([
-      env.DB.prepare(
-        `SELECT k.id, k.agent_id, k.label, k.scopes_json, k.all_projects, k.created_at, k.expires_at, k.last_used_at, k.revoked_at
-         FROM json_each(?) j
-         CROSS JOIN agent_keys k ON k.agent_id = j.value
-         WHERE (k.revoked_at IS NULL OR k.revoked_at > ?) AND k.expires_at > ?`,
-      ).bind(idsJson, since, since),
-      env.DB.prepare(
-        `SELECT kp.key_id, p.slug, p.name_en, p.name_ar
-         FROM json_each(?) j
-         CROSS JOIN agent_keys k ON k.agent_id = j.value
-         CROSS JOIN agent_key_projects kp ON kp.key_id = k.id
-         CROSS JOIN projects p ON p.id = kp.project_id
-         WHERE (k.revoked_at IS NULL OR k.revoked_at > ?) AND k.expires_at > ?`,
-      ).bind(idsJson, since, since),
-    ]);
-    keyRows = (keysRes!.results as KeyRow[]).sort((a, b) => b.created_at - a.created_at);
-    for (const row of projectsRes!.results as { key_id: string; slug: string; name_en: string; name_ar: string }[]) {
-      of.set(row.key_id, [...(of.get(row.key_id) ?? []), { slug: row.slug, name: { en: row.name_en, ar: row.name_ar } }]);
-    }
+  for (const row of projectsRes!.results as { key_id: string; slug: string; name_en: string; name_ar: string }[]) {
+    of.set(row.key_id, [...(of.get(row.key_id) ?? []), { slug: row.slug, name: { en: row.name_en, ar: row.name_ar } }]);
   }
 
   return Response.json({
@@ -215,8 +205,13 @@ export async function setAgentOff(ctx: SignedIn): Promise<Response> {
   return new Response(null, { status: 204 });
 }
 
-function fallbackAgentName(baseName: string, agentId: string, attempt: number): string {
-  const tag = attempt === 0 ? agentId : `${agentId}-${attempt + 1}`;
+function randomHex(bytes: number): string {
+  const buf = new Uint8Array(bytes);
+  crypto.getRandomValues(buf);
+  return Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function fallbackAgentName(baseName: string, tag: string): string {
   const suffix = ` (${tag})`;
   const maxPrefix = Math.max(0, 60 - suffix.length);
   return maxPrefix > 0 ? `${[...baseName].slice(0, maxPrefix).join('')}${suffix}` : tag.slice(0, 60);
@@ -231,11 +226,10 @@ export async function takeOverAgent(ctx: SignedIn): Promise<Response> {
   if (!agent) throw notFound();
   if (agent.member_id === person.memberId) throw conflict('This agent is already yours.');
 
-  // Choose an available name atomically inside the guarded write so concurrent key creation or a colliding fallback never fails takeover.
+  // Choose an available name atomically inside the guarded write; fall back to CSPRNG suffix so occupied names never cause 409.
   for (let attempt = 0; attempt < 16; attempt++) {
-    const fallback = attempt < 8
-      ? fallbackAgentName(agent.name, agent.id, attempt)
-      : fallbackAgentName(agent.name, newId('agt').slice(4, 14), attempt);
+    const tag = attempt === 0 ? agent.id : attempt < 4 ? `${agent.id}-${attempt + 1}` : `${agent.id.slice(0, 12)}-${randomHex(8)}`;
+    const fallback = fallbackAgentName(agent.name, tag);
     try {
       const results = await env.DB.batch([
         stillOwner(env, person.memberId),
