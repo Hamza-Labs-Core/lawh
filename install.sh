@@ -3,11 +3,11 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/Hamza-Labs-Core/lawh/main/install.sh | bash
 # Optional env vars:
-#   LAWH_HOME       Install directory (default: $HOME/.lawh)
-#   LAWH_BIN_DIR    Bin directory for `lawh` wrapper (default: $HOME/.local/bin)
-#   LAWH_REPO       GitHub repository (default: Hamza-Labs-Core/lawh)
-#   LAWH_VERSION    Release tag or "latest" (default: latest)
-#   LAWH_TARBALL_URL Direct tarball URL (https://, http://, or file://)
+#   LAWH_HOME        Install directory (default: $HOME/.lawh)
+#   LAWH_BIN_DIR     Bin directory for `lawh` wrapper (default: $HOME/.local/bin)
+#   LAWH_REPO        GitHub repository owner/name (default: Hamza-Labs-Core/lawh)
+#   LAWH_VERSION     Release tag or "latest" (default: latest)
+#   LAWH_TARBALL_URL Direct tarball URL (https://, file://, or http://localhost|127.0.0.1)
 set -euo pipefail
 
 LAWH_HOME="${LAWH_HOME:-$HOME/.lawh}"
@@ -29,6 +29,48 @@ if ! node -e 'const [maj, min] = process.versions.node.split(".").map(Number); i
 fi
 command -v tar >/dev/null 2>&1 || die "tar is required."
 
+# Normalize install paths to canonical absolute paths so relative paths work from any directory.
+LAWH_HOME="$(node -e 'process.stdout.write(require("node:path").resolve(process.argv[1]))' -- "$LAWH_HOME")"
+LAWH_BIN_DIR="$(node -e 'process.stdout.write(require("node:path").resolve(process.argv[1]))' -- "$LAWH_BIN_DIR")"
+
+# Validate repo, tag, and URL overrides strictly (single string, no newlines, no option injection, HTTPS for non-loopback).
+validate_url() {
+  local raw="$1"
+  local label="$2"
+  local allow_file="$3"
+  node -e '
+    const [raw, label, allowFile] = process.argv.slice(1);
+    if (!raw || /[\r\n\0]/.test(raw) || raw.startsWith("-")) {
+      console.error(`Invalid ${label}.`);
+      process.exit(1);
+    }
+    let u;
+    try { u = new URL(raw); } catch { console.error(`Invalid ${label}.`); process.exit(1); }
+    const loopback = u.hostname === "127.0.0.1" || u.hostname === "localhost" || u.hostname === "::1" || u.hostname === "[::1]";
+    if (u.protocol === "https:") process.exit(0);
+    if (u.protocol === "http:" && loopback) process.exit(0);
+    if (u.protocol === "file:" && allowFile === "1") process.exit(0);
+    console.error(`${label} must use https:// (got ${u.protocol}).`);
+    process.exit(1);
+  ' -- "$raw" "$label" "$allow_file" || exit 1
+}
+
+is_loopback_http() {
+  node -e '
+    const u = new URL(process.argv[1]);
+    const loopback = u.hostname === "127.0.0.1" || u.hostname === "localhost" || u.hostname === "::1" || u.hostname === "[::1]";
+    process.exit(u.protocol === "http:" && loopback ? 0 : 1);
+  ' -- "$1"
+}
+
+node -e '
+  const repo = process.argv[1];
+  if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo) || repo.includes("..")) {
+    console.error("Invalid LAWH_REPO (expected owner/repo).");
+    process.exit(1);
+  }
+' -- "$LAWH_REPO" || exit 1
+
 if [ "$LAWH_SKIP_INSTALL_DEPS" != "1" ]; then
   if ! command -v pnpm >/dev/null 2>&1; then
     if command -v corepack >/dev/null 2>&1; then
@@ -48,14 +90,38 @@ if [ "$need_curl" = "1" ]; then
   command -v curl >/dev/null 2>&1 || die "curl is required."
 fi
 
-# 2) Resolve release tag & tarball URL
+curl_fetch() {
+  local url="$1"
+  shift
+  if is_loopback_http "$url"; then
+    curl -fsSL --proto '=http,https' --proto-redir '=http,https' -H "User-Agent: lawh-installer" "$@" -- "$url"
+  else
+    curl -fsSL --proto '=https' --proto-redir '=https' -H "User-Agent: lawh-installer" "$@" -- "$url"
+  fi
+}
+
+# 2) Resolve and validate release tag & tarball URL
 TAG="$LAWH_VERSION"
 TARBALL_URL="$LAWH_TARBALL_URL"
 
-if [ -z "$TARBALL_URL" ]; then
+if [ -n "$TARBALL_URL" ]; then
+  validate_url "$TARBALL_URL" "LAWH_TARBALL_URL" "1"
+  if [ "$TAG" != "latest" ]; then
+    node -e '
+      const tag = process.argv[1];
+      if (!/^v?[0-9A-Za-z._-]+$/.test(tag) || tag.includes("..")) {
+        console.error(`Invalid release tag: ${tag}`);
+        process.exit(1);
+      }
+    ' -- "$TAG" || exit 1
+  fi
+else
+  validate_url "$LAWH_API_URL" "LAWH_API_URL" "0"
+  validate_url "$LAWH_ARCHIVE_BASE" "LAWH_ARCHIVE_BASE" "0"
   if [ "$TAG" = "latest" ]; then
     say "Checking latest Lawh release on ${LAWH_REPO}..."
-    RELEASE_JSON="$(curl -fsSL -H "Accept: application/vnd.github+json" -H "User-Agent: lawh-installer" "${LAWH_API_URL%/}/repos/${LAWH_REPO}/releases/latest")" \
+    API_ENDPOINT="${LAWH_API_URL%/}/repos/${LAWH_REPO}/releases/latest"
+    RELEASE_JSON="$(curl_fetch "$API_ENDPOINT" -H "Accept: application/vnd.github+json")" \
       || die "Failed to query latest release for ${LAWH_REPO}."
     TAG="$(printf '%s' "$RELEASE_JSON" | node -e '
       const fs = require("node:fs");
@@ -64,118 +130,369 @@ if [ -z "$TARBALL_URL" ]; then
       process.stdout.write(data.tag_name);
     ')" || die "Could not determine latest release tag."
   fi
-  if ! printf '%s' "$TAG" | grep -Eq '^v?[0-9A-Za-z._-]+$'; then
-    die "Invalid release tag: ${TAG}"
-  fi
+  node -e '
+    const tag = process.argv[1];
+    if (!/^v?[0-9A-Za-z._-]+$/.test(tag) || tag.includes("..")) {
+      console.error(`Invalid release tag: ${tag}`);
+      process.exit(1);
+    }
+  ' -- "$TAG" || exit 1
   TARBALL_URL="${LAWH_ARCHIVE_BASE%/}/${LAWH_REPO}/archive/refs/tags/${TAG}.tar.gz"
+  validate_url "$TARBALL_URL" "release tarball URL" "0"
 fi
 
-# 3) Prepare directories and atomic staging
-mkdir -p "$LAWH_HOME" "$LAWH_BIN_DIR"
+# 3) Prepare home/bin directories and check wrapper collision BEFORE touching live state
+mkdir -p "$LAWH_HOME" "$LAWH_HOME/releases" "$LAWH_BIN_DIR"
 chmod 700 "$LAWH_HOME"
 
-STAGING="$(mktemp -d "$LAWH_HOME/.staging.XXXXXX")"
-PREV_DIR=""
-cleanup() {
-  if [ -n "$PREV_DIR" ] && [ -d "$PREV_DIR" ] && [ ! -d "$LAWH_HOME/app" ]; then
-    mv "$PREV_DIR" "$LAWH_HOME/app" || true
+WRAPPER_PATH="$LAWH_BIN_DIR/lawh"
+if [ -d "$WRAPPER_PATH" ]; then
+  die "Refusing to install wrapper: ${WRAPPER_PATH} is an existing directory."
+fi
+if [ -e "$WRAPPER_PATH" ] || [ -L "$WRAPPER_PATH" ]; then
+  if [ -L "$WRAPPER_PATH" ] || ! grep -Fq "# managed-by-lawh-installer" "$WRAPPER_PATH" 2>/dev/null; then
+    die "Refusing to overwrite unmanaged file at ${WRAPPER_PATH}. Remove it or choose another LAWH_BIN_DIR."
   fi
-  rm -rf "$STAGING"
+fi
+
+# 4) Serialize concurrent installers via an atomic lock directory
+LOCK_DIR="$LAWH_HOME/.install.lock"
+LOCK_HELD=0
+acquire_install_lock() {
+  local tries=0
+  while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+    tries=$((tries + 1))
+    local holder_pid=""
+    if [ -f "$LOCK_DIR/pid" ]; then
+      holder_pid="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+      if [ -n "$holder_pid" ] && ! kill -0 "$holder_pid" 2>/dev/null; then
+        rm -rf "$LOCK_DIR" 2>/dev/null || true
+        continue
+      fi
+      die "Another Lawh install or update is already running (pid ${holder_pid})."
+    fi
+    if [ "$tries" -ge 5 ]; then
+      die "Another Lawh install or update is already running (${LOCK_DIR})."
+    fi
+    node -e 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)'
+  done
+  printf '%s\n' "$$" > "$LOCK_DIR/pid"
+  LOCK_HELD=1
+}
+acquire_install_lock
+
+# Capture rollback state & register cleanup trap
+STAGING="$(mktemp -d "$LAWH_HOME/.staging.XXXXXX")"
+RELEASE_DIR=""
+TMP_LINK=""
+TMP_VERSION=""
+TMP_META=""
+TMP_INSTALLER=""
+TMP_WRAPPER=""
+
+HAD_LIVE_APP=0
+PREV_IS_SYMLINK=0
+PREV_SYMLINK_TARGET=""
+PREV_MIGRATED_DIR=""
+PREV_VERSION_BAK=""
+PREV_META_BAK=""
+PREV_INSTALLER_BAK=""
+PREV_WRAPPER_BAK=""
+SWAPPED_APP=0
+COMMITTED=0
+
+cleanup() {
+  if [ "$COMMITTED" != "1" ]; then
+    # Roll back every publication step if anything failed after activation started.
+    if [ "$SWAPPED_APP" = "1" ]; then
+      if [ "$HAD_LIVE_APP" = "1" ]; then
+        if [ "$PREV_IS_SYMLINK" = "1" ] && [ -n "$PREV_SYMLINK_TARGET" ]; then
+          local restore_link
+          restore_link="$(mktemp "$LAWH_HOME/.restore.XXXXXX")"
+          rm -f "$restore_link"
+          ln -s "$PREV_SYMLINK_TARGET" "$restore_link" 2>/dev/null || true
+          node -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' -- "$restore_link" "$LAWH_HOME/app" 2>/dev/null || true
+        elif [ -n "$PREV_MIGRATED_DIR" ] && [ -d "$PREV_MIGRATED_DIR" ]; then
+          rm -f "$LAWH_HOME/app" 2>/dev/null || true
+          mv "$PREV_MIGRATED_DIR" "$LAWH_HOME/app" 2>/dev/null || true
+        fi
+      else
+        rm -f "$LAWH_HOME/app" 2>/dev/null || true
+      fi
+      if [ -n "$PREV_VERSION_BAK" ] && [ -f "$PREV_VERSION_BAK" ]; then
+        mv "$PREV_VERSION_BAK" "$LAWH_HOME/version" 2>/dev/null || true
+      elif [ "$HAD_LIVE_APP" = "0" ]; then
+        rm -f "$LAWH_HOME/version" 2>/dev/null || true
+      fi
+      if [ -n "$PREV_META_BAK" ] && [ -f "$PREV_META_BAK" ]; then
+        mv "$PREV_META_BAK" "$LAWH_HOME/install.json" 2>/dev/null || true
+      elif [ "$HAD_LIVE_APP" = "0" ]; then
+        rm -f "$LAWH_HOME/install.json" 2>/dev/null || true
+      fi
+      if [ -n "$PREV_INSTALLER_BAK" ] && [ -f "$PREV_INSTALLER_BAK" ]; then
+        mv "$PREV_INSTALLER_BAK" "$LAWH_HOME/install.sh" 2>/dev/null || true
+      elif [ "$HAD_LIVE_APP" = "0" ]; then
+        rm -f "$LAWH_HOME/install.sh" 2>/dev/null || true
+      fi
+      if [ -n "$PREV_WRAPPER_BAK" ] && [ -f "$PREV_WRAPPER_BAK" ]; then
+        mv "$PREV_WRAPPER_BAK" "$WRAPPER_PATH" 2>/dev/null || true
+      elif [ "$HAD_LIVE_APP" = "0" ]; then
+        rm -f "$WRAPPER_PATH" 2>/dev/null || true
+      fi
+    else
+      rm -f "$PREV_VERSION_BAK" "$PREV_META_BAK" "$PREV_INSTALLER_BAK" "$PREV_WRAPPER_BAK" 2>/dev/null || true
+    fi
+    if [ -n "$RELEASE_DIR" ] && [ -d "$RELEASE_DIR" ]; then
+      rm -rf "$RELEASE_DIR" 2>/dev/null || true
+    fi
+  else
+    # Committed cleanly: prune old release and temporary backups.
+    if [ "$PREV_IS_SYMLINK" = "1" ] && [ -n "$PREV_SYMLINK_TARGET" ] && [ -d "$PREV_SYMLINK_TARGET" ] && [ "$PREV_SYMLINK_TARGET" != "$RELEASE_DIR" ]; then
+      rm -rf "$PREV_SYMLINK_TARGET" 2>/dev/null || true
+    fi
+    if [ -n "$PREV_MIGRATED_DIR" ] && [ -d "$PREV_MIGRATED_DIR" ]; then
+      rm -rf "$PREV_MIGRATED_DIR" 2>/dev/null || true
+    fi
+    rm -f "$PREV_VERSION_BAK" "$PREV_META_BAK" "$PREV_INSTALLER_BAK" "$PREV_WRAPPER_BAK" 2>/dev/null || true
+  fi
+  rm -f "$TMP_LINK" "$TMP_VERSION" "$TMP_META" "$TMP_INSTALLER" "$TMP_WRAPPER" 2>/dev/null || true
+  rm -rf "$STAGING" 2>/dev/null || true
+  if [ "$LOCK_HELD" = "1" ]; then
+    rm -rf "$LOCK_DIR" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT
 
+# 5) Download, inspect, extract, and validate archive entirely inside staging
 say "Downloading Lawh (${TAG})..."
 ARCHIVE="$STAGING/release.tar.gz"
 case "$TARBALL_URL" in
   file://*)
-    LOCAL_ARCHIVE="${TARBALL_URL#file://}"
+    LOCAL_ARCHIVE="$(node -e 'process.stdout.write(require("node:url").fileURLToPath(process.argv[1]))' -- "$TARBALL_URL")"
     [ -f "$LOCAL_ARCHIVE" ] || die "Tarball not found: ${LOCAL_ARCHIVE}"
     cp "$LOCAL_ARCHIVE" "$ARCHIVE"
     ;;
   https://*|http://*)
-    curl -fsSL -H "User-Agent: lawh-installer" "$TARBALL_URL" -o "$ARCHIVE" \
+    curl_fetch "$TARBALL_URL" -o "$ARCHIVE" \
       || die "Failed to download ${TARBALL_URL}"
     ;;
   *)
-    die "Unsupported LAWH_TARBALL_URL scheme (expected https://, http://, or file://)."
+    die "Unsupported LAWH_TARBALL_URL scheme."
     ;;
 esac
+
+# Reject path traversal or absolute paths in archive entries before extracting.
+TAR_LIST="$(tar -tzf "$ARCHIVE" 2>/dev/null)" || die "Failed to read Lawh release archive."
+printf '%s\n' "$TAR_LIST" | node -e '
+  const fs = require("node:fs");
+  const lines = fs.readFileSync(0, "utf8").split(/\r?\n/).filter(Boolean);
+  if (lines.length === 0) { console.error("Release archive is empty."); process.exit(1); }
+  for (const entry of lines) {
+    if (entry.startsWith("/") || entry.split("/").includes("..")) {
+      console.error(`Unsafe path in release archive: ${entry}`);
+      process.exit(1);
+    }
+  }
+' || exit 1
 
 mkdir -p "$STAGING/app"
 tar -xzf "$ARCHIVE" -C "$STAGING/app" --strip-components=1 \
   || die "Failed to extract Lawh release archive."
 
-[ -f "$STAGING/app/package.json" ] && [ -f "$STAGING/app/scripts/lawh.mjs" ] \
-  || die "Downloaded archive does not look like a valid Lawh release."
+# Validate required files and package metadata BEFORE touching the live installation.
+[ -f "$STAGING/app/package.json" ] && [ ! -L "$STAGING/app/package.json" ] \
+  || die "Downloaded archive is missing a valid package.json."
+[ -f "$STAGING/app/scripts/lawh.mjs" ] && [ ! -L "$STAGING/app/scripts/lawh.mjs" ] \
+  || die "Downloaded archive is missing scripts/lawh.mjs."
+
+# Reject archives that try to smuggle reserved local-state paths.
+for reserved in lawh.config.json wrangler.app.jsonc wrangler.content.jsonc .wrangler; do
+  if [ -e "$STAGING/app/$reserved" ] || [ -L "$STAGING/app/$reserved" ]; then
+    die "Release archive must not contain reserved local state path: ${reserved}"
+  fi
+done
+
+INSTALLED_VERSION="$(node -e '
+  const fs = require("node:fs");
+  const pkg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  if (!pkg || typeof pkg.version !== "string" || !/^[0-9A-Za-z._-]+$/.test(pkg.version)) {
+    console.error("Invalid version in package.json.");
+    process.exit(1);
+  }
+  const tag = process.argv[2];
+  process.stdout.write(tag !== "latest" ? tag : ("v" + pkg.version));
+' -- "$STAGING/app/package.json" "$TAG")" || die "Invalid package.json in release archive."
 
 if [ "$LAWH_SKIP_INSTALL_DEPS" != "1" ]; then
   say "Installing dependencies..."
   (cd "$STAGING/app" && pnpm install --frozen-lockfile)
 fi
 
-# 4) Preserve existing instance configuration and local Wrangler state across updates
+# 6) Preserve existing instance configuration and local Wrangler state safely (no symlink following)
 HAD_CONFIG=0
-if [ -d "$LAWH_HOME/app" ]; then
+LIVE_APP_DIR=""
+if [ -L "$LAWH_HOME/app" ]; then
+  HAD_LIVE_APP=1
+  PREV_IS_SYMLINK=1
+  PREV_SYMLINK_TARGET="$(node -e 'process.stdout.write(require("node:fs").readlinkSync(process.argv[1]))' -- "$LAWH_HOME/app")"
+  if [ -d "$LAWH_HOME/app" ]; then
+    LIVE_APP_DIR="$LAWH_HOME/app"
+  fi
+elif [ -d "$LAWH_HOME/app" ]; then
+  HAD_LIVE_APP=1
+  LIVE_APP_DIR="$LAWH_HOME/app"
+fi
+
+if [ -n "$LIVE_APP_DIR" ]; then
   for f in lawh.config.json wrangler.app.jsonc wrangler.content.jsonc; do
-    if [ -f "$LAWH_HOME/app/$f" ]; then
-      cp -p "$LAWH_HOME/app/$f" "$STAGING/app/$f"
-      [ "$f" = "lawh.config.json" ] && HAD_CONFIG=1
+    if [ -L "$LIVE_APP_DIR/$f" ]; then
+      die "Refusing to copy symlinked local state file: ${LIVE_APP_DIR}/${f}"
+    fi
+    if [ -f "$LIVE_APP_DIR/$f" ]; then
+      cp -p "$LIVE_APP_DIR/$f" "$STAGING/app/$f"
+      if [ "$f" = "lawh.config.json" ]; then
+        chmod 600 "$STAGING/app/$f"
+        HAD_CONFIG=1
+      fi
     fi
   done
-  if [ -d "$LAWH_HOME/app/.wrangler" ]; then
-    cp -Rp "$LAWH_HOME/app/.wrangler" "$STAGING/app/.wrangler"
+  if [ -L "$LIVE_APP_DIR/.wrangler" ]; then
+    die "Refusing to copy symlinked .wrangler directory: ${LIVE_APP_DIR}/.wrangler"
+  fi
+  if [ -d "$LIVE_APP_DIR/.wrangler" ]; then
+    cp -RPp "$LIVE_APP_DIR/.wrangler" "$STAGING/app/.wrangler"
+    for secret_json in "$STAGING/app/.wrangler"/lawh-*.json; do
+      if [ -f "$secret_json" ] && [ ! -L "$secret_json" ]; then
+        chmod 600 "$secret_json"
+      fi
+    done
   fi
 fi
 
-# 5) Atomically swap staged release into $LAWH_HOME/app
-if [ -d "$LAWH_HOME/app" ]; then
-  PREV_DIR="$LAWH_HOME/.previous.$$"
-  rm -rf "$PREV_DIR"
-  mv "$LAWH_HOME/app" "$PREV_DIR"
-fi
-mv "$STAGING/app" "$LAWH_HOME/app"
-if [ -n "$PREV_DIR" ] && [ -d "$PREV_DIR" ]; then
-  rm -rf "$PREV_DIR"
-  PREV_DIR=""
-fi
+# 7) Prepare ALL release artifacts in exclusive temp files BEFORE activating
+RELEASE_DIR="$(mktemp -d "$LAWH_HOME/releases/rel.XXXXXX")"
+rmdir "$RELEASE_DIR"
+mv "$STAGING/app" "$RELEASE_DIR"
 
-INSTALLED_VERSION="$(node -e '
-  const fs = require("node:fs");
-  const pkg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-  process.stdout.write(process.argv[2] !== "latest" ? process.argv[2] : ("v" + pkg.version));
-' "$LAWH_HOME/app/package.json" "$TAG")"
-printf '%s\n' "$INSTALLED_VERSION" > "$LAWH_HOME/version.tmp.$$"
-mv "$LAWH_HOME/version.tmp.$$" "$LAWH_HOME/version"
+# Save a copy of install.sh for `lawh self-update` (prefer the newly staged install.sh, else this running script).
+TMP_INSTALLER="$(mktemp "$LAWH_HOME/.install.sh.XXXXXX")"
+if [ -f "$RELEASE_DIR/install.sh" ] && [ ! -L "$RELEASE_DIR/install.sh" ]; then
+  cp "$RELEASE_DIR/install.sh" "$TMP_INSTALLER"
+elif [ -f "${BASH_SOURCE[0]:-}" ]; then
+  cp "${BASH_SOURCE[0]}" "$TMP_INSTALLER"
+else
+  # Running via curl | bash on a legacy release without install.sh; fetch from repo main fallback on self-update.
+  cat > "$TMP_INSTALLER" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+REPO="${LAWH_REPO:-Hamza-Labs-Core/lawh}"
+curl -fsSL --proto '=https' --proto-redir '=https' -- "https://raw.githubusercontent.com/${REPO}/main/install.sh" | bash
+EOF
+fi
+chmod 700 "$TMP_INSTALLER"
 
-# 6) Install `lawh` wrapper script atomically into $LAWH_BIN_DIR
-WRAPPER_TMP="$LAWH_BIN_DIR/.lawh.tmp.$$"
+TMP_VERSION="$(mktemp "$LAWH_HOME/.version.XXXXXX")"
+printf '%s\n' "$INSTALLED_VERSION" > "$TMP_VERSION"
+chmod 600 "$TMP_VERSION"
+
+TMP_META="$(mktemp "$LAWH_HOME/.install.json.XXXXXX")"
 node -e '
   const fs = require("node:fs");
-  const [tmpPath, homeDir] = process.argv.slice(1);
-  const quoted = "'"'"'" + homeDir.replaceAll("'"'"'", "'"'"'\\'"'"''"'"'") + "'"'"'";
-  const script = [
-    "#!/usr/bin/env sh",
-    "set -eu",
-    "if [ -z \"${LAWH_HOME:-}\" ]; then",
-    `  LAWH_HOME=${quoted}`,
-    "fi",
-    "export LAWH_HOME",
-    "export LAWH_MANAGED_INSTALL=1",
-    "exec node \"$LAWH_HOME/app/scripts/lawh.mjs\" \"$@\"",
-    "",
-  ].join("\n");
-  fs.writeFileSync(tmpPath, script, { mode: 0o755 });
-' "$WRAPPER_TMP" "$LAWH_HOME"
-chmod 755 "$WRAPPER_TMP"
-mv "$WRAPPER_TMP" "$LAWH_BIN_DIR/lawh"
+  const [out, home, binDir, repo, version] = process.argv.slice(1);
+  fs.writeFileSync(out, JSON.stringify({ home, binDir, repo, version }, null, 2) + "\n", { mode: 0o600 });
+' -- "$TMP_META" "$LAWH_HOME" "$LAWH_BIN_DIR" "$LAWH_REPO" "$INSTALLED_VERSION"
+chmod 600 "$TMP_META"
+
+TMP_WRAPPER="$(mktemp "$LAWH_BIN_DIR/.lawh.XXXXXX")"
+node - "$TMP_WRAPPER" "$LAWH_HOME" "$LAWH_BIN_DIR" "$LAWH_REPO" <<'NODE'
+const fs = require("node:fs");
+const [tmpPath, homeDir, binDir, repo] = process.argv.slice(2);
+const shQuote = (s) => "'" + s.replaceAll("'", "'\\''") + "'";
+const script = [
+  "#!/usr/bin/env sh",
+  "# managed-by-lawh-installer",
+  "set -eu",
+  `if [ -z "\${LAWH_HOME:-}" ]; then LAWH_HOME=${shQuote(homeDir)}; fi`,
+  `if [ -z "\${LAWH_BIN_DIR:-}" ]; then LAWH_BIN_DIR=${shQuote(binDir)}; fi`,
+  `if [ -z "\${LAWH_REPO:-}" ]; then LAWH_REPO=${shQuote(repo)}; fi`,
+  "export LAWH_HOME LAWH_BIN_DIR LAWH_REPO",
+  "export LAWH_MANAGED_INSTALL=1",
+  'if [ "${1:-}" = "self-update" ] && [ "$#" -eq 1 ]; then',
+  '  exec bash "$LAWH_HOME/install.sh"',
+  "fi",
+  'if [ "${1:-}" = "version" ] || [ "${1:-}" = "--version" ] || [ "${1:-}" = "-v" ]; then',
+  '  if [ "$#" -eq 1 ] && ! grep -Fq "printVersion" "$LAWH_HOME/app/scripts/lawh.mjs" 2>/dev/null; then',
+  '    exec node -e \'const fs=require("node:fs");const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));console.log("lawh v"+p.version);\' "$LAWH_HOME/app/package.json"',
+  "  fi",
+  "fi",
+  'if [ "${1:-}" = "login" ] && [ "$#" -eq 1 ] && ! grep -Fq "runWranglerLogin" "$LAWH_HOME/app/scripts/lawh.mjs" 2>/dev/null; then',
+  '  export WRANGLER_SEND_METRICS=false',
+  '  exec node "$LAWH_HOME/app/node_modules/wrangler/bin/wrangler.js" login',
+  "fi",
+  'exec node "$LAWH_HOME/app/scripts/lawh.mjs" "$@"',
+  "",
+].join("\n");
+fs.writeFileSync(tmpPath, script, { mode: 0o755 });
+NODE
+chmod 755 "$TMP_WRAPPER"
+
+# Backup existing metadata & wrapper for full rollback if any publication step fails.
+if [ -f "$LAWH_HOME/version" ]; then
+  PREV_VERSION_BAK="$(mktemp "$LAWH_HOME/.version.bak.XXXXXX")"
+  cp -p "$LAWH_HOME/version" "$PREV_VERSION_BAK"
+fi
+if [ -f "$LAWH_HOME/install.json" ]; then
+  PREV_META_BAK="$(mktemp "$LAWH_HOME/.install.json.bak.XXXXXX")"
+  cp -p "$LAWH_HOME/install.json" "$PREV_META_BAK"
+fi
+if [ -f "$LAWH_HOME/install.sh" ]; then
+  PREV_INSTALLER_BAK="$(mktemp "$LAWH_HOME/.install.sh.bak.XXXXXX")"
+  cp -p "$LAWH_HOME/install.sh" "$PREV_INSTALLER_BAK"
+fi
+if [ -f "$WRAPPER_PATH" ]; then
+  PREV_WRAPPER_BAK="$(mktemp "$LAWH_HOME/.wrapper.bak.XXXXXX")"
+  cp -p "$WRAPPER_PATH" "$PREV_WRAPPER_BAK"
+fi
+
+# 8) Atomic activation: swap `$LAWH_HOME/app` symlink via POSIX rename(2), then publish metadata & wrapper
+TMP_LINK="$(mktemp "$LAWH_HOME/.app.next.XXXXXX")"
+rm -f "$TMP_LINK"
+ln -s "$RELEASE_DIR" "$TMP_LINK"
+
+if [ "$HAD_LIVE_APP" = "1" ] && [ "$PREV_IS_SYMLINK" = "0" ]; then
+  PREV_MIGRATED_DIR="$(mktemp -d "$LAWH_HOME/releases/prev.XXXXXX")"
+  rmdir "$PREV_MIGRATED_DIR"
+  mv "$LAWH_HOME/app" "$PREV_MIGRATED_DIR"
+fi
+SWAPPED_APP=1
+node -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' -- "$TMP_LINK" "$LAWH_HOME/app"
+TMP_LINK=""
+
+# Optional test hook to verify post-swap rollback in automated tests.
+if [ "${LAWH_TEST_FAIL_AFTER_SWAP:-0}" = "1" ]; then
+  die "Simulated failure after app swap."
+fi
+
+mv "$TMP_INSTALLER" "$LAWH_HOME/install.sh"
+TMP_INSTALLER=""
+mv "$TMP_META" "$LAWH_HOME/install.json"
+TMP_META=""
+mv "$TMP_VERSION" "$LAWH_HOME/version"
+TMP_VERSION=""
+mv "$TMP_WRAPPER" "$WRAPPER_PATH"
+TMP_WRAPPER=""
+
+COMMITTED=1
 
 say ""
 say "Installed Lawh ${INSTALLED_VERSION} in ${LAWH_HOME}/app"
-say "Command installed at ${LAWH_BIN_DIR}/lawh"
+say "Command installed at ${WRAPPER_PATH}"
 
+NEED_PATH_EXPORT=0
 case ":${PATH:-}:" in
   *":$LAWH_BIN_DIR:"*) ;;
   *)
+    NEED_PATH_EXPORT=1
     say ""
     say "Add ${LAWH_BIN_DIR} to your PATH to run 'lawh' from any shell:"
     say "  export PATH=\"${LAWH_BIN_DIR}:\$PATH\""
@@ -185,9 +502,17 @@ esac
 say ""
 if [ "$HAD_CONFIG" = "1" ]; then
   say "Existing instance config preserved. Run:"
-  say "  lawh upgrade"
+  if [ "$NEED_PATH_EXPORT" = "1" ]; then
+    say "  \"${WRAPPER_PATH}\" upgrade"
+  else
+    say "  lawh upgrade"
+  fi
   say "to apply any new D1 migrations and redeploy your Cloudflare Workers."
 else
   say "Next step — deploy your private Lawh copy to Cloudflare:"
-  say "  lawh init"
+  if [ "$NEED_PATH_EXPORT" = "1" ]; then
+    say "  \"${WRAPPER_PATH}\" init"
+  else
+    say "  lawh init"
+  fi
 fi

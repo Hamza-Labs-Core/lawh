@@ -1,12 +1,12 @@
 // Lawh self-hosting CLI:
 // lawh <login|init|upgrade|rollback|destroy|self-update|version|owner setup [--local]|owner transfer <member> [--local]>
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
-import { createCloudflareClient, readCloudflareToken } from './cli/cloudflare.mjs';
+import { createCloudflareClient, MissingCloudflareTokenError, readCloudflareToken } from './cli/cloudflare.mjs';
 import { runDestroy, runInit, runRollback, runUpgrade } from './cli/commands.mjs';
 import { runOwnerTransfer } from './cli/transfer.mjs';
 import { parseJsonc } from './local/jsonc.mjs';
@@ -31,7 +31,7 @@ const fail = (message, code = 1) => {
 };
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const wrangler = join(root, 'node_modules/wrangler/bin/wrangler.js');
+const wrangler = process.env.LAWH_WRANGLER_BIN || join(root, 'node_modules/wrangler/bin/wrangler.js');
 
 function runWranglerLogin() {
   if (!existsSync(wrangler)) fail('Wrangler is not installed. Run `pnpm install` first.');
@@ -40,6 +40,16 @@ function runWranglerLogin() {
     env: { ...process.env, WRANGLER_SEND_METRICS: 'false' },
     stdio: 'inherit',
   });
+}
+
+function tryRefreshWranglerToken() {
+  if (!existsSync(wrangler)) return false;
+  const res = spawnSync(process.execPath, [wrangler, 'whoami'], {
+    cwd: root,
+    env: { ...process.env, WRANGLER_SEND_METRICS: 'false' },
+    stdio: 'ignore',
+  });
+  return res.status === 0;
 }
 
 function openD1(local) {
@@ -107,14 +117,33 @@ async function runOwnerTransferCli(args) {
   }
 }
 
+function readManagedInstallMeta() {
+  const home = process.env.LAWH_HOME || dirname(root);
+  const metaPath = join(home, 'install.json');
+  if (!existsSync(metaPath)) return null;
+  try {
+    return JSON.parse(readFileSync(metaPath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
 function runSelfUpdate() {
   if (!managed) {
     console.log('This copy is running from a local repository. To update, run:\n  git pull && pnpm install && pnpm lawh upgrade');
     return;
   }
-  const installer = join(root, 'install.sh');
+  const meta = readManagedInstallMeta();
+  const home = process.env.LAWH_HOME || meta?.home || dirname(root);
+  const installer = existsSync(join(home, 'install.sh')) ? join(home, 'install.sh') : join(root, 'install.sh');
   if (!existsSync(installer)) fail('install.sh is missing from this installation.');
-  execFileSync('bash', [installer], { stdio: 'inherit', env: process.env });
+  const env = {
+    ...process.env,
+    LAWH_HOME: home,
+    ...(meta?.binDir && !process.env.LAWH_BIN_DIR ? { LAWH_BIN_DIR: meta.binDir } : {}),
+    ...(meta?.repo && !process.env.LAWH_REPO ? { LAWH_REPO: meta.repo } : {}),
+  };
+  execFileSync('bash', [installer], { stdio: 'inherit', env });
 }
 
 function printVersion() {
@@ -122,22 +151,18 @@ function printVersion() {
   console.log(`lawh v${pkg.version}`);
 }
 
-function makePrompt() {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  return {
-    prompt: (question) => rl.question(question),
-    close: () => rl.close(),
-  };
-}
-
-async function ensureCloudflareToken(cmd, io) {
+async function resolveTokenForCommand(cmd) {
   try {
     return readCloudflareToken();
   } catch (err) {
-    if (cmd === 'init' && process.stdin.isTTY && process.stdout.isTTY) {
-      const answer = (await io.prompt('Not signed in to Cloudflare yet. Sign in now with Wrangler? [Y/n]: ')).trim().toLowerCase();
+    if (!(err instanceof MissingCloudflareTokenError)) throw err;
+    if (err.expired && tryRefreshWranglerToken()) {
+      try { return readCloudflareToken(); } catch { /* fall through to prompt/error */ }
+    }
+    const interactive = (process.stdin.isTTY && process.stdout.isTTY) || process.env.LAWH_FORCE_TTY === '1';
+    if (cmd === 'init' && interactive) {
+      const answer = (await askOnce('Not signed in to Cloudflare yet. Sign in now with Wrangler? [Y/n]: ')).trim().toLowerCase();
       if (!answer || answer === 'y' || answer === 'yes') {
-        io.close();
         runWranglerLogin();
         return readCloudflareToken();
       }
@@ -160,28 +185,22 @@ if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
 } else if (cmd === 'owner' && rest[0] === 'transfer') {
   await runOwnerTransferCli(rest.slice(1));
 } else if ((cmd === 'init' || cmd === 'upgrade' || cmd === 'rollback' || cmd === 'destroy') && rest.length === 0) {
-  let io = makePrompt();
+  let rl = null;
   try {
-    let token;
-    try {
-      token = readCloudflareToken();
-    } catch (err) {
-      if (cmd === 'init' && process.stdin.isTTY && process.stdout.isTTY) {
-        token = await ensureCloudflareToken(cmd, io);
-        io = makePrompt();
-      } else {
-        throw err;
-      }
-    }
+    const token = await resolveTokenForCommand(cmd);
     const cf = createCloudflareClient({ token });
-    if (cmd === 'init') await runInit({ root, cf, prompt: io.prompt });
-    else if (cmd === 'upgrade') await runUpgrade({ root, cf });
+    if (cmd === 'init' || cmd === 'destroy') {
+      rl = createInterface({ input: process.stdin, output: process.stdout });
+    }
+    const prompt = (question) => rl.question(question);
+    if (cmd === 'init') await runInit({ root, cf, prompt });
+    else if (cmd === 'upgrade') await runUpgrade({ root, cf, bin, managed });
     else if (cmd === 'rollback') await runRollback({ root, cf });
-    else if (cmd === 'destroy') await runDestroy({ root, cf, prompt: io.prompt });
+    else if (cmd === 'destroy') await runDestroy({ root, cf, prompt });
   } catch (err) {
     fail(err instanceof Error ? err.message : String(err));
   } finally {
-    io.close();
+    rl?.close();
   }
 } else {
   fail(USAGE, 2);
