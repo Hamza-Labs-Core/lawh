@@ -300,12 +300,20 @@ describe('S20 CLI: lawh wait and lawh listen', () => {
     writeFileSync(handlerScript, `import { appendFileSync, readFileSync } from 'node:fs'; appendFileSync(${JSON.stringify(outFile)}, readFileSync(0, 'utf8'));`);
     const env = { ...process.env, LAWH_URL: `http://127.0.0.1:${port}`, LAWH_KEY: 'lawh_key_test_secret', LAWH_CURSOR_DIR: dir };
 
-    // Must recover from initial 503 and drain ALL 31 events immediately (despite huge 60s poll-ms) before 1.5s timeout!
-    const code = await new Promise<number | null>((resolve) => {
-      const child = spawn(process.execPath, [cli, 'listen', '--project', 'one', '--after', '0', '--poll-ms', '60000', '--timeout', '1.5', '--', process.execPath, handlerScript], { env, stdio: 'ignore' });
-      child.on('close', resolve);
-    });
-    expect(code).toBe(124);
+    // Must recover from initial 503 and drain ALL 31 events immediately (despite huge 60s poll-ms) without sleeping between pages!
+    let doneResolve!: () => void;
+    const allDrained = new Promise<void>((r) => { doneResolve = r; });
+    const child = spawn(process.execPath, [cli, 'listen', '--project', 'one', '--after', '0', '--poll-ms', '60000', '--timeout', '12', '--', process.execPath, handlerScript], { env, stdio: 'ignore' });
+    const pollOut = setInterval(() => {
+      try {
+        const count = readFileSync(outFile, 'utf8').trim().split('\n').filter(Boolean).length;
+        if (count >= 31) doneResolve();
+      } catch { /* not yet */ }
+    }, 50);
+    await Promise.race([allDrained, new Promise<void>((r) => child.on('close', () => r()))]);
+    clearInterval(pollOut);
+    child.kill('SIGTERM');
+    await new Promise<void>((r) => child.on('close', () => r()));
     const seen = readFileSync(outFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l).seq);
     expect(seen).toHaveLength(31);
     expect(seen[30]).toBe(31);

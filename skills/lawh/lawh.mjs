@@ -2,7 +2,7 @@
 // Lawh agent CLI — single file, zero dependencies, Node >= 22.
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { chmodSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { hostname, homedir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 
@@ -580,66 +580,132 @@ function isPidAlive(pid) {
   catch (err) { return err && typeof err === 'object' && 'code' in err && err.code === 'EPERM'; }
 }
 
-function acquireLock(cursorFile) {
-  const lockFile = `${cursorFile}.lock`;
-  mkdirSync(dirname(lockFile), { recursive: true, mode: 0o700 });
-  const payload = `${JSON.stringify({ pid: process.pid, startedAt: Date.now() })}\n`;
-  for (let attempt = 0; attempt < 4; attempt++) {
-    // Write PID to a unique temp file and hard-link it into place atomically so lockFile is never observed empty.
-    const tmp = `${lockFile}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
-    try {
-      writeFileSync(tmp, payload, { mode: 0o600 });
-      try { chmodSync(tmp, 0o600); } catch { /* Windows */ }
-      try {
-        linkSync(tmp, lockFile);
-        return lockFile;
-      } catch (linkErr) {
-        const code = linkErr && typeof linkErr === 'object' && 'code' in linkErr ? linkErr.code : '';
-        if (code !== 'EEXIST') {
-          // Fallback on filesystems that disallow hard links.
-          const fd = openSync(lockFile, 'wx', 0o600);
-          try { writeFileSync(fd, payload); } finally { closeSync(fd); }
-          return lockFile;
-        }
-      }
-    } finally {
-      try { unlinkSync(tmp); } catch { /* ignore */ }
-    }
-
-    let existingPid = null;
-    try { existingPid = JSON.parse(readFileSync(lockFile, 'utf8'))?.pid ?? null; } catch { /* empty or unreadable */ }
-    if (existingPid !== null && isPidAlive(existingPid)) {
-      die(`Another process (pid ${existingPid}) is already using this cursor.`);
-    }
-    if (existingPid === null) {
-      // Do not steal a freshly created lock file that another process may still be populating.
-      try {
-        if (Date.now() - statSync(lockFile).mtimeMs < 5_000) {
-          die('Another process is already using this cursor.');
-        }
-      } catch { /* disappeared; retry */ }
-    }
-    try { unlinkSync(lockFile); } catch { /* raced */ }
-  }
-  die('Could not acquire cursor lock.');
+function readLockInfo(lockFile) {
+  try {
+    const parsed = JSON.parse(readFileSync(lockFile, 'utf8'));
+    if (parsed && typeof parsed.pid === 'number') return parsed;
+  } catch { /* empty or unreadable */ }
+  return null;
 }
 
-function releaseLocks(lockFiles) {
-  for (const lf of lockFiles) {
-    try { unlinkSync(lf); } catch { /* ignore */ }
+function tryLinkLock(targetFile, payload) {
+  const tmp = `${targetFile}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+  try {
+    writeFileSync(tmp, payload, { mode: 0o600 });
+    try { chmodSync(tmp, 0o600); } catch { /* Windows */ }
+    try {
+      linkSync(tmp, targetFile);
+      return true;
+    } catch (linkErr) {
+      const code = linkErr && typeof linkErr === 'object' && 'code' in linkErr ? linkErr.code : '';
+      if (code === 'EEXIST') return false;
+      // Fallback on filesystems that disallow hard links.
+      try {
+        const fd = openSync(targetFile, 'wx', 0o600);
+        try { writeFileSync(fd, payload); } finally { closeSync(fd); }
+        return true;
+      } catch (openErr) {
+        if (openErr && typeof openErr === 'object' && 'code' in openErr && openErr.code === 'EEXIST') return false;
+        throw openErr;
+      }
+    }
+  } finally {
+    try { unlinkSync(tmp); } catch { /* ignore */ }
+  }
+}
+
+function acquireLock(cursorFile) {
+  const lockFile = `${cursorFile}.lock`;
+  const recoverFile = `${lockFile}.recover`;
+  mkdirSync(dirname(lockFile), { recursive: true, mode: 0o700 });
+  const token = randomBytes(8).toString('hex');
+  const payload = `${JSON.stringify({ pid: process.pid, token, startedAt: Date.now() })}\n`;
+
+  for (let attempt = 0; attempt < 6; attempt++) {
+    if (tryLinkLock(lockFile, payload)) {
+      return { lockFile, token };
+    }
+
+    const existing = readLockInfo(lockFile);
+    if (existing !== null && isPidAlive(existing.pid)) {
+      throw new Error(`Another process (pid ${existing.pid}) is already using this cursor.`);
+    }
+    if (existing === null) {
+      try {
+        if (Date.now() - statSync(lockFile).mtimeMs < 5_000) {
+          throw new Error('Another process is already using this cursor.');
+        }
+      } catch (err) {
+        if (err instanceof Error && err.message.includes('already using')) throw err;
+        continue; // lock disappeared; retry
+      }
+    }
+
+    // Serialize stale-lock recovery through a dedicated atomic recover lock so two racing watchers never unlink each other's fresh lock.
+    const recPayload = `${JSON.stringify({ pid: process.pid, startedAt: Date.now() })}\n`;
+    if (tryLinkLock(recoverFile, recPayload)) {
+      try {
+        const recheck = readLockInfo(lockFile);
+        if (recheck !== null && isPidAlive(recheck.pid)) {
+          throw new Error(`Another process (pid ${recheck.pid}) is already using this cursor.`);
+        }
+        if (recheck === null) {
+          try {
+            if (Date.now() - statSync(lockFile).mtimeMs < 5_000) {
+              throw new Error('Another process is already using this cursor.');
+            }
+          } catch (err) {
+            if (err instanceof Error && err.message.includes('already using')) throw err;
+          }
+        }
+        try { unlinkSync(lockFile); } catch { /* already gone */ }
+      } finally {
+        try { unlinkSync(recoverFile); } catch { /* ignore */ }
+      }
+    } else {
+      // Another process is actively recovering or owns the recover lock; clean up only if that recoverer died.
+      const recInfo = readLockInfo(recoverFile);
+      if (recInfo !== null && !isPidAlive(recInfo.pid)) {
+        try { unlinkSync(recoverFile); } catch { /* raced */ }
+      } else if (recInfo === null) {
+        try {
+          if (Date.now() - statSync(recoverFile).mtimeMs >= 5_000) unlinkSync(recoverFile);
+        } catch { /* ignore */ }
+      } else {
+        throw new Error('Another process is already using this cursor.');
+      }
+    }
+  }
+  throw new Error('Could not acquire cursor lock.');
+}
+
+function releaseLocks(locks) {
+  for (const { lockFile, token } of locks) {
+    try {
+      const current = readLockInfo(lockFile);
+      if (current && current.pid === process.pid && current.token === token) {
+        unlinkSync(lockFile);
+      }
+    } catch { /* ignore */ }
   }
 }
 
 function writeStdoutLine(line) {
-  return new Promise((resolve, reject) => {
-    const onError = (err) => reject(err);
-    process.stdout.once('error', onError);
-    process.stdout.write(line, (err) => {
-      process.stdout.off('error', onError);
-      if (err) reject(err);
-      else resolve();
-    });
-  });
+  const buf = Buffer.from(line, 'utf8');
+  let offset = 0;
+  while (offset < buf.length) {
+    try {
+      const written = writeSync(1, buf, offset, buf.length - offset);
+      if (written <= 0) throw new Error('Failed to write event to stdout.');
+      offset += written;
+    } catch (err) {
+      if (err && typeof err === 'object' && 'code' in err && err.code === 'EAGAIN') {
+        // Brief spin on non-blocking stdout pipe; EPIPE throws immediately and synchronously before cursor save.
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 function matchesEvent(ev, { agentId, includeAgents, pageId, decisionId }) {
@@ -738,9 +804,36 @@ async function cmdWatch(mode, cred, flags, command) {
   process.on('SIGINT', onSignal);
   process.on('SIGTERM', onSignal);
 
+  const sleepInterruptible = (ms) => new Promise((resolve) => {
+    const wait = deadline !== null ? Math.max(0, Math.min(ms, deadline - Date.now())) : ms;
+    if (wait <= 0 || stopping) { resolve(); return; }
+    const timer = setTimeout(() => { wakeResolve = null; resolve(); }, wait);
+    wakeResolve = () => { clearTimeout(timer); resolve(); };
+  });
+
+  const isPermanentClientError = (err) =>
+    err instanceof ApiHttpError && err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429;
+
+  async function requestWithRetry(method, path) {
+    let streak = 0;
+    while (!stopping) {
+      try {
+        return await apiRequest(cred, method, path, { signal: runAbort.signal, throwOnHttpError: true });
+      } catch (err) {
+        if (stopping || timedOut || runAbort.signal.aborted) throw err;
+        if (isPermanentClientError(err)) throw err;
+        streak++;
+        process.stderr.write(`Transient error on ${path}: ${err instanceof Error ? err.message : String(err)}; retrying...\n`);
+        const backoff = Math.min(pollMs, 250 * 2 ** Math.min(streak - 1, 4));
+        await sleepInterruptible(backoff);
+      }
+    }
+    throw new Error('Aborted.');
+  }
+
   let exitCodeOnReturn = 0;
   try {
-    const me = await apiRequest(cred, 'GET', '/v1/me', { signal: runAbort.signal, throwOnHttpError: true });
+    const me = await requestWithRetry('GET', '/v1/me');
 
     const agentId = me.agentId;
     const projects = typeof flags.project === 'string'
@@ -757,12 +850,12 @@ async function cmdWatch(mode, cred, flags, command) {
 
     states = projects.map((slug) => {
       const file = cursorFilePath(cred, agentId, slug, mode, filterKey);
-      return { slug, file, lockFile: '', seq: 0, ws: null, wsOpen: false, reconnectAt: 0 };
+      return { slug, file, lock: null, seq: 0, ws: null, wsOpen: false, connecting: false, reconnectAt: 0 };
     });
 
     for (const s of states) {
-      s.lockFile = acquireLock(s.file);
-      acquiredLocks.push(s.lockFile);
+      s.lock = acquireLock(s.file);
+      acquiredLocks.push(s.lock);
     }
 
     // Initialize cursors: --after overrides AND persists immediately so a restart after a failed handler never loses the event.
@@ -776,7 +869,7 @@ async function cmdWatch(mode, cred, flags, command) {
         if (saved !== null) {
           s.seq = saved;
         } else {
-          const head = await apiRequest(cred, 'GET', `/v1/events?project=${encodeURIComponent(s.slug)}`, { signal: runAbort.signal, throwOnHttpError: true });
+          const head = await requestWithRetry('GET', `/v1/events?project=${encodeURIComponent(s.slug)}`);
           s.seq = typeof head?.next === 'number' ? head.next : 0;
           writeSavedCursor(s.file, s.seq);
         }
@@ -793,9 +886,7 @@ async function cmdWatch(mode, cred, flags, command) {
           data = await apiRequest(cred, 'GET', `/v1/events?project=${encodeURIComponent(s.slug)}&after=${s.seq}`, { signal: runAbort.signal, throwOnHttpError: true });
         } catch (err) {
           if (stopping || timedOut || runAbort.signal.aborted) return 'aborted';
-          if (err instanceof ApiHttpError && err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429) {
-            throw err;
-          }
+          if (isPermanentClientError(err)) throw err;
           process.stderr.write(`Transient error reading events for ${s.slug}: ${err instanceof Error ? err.message : String(err)}; retrying...\n`);
           return 'retry';
         }
@@ -807,8 +898,8 @@ async function cmdWatch(mode, cred, flags, command) {
           if (!matchesEvent(ev, filterOpts)) continue;
           const out = { project: s.slug, ...ev };
           if (mode === 'wait') {
-            // Confirm stdout write succeeds BEFORE advancing the saved cursor so broken pipes never drop an event.
-            await writeStdoutLine(`${JSON.stringify(out)}\n`);
+            // Confirm stdout write succeeds synchronously BEFORE advancing the saved cursor so broken pipes never drop an event.
+            writeStdoutLine(`${JSON.stringify(out)}\n`);
             s.seq = ev.seq;
             writeSavedCursor(s.file, s.seq);
             return 'done';
@@ -834,48 +925,55 @@ async function cmdWatch(mode, cred, flags, command) {
       return 'idle';
     }
 
-    async function ensureSocket(s) {
-      if (stopping || s.ws || typeof globalThis.WebSocket !== 'function') return;
+    // Run ticket probe non-blocking with a bounded per-probe timeout so a stalled ticket endpoint never blocks event polling.
+    function triggerSocketProbe(s) {
+      if (stopping || s.ws || s.connecting || typeof globalThis.WebSocket !== 'function') return;
       if (Date.now() < s.reconnectAt) return;
-      try {
-        const res = await fetch(`${cred.url}/v1/events/ticket`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${cred.key}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ project: s.slug }),
-          signal: runAbort.signal,
-        });
-        if (res.status === 404) {
-          // Live switch is currently off; fall back to poll interval and probe again on the next poll tick.
-          s.reconnectAt = Date.now() + Math.max(0, pollMs - 50);
-          return;
-        }
-        if (!res.ok) {
+      s.connecting = true;
+      const probeTimeoutMs = Math.min(Math.max(pollMs, 1_000), 10_000);
+      const probeSignal = AbortSignal.any([runAbort.signal, AbortSignal.timeout(probeTimeoutMs)]);
+      void (async () => {
+        try {
+          const res = await fetch(`${cred.url}/v1/events/ticket`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${cred.key}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ project: s.slug }),
+            signal: probeSignal,
+          });
+          if (res.status === 404) {
+            s.reconnectAt = Date.now() + Math.max(0, pollMs - 50);
+            return;
+          }
+          if (!res.ok) {
+            s.reconnectAt = Date.now() + Math.min(pollMs, 5_000);
+            return;
+          }
+          const { url: wsUrl } = await res.json();
+          if (stopping) return;
+          const ws = new WebSocket(wsUrl);
+          s.ws = ws;
+          s.wsOpen = false;
+          ws.addEventListener('open', () => {
+            if (s.ws === ws) s.wsOpen = true;
+            wake();
+          });
+          ws.addEventListener('message', () => wake());
+          ws.addEventListener('close', () => {
+            if (s.ws === ws) { s.ws = null; s.wsOpen = false; }
+            s.reconnectAt = Date.now() + Math.min(pollMs, 1_000);
+            wake();
+          });
+          ws.addEventListener('error', () => {
+            if (s.ws === ws) { s.ws = null; s.wsOpen = false; }
+            s.reconnectAt = Date.now() + Math.min(pollMs, 5_000);
+            wake();
+          });
+        } catch {
           s.reconnectAt = Date.now() + Math.min(pollMs, 5_000);
-          return;
+        } finally {
+          s.connecting = false;
         }
-        const { url: wsUrl } = await res.json();
-        if (stopping) return;
-        const ws = new WebSocket(wsUrl);
-        s.ws = ws;
-        s.wsOpen = false;
-        ws.addEventListener('open', () => {
-          if (s.ws === ws) s.wsOpen = true;
-          wake();
-        });
-        ws.addEventListener('message', () => wake());
-        ws.addEventListener('close', () => {
-          if (s.ws === ws) { s.ws = null; s.wsOpen = false; }
-          s.reconnectAt = Date.now() + Math.min(pollMs, 1_000);
-          wake();
-        });
-        ws.addEventListener('error', () => {
-          if (s.ws === ws) { s.ws = null; s.wsOpen = false; }
-          s.reconnectAt = Date.now() + Math.min(pollMs, 5_000);
-          wake();
-        });
-      } catch {
-        s.reconnectAt = Date.now() + Math.min(pollMs, 5_000);
-      }
+      })();
     }
 
     let transientStreak = 0;
@@ -897,7 +995,7 @@ async function cmdWatch(mode, cred, flags, command) {
         timedOut = true;
         break;
       }
-      for (const s of states) await ensureSocket(s);
+      for (const s of states) triggerSocketProbe(s);
       if (stopping) break;
       if (pendingWake) {
         pendingWake = false;
@@ -905,12 +1003,8 @@ async function cmdWatch(mode, cred, flags, command) {
       }
       const allLiveOpen = states.length > 0 && states.every((s) => s.ws !== null && s.wsOpen);
       const retryBackoff = Math.min(pollMs, 250 * 2 ** Math.min(Math.max(transientStreak - 1, 0), 4));
-      let waitMs = hadTransientError ? retryBackoff : allLiveOpen ? catchupMs : pollMs;
-      if (deadline !== null) waitMs = Math.max(10, Math.min(waitMs, deadline - Date.now()));
-      await new Promise((resolve) => {
-        const timer = setTimeout(() => { wakeResolve = null; resolve(); }, waitMs);
-        wakeResolve = () => { clearTimeout(timer); resolve(); };
-      });
+      const waitMs = hadTransientError ? retryBackoff : allLiveOpen ? catchupMs : pollMs;
+      await sleepInterruptible(waitMs);
     }
     if (timedOut) exitCodeOnReturn = 124;
   } catch (err) {
