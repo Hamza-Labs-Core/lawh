@@ -1,8 +1,9 @@
 import type { AppEnv } from '../shared/env';
 import { errorResponse } from '../shared/errors';
+import { origins } from '../shared/origin';
 
 // Every page of the app is the same document; its script shows the screen for the address.
-const PAGES = /^\/(?:|link|device|approve|decisions|comments|settings(?:\/(?:agents|projects|deleted|data|webhooks))?|p\/[a-z0-9][a-z0-9-]{0,79}\/[a-z0-9][a-z0-9-]{0,79})$/;
+const PAGES = /^\/(?:|link|device|approve|connect|decisions|comments|settings(?:\/(?:agents|projects|deleted|data|webhooks))?|p\/[a-z0-9][a-z0-9-]{0,79}\/[a-z0-9][a-z0-9-]{0,79})$/;
 /** Reachable while the instance is off: sign-in, setup, and the static shell files they link to. */
 const OPEN = /^\/(?:|link)$/;
 const ASSET = /^\/assets\/[a-z]+-[A-Za-z0-9]{8}\.(?:js|css)$/;
@@ -22,6 +23,21 @@ export const isOpenPage = (request: Request, url: URL): boolean =>
 
 export async function servePage(request: Request, env: AppEnv, url: URL): Promise<Response> {
   if (!read(request)) return errorResponse('not_found', 'Not found.');
+  if (url.pathname === '/connect.md') {
+    const response = await env.ASSETS.fetch(new Request(new URL('/connect.md', url), { method: 'GET' }));
+    if (!response.ok) return errorResponse('not_found', 'Not found.');
+    const body = (await response.text()).replaceAll('{{APP_URL}}', origins(env).app);
+    return new Response(request.method === 'HEAD' ? null : body, {
+      headers: { 'Content-Type': 'text/markdown; charset=utf-8', 'Cache-Control': 'no-cache' },
+    });
+  }
+  if (url.pathname === '/lawh.mjs') {
+    const response = await env.ASSETS.fetch(new Request(new URL('/lawh.mjs', url), { method: request.method }));
+    if (!response.ok) return errorResponse('not_found', 'Not found.');
+    return new Response(response.body, {
+      headers: { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache' },
+    });
+  }
   const asset = ASSET.test(url.pathname);
   const staticFile = STATIC_FILES[url.pathname];
   if (!asset && !staticFile && !PAGES.test(url.pathname)) return errorResponse('not_found', 'Not found.');

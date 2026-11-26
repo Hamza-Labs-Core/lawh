@@ -6,6 +6,7 @@ import { listMyPages, listMyProjects, listMyTags, listMyVersions, readPage } fro
 import { addComment, deleteComment, listMyThreads, listReplies, listThreads, reply, setResolved } from './comments';
 import { answerDecision, countMyDecisions, listMyDecisions, listPageDecisions, readDecision } from './decisions';
 import { addKey, listAgents, revokeKey, setAgentOff } from './agents';
+import { answerConnect, lookAtConnect } from './connect';
 import { exportFiles, exportPlan, exportRows } from './exportData';
 import { deletePage, listDeleted, restorePage, setStatus } from './manage';
 import { addProject, renameProject } from './projects';
@@ -91,6 +92,8 @@ export const peopleRoutes: PeopleRoute[] = [
   person('POST', `/decisions/${DECISION}/answers`, false, answerDecision),
   person('POST', '/device/look', false, lookAtDevice),
   person('POST', '/device/approve', false, approveDevice),
+  person('POST', '/connect/look', false, lookAtConnect),
+  person('POST', '/connect/answer', false, answerConnect),
 ];
 
 const find = (request: Request) => {

@@ -271,6 +271,20 @@ const TEXT = {
   approved: ['Approved. The other device is signing in.', 'تمت الموافقة. يجري دخول الجهاز الآخر.'],
   badCode: ['That code doesn’t work.', 'هذا الرمز لا يعمل.'],
   noPasskeysHere: ['This browser can’t use passkeys. Open the link in another browser or on another device.', 'لا يدعم هذا المتصفح مفاتيح المرور. يمكن فتح الرابط في متصفح أو جهاز آخر.'],
+  connectTitle: ['Connect an agent', 'ربط وكيل'],
+  connectHelp: ['Type the code the agent client shows.', 'يلزم إدخال الرمز الذي يعرضه برنامج الوكيل.'],
+  connectWarn: ['Continue only if you started this. If someone sent you a code, don’t type it.', 'المتابعة فقط إن كان هذا الطلب منك. أي رمز يصلك من شخص آخر يجب ألا يُكتب هنا.'],
+  connectDetails: ['Name and projects', 'الاسم والمشاريع'],
+  connectClaim: ['The client says it is {client} on {machine}.', 'يذكر البرنامج أنه {client} على {machine}.'],
+  newAgentOption: ['New agent…', 'وكيل جديد…'],
+  newAgentName: ['New agent name', 'اسم الوكيل الجديد'],
+  connectGrantNote: ['The key gets all five scopes and lasts 90 days.', 'يحصل المفتاح على الصلاحيات الخمس ويستمر ٩٠ يومًا.'],
+  connectApprove: ['Connect agent', 'ربط الوكيل'],
+  notMine: ['Not mine', 'ليس لي'],
+  connectDone: ['Connected {name}. You can return to the agent.', 'تم ربط {name}. يمكن العودة إلى الوكيل الآن.'],
+  connectRefused: ['Refused. No key was made.', 'تم الرفض. لم يُنشأ أي مفتاح.'],
+  connectManagersOnly: ['Only the owner and project managers can connect an agent.', 'ربط الوكلاء متاح للمالك ومديري المشاريع فقط.'],
+  connectConflict: ['The agent is off, too many keys exist, or a project is no longer yours to give.', 'الوكيل متوقف، أو وصلت المفاتيح للحد الأقصى، أو لم يعد أحد المشاريع تحت إدارتك.'],
 } as const;
 
 export type Key = keyof typeof TEXT;
