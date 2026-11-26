@@ -2,7 +2,7 @@
 // Lawh agent CLI — single file, zero dependencies, Node >= 22.
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { chmodSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, fstatSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { hostname, homedir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 
@@ -645,20 +645,33 @@ function acquireLock(cursorFile) {
     const recPayload = `${JSON.stringify({ pid: process.pid, startedAt: Date.now() })}\n`;
     if (tryLinkLock(recoverFile, recPayload)) {
       try {
-        const recheck = readLockInfo(lockFile);
-        if (recheck !== null && isPidAlive(recheck.pid)) {
-          throw new Error(`Another process (pid ${recheck.pid}) is already using this cursor.`);
-        }
-        if (recheck === null) {
+        let shouldUnlink = false;
+        let fd = null;
+        try { fd = openSync(lockFile, 'r'); } catch { fd = null; }
+        if (fd !== null) {
           try {
-            if (Date.now() - statSync(lockFile).mtimeMs < 5_000) {
+            const raw = readFileSync(fd, 'utf8');
+            const st = fstatSync(fd);
+            let recheck = null;
+            try {
+              const parsed = JSON.parse(raw);
+              if (parsed && typeof parsed.pid === 'number') recheck = parsed;
+            } catch { /* empty or corrupt */ }
+            if (recheck !== null && isPidAlive(recheck.pid)) {
+              throw new Error(`Another process (pid ${recheck.pid}) is already using this cursor.`);
+            }
+            if (recheck === null && Date.now() - st.mtimeMs < 5_000) {
               throw new Error('Another process is already using this cursor.');
             }
-          } catch (err) {
-            if (err instanceof Error && err.message.includes('already using')) throw err;
+            shouldUnlink = true;
+          } finally {
+            closeSync(fd);
           }
         }
-        try { unlinkSync(lockFile); } catch { /* already gone */ }
+        // Only unlink a stale lock that we opened and verified dead/expired on the same inode; never unlink if absent.
+        if (shouldUnlink) {
+          try { unlinkSync(lockFile); } catch { /* already gone */ }
+        }
         if (tryLinkLock(lockFile, payload)) {
           return { lockFile, token };
         }
