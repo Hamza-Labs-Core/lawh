@@ -584,6 +584,7 @@ function Projects({ me }: { me: Me }) {
             <ProjectForm
               me={me}
               project={p}
+              onOpen={load}
               onSave={async (slug, payload) => {
                 const next = await call<ProjectName>('PATCH', `/projects/${slug}`, payload);
                 set((now) => now && { ...now, items: now.items.map((o) => (o.slug === slug ? { ...o, ...next } : o)) });
@@ -599,17 +600,17 @@ function Projects({ me }: { me: Me }) {
 
 const AGREEMENT_OPTIONS = [1, 2, 3, 4, 5] as const;
 
-function ProjectForm({ me, project, onSave }: { me: Me; project?: ProjectName; onSave: (slug: string, payload: { name?: { en: string; ar: string }; answersNeeded?: number }) => Promise<void> }) {
+function ProjectForm({ me, project, onOpen, onSave }: { me: Me; project?: ProjectName; onOpen?: () => void; onSave: (slug: string, payload: { name?: { en: string; ar: string }; answersNeeded?: number }) => Promise<void> }) {
   const t = useText(), { lang } = useSettings(), id = useId(), [busy, run] = useBusy(), [problem, setProblem] = useState<Problem | null>(null), [done, setDone] = useState(false), [open, setOpen] = useState(false), box = useRef<HTMLDivElement>(null), first = useRef<HTMLInputElement>(null), wasOpen = useRef(false);
   const [slug, setSlug] = useState(project?.slug ?? ''), [en, setEn] = useState(project?.name.en ?? ''), [ar, setAr] = useState(project?.name.ar ?? '');
   const currentNeeded = project?.answersNeeded ?? 1;
   const [needed, setNeeded] = useState(currentNeeded);
+  const touched = useRef({ en: false, ar: false, needed: false });
   useEffect(() => {
-    if (!open && project) {
-      setEn(project.name.en);
-      setAr(project.name.ar);
-      setNeeded(project.answersNeeded ?? 1);
-    }
+    if (!project) return;
+    if (!open || !touched.current.en) setEn(project.name.en);
+    if (!open || !touched.current.ar) setAr(project.name.ar);
+    if (!open || !touched.current.needed) setNeeded(project.answersNeeded ?? 1);
   }, [open, project?.name.en, project?.name.ar, project?.answersNeeded]);
   useEffect(() => { if (open) first.current?.focus(); else if (wasOpen.current) box.current?.focus(); wasOpen.current = open; }, [open]);
   const nameChanged = !project || en.trim() !== project.name.en || ar.trim() !== project.name.ar;
@@ -633,7 +634,7 @@ function ProjectForm({ me, project, onSave }: { me: Me; project?: ProjectName; o
             <p class="muted" dir="ltr">{project.slug}</p>
             {currentNeeded > 1 && <p class="muted"><Fill text="agreementCount" n={digits(lang, currentNeeded)} /></p>}
             {tooFew && <p class="failure"><Fill text="needsMoreAnswerers" n={digits(lang, currentNeeded)} can={digits(lang, project.answerers!)} /></p>}
-            <button class="plain wide" onClick={() => { setEn(project.name.en); setAr(project.name.ar); setNeeded(currentNeeded); setOpen(true); setDone(false); }}>{t('rename')}</button>
+            <button class="plain wide" onClick={() => { touched.current = { en: false, ar: false, needed: false }; setEn(project.name.en); setAr(project.name.ar); setNeeded(currentNeeded); setOpen(true); setDone(false); onOpen?.(); }}>{t('rename')}</button>
           </>
         ) : <button class="primary fit" onClick={() => { setOpen(true); setDone(false); }}>{t('newProject')}</button>}
         <div aria-live="polite">{done && <p class="done">{t('saved')}</p>}</div>
@@ -644,12 +645,12 @@ function ProjectForm({ me, project, onSave }: { me: Me; project?: ProjectName; o
     <form class="card form" onSubmit={(event) => { event.preventDefault(); if (ready) save(); }}>
       <h2>{project ? <bdi>{project.name[lang]}</bdi> : t('newProject')}</h2>
       {!project && <><label class="muted" for={`${id}-s`}>{t('slug')}</label><input ref={first} id={`${id}-s`} class="field" dir="ltr" maxLength={80} autocomplete="off" autocapitalize="none" value={slug} onInput={(event) => setSlug(event.currentTarget.value.toLowerCase())} /><p class="muted">{t('slugHelp')}</p></>}
-      <label class="muted" for={`${id}-e`}>{t('nameEn')}</label><input {...(project && { ref: first })} id={`${id}-e`} class="field" lang="en" dir="ltr" maxLength={80} autocomplete="off" value={en} onInput={(event) => setEn(event.currentTarget.value)} />
-      <label class="muted" for={`${id}-r`}>{t('nameAr')}</label><input id={`${id}-r`} class="field" lang="ar" dir="rtl" maxLength={80} autocomplete="off" value={ar} onInput={(event) => setAr(event.currentTarget.value)} />
+      <label class="muted" for={`${id}-e`}>{t('nameEn')}</label><input {...(project && { ref: first })} id={`${id}-e`} class="field" lang="en" dir="ltr" maxLength={80} autocomplete="off" value={en} onInput={(event) => { touched.current.en = true; setEn(event.currentTarget.value); }} />
+      <label class="muted" for={`${id}-r`}>{t('nameAr')}</label><input id={`${id}-r`} class="field" lang="ar" dir="rtl" maxLength={80} autocomplete="off" value={ar} onInput={(event) => { touched.current.ar = true; setAr(event.currentTarget.value); }} />
       {project && me.teams && (
         <>
           <label class="muted" for={`${id}-a`}>{t('agreementNeeded')}</label>
-          <select id={`${id}-a`} class="field" value={String(needed)} onChange={(event) => setNeeded(Number(event.currentTarget.value))}>
+          <select id={`${id}-a`} class="field" value={String(needed)} onChange={(event) => { touched.current.needed = true; setNeeded(Number(event.currentTarget.value)); }}>
             {AGREEMENT_OPTIONS.map((n) => <option key={n} value={String(n)} selected={n === needed}>{digits(lang, n)}</option>)}
           </select>
           <p class="muted">{t('agreementHelp')}</p>

@@ -24,6 +24,7 @@ export async function listMyProjects(ctx: SignedIn): Promise<Response> {
        CROSS JOIN team_members tm ON tm.team_id = tp.team_id AND tm.level >= 3
        CROSS JOIN members m ON m.id = tm.member_id AND m.joined_at IS NOT NULL AND m.removed_at IS NULL
        WHERE p.slug > ''
+         AND p.slug <= COALESCE((SELECT slug FROM projects WHERE slug > '' ORDER BY slug LIMIT 1 OFFSET 999), '~')
          AND EXISTS (SELECT 1 FROM settings WHERE key = 'teams' AND value_json = 'true')`,
     )
     : env.DB.prepare(
