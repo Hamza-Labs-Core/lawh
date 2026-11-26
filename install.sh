@@ -94,7 +94,8 @@ curl_fetch() {
   local url="$1"
   shift
   if is_loopback_http "$url"; then
-    curl -fsSL --proto '=http,https' --proto-redir '=http,https' -H "User-Agent: lawh-installer" "$@" -- "$url"
+    # Disallow redirects on loopback HTTP so a local test server cannot redirect to non-loopback HTTP.
+    curl -fsS --max-redirs 0 --proto '=http' -H "User-Agent: lawh-installer" "$@" -- "$url"
   else
     curl -fsSL --proto '=https' --proto-redir '=https' -H "User-Agent: lawh-installer" "$@" -- "$url"
   fi
@@ -123,20 +124,25 @@ else
     API_ENDPOINT="${LAWH_API_URL%/}/repos/${LAWH_REPO}/releases/latest"
     RELEASE_JSON="$(curl_fetch "$API_ENDPOINT" -H "Accept: application/vnd.github+json")" \
       || die "Failed to query latest release for ${LAWH_REPO}."
+    # Validate the exact raw JSON tag_name before command substitution can strip trailing newlines.
     TAG="$(printf '%s' "$RELEASE_JSON" | node -e '
       const fs = require("node:fs");
       const data = JSON.parse(fs.readFileSync(0, "utf8"));
-      if (typeof data.tag_name !== "string" || !data.tag_name) process.exit(1);
+      if (typeof data.tag_name !== "string" || !/^v?[0-9A-Za-z._-]+$/.test(data.tag_name) || data.tag_name.includes("..")) {
+        console.error("Invalid release tag in release metadata.");
+        process.exit(1);
+      }
       process.stdout.write(data.tag_name);
-    ')" || die "Could not determine latest release tag."
+    ')" || die "Could not determine a valid latest release tag."
+  else
+    node -e '
+      const tag = process.argv[1];
+      if (!/^v?[0-9A-Za-z._-]+$/.test(tag) || tag.includes("..")) {
+        console.error(`Invalid release tag: ${tag}`);
+        process.exit(1);
+      }
+    ' -- "$TAG" || exit 1
   fi
-  node -e '
-    const tag = process.argv[1];
-    if (!/^v?[0-9A-Za-z._-]+$/.test(tag) || tag.includes("..")) {
-      console.error(`Invalid release tag: ${tag}`);
-      process.exit(1);
-    }
-  ' -- "$TAG" || exit 1
   TARBALL_URL="${LAWH_ARCHIVE_BASE%/}/${LAWH_REPO}/archive/refs/tags/${TAG}.tar.gz"
   validate_url "$TARBALL_URL" "release tarball URL" "0"
 fi
@@ -144,45 +150,37 @@ fi
 # 3) Prepare home/bin directories and check wrapper collision BEFORE touching live state
 mkdir -p "$LAWH_HOME" "$LAWH_HOME/releases" "$LAWH_BIN_DIR"
 chmod 700 "$LAWH_HOME"
+LAWH_HOME="$(node -e 'process.stdout.write(require("node:fs").realpathSync(process.argv[1]))' -- "$LAWH_HOME")"
+LAWH_BIN_DIR="$(node -e 'process.stdout.write(require("node:fs").realpathSync(process.argv[1]))' -- "$LAWH_BIN_DIR")"
 
 WRAPPER_PATH="$LAWH_BIN_DIR/lawh"
+is_managed_wrapper() {
+  local p="$1"
+  [ -f "$p" ] && [ ! -L "$p" ] || return 1
+  if grep -Fq "# managed-by-lawh-installer" "$p" 2>/dev/null; then
+    return 0
+  fi
+  # Recognize round-1 managed wrappers during migration.
+  if grep -Fq "export LAWH_MANAGED_INSTALL=1" "$p" 2>/dev/null && grep -Fq 'exec node "$LAWH_HOME/app/scripts/lawh.mjs" "$@"' "$p" 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
 if [ -d "$WRAPPER_PATH" ]; then
   die "Refusing to install wrapper: ${WRAPPER_PATH} is an existing directory."
 fi
 if [ -e "$WRAPPER_PATH" ] || [ -L "$WRAPPER_PATH" ]; then
-  if [ -L "$WRAPPER_PATH" ] || ! grep -Fq "# managed-by-lawh-installer" "$WRAPPER_PATH" 2>/dev/null; then
+  if ! is_managed_wrapper "$WRAPPER_PATH"; then
     die "Refusing to overwrite unmanaged file at ${WRAPPER_PATH}. Remove it or choose another LAWH_BIN_DIR."
   fi
 fi
 
-# 4) Serialize concurrent installers via an atomic lock directory
-LOCK_DIR="$LAWH_HOME/.install.lock"
-LOCK_HELD=0
-acquire_install_lock() {
-  local tries=0
-  while ! mkdir "$LOCK_DIR" 2>/dev/null; do
-    tries=$((tries + 1))
-    local holder_pid=""
-    if [ -f "$LOCK_DIR/pid" ]; then
-      holder_pid="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
-      if [ -n "$holder_pid" ] && ! kill -0 "$holder_pid" 2>/dev/null; then
-        rm -rf "$LOCK_DIR" 2>/dev/null || true
-        continue
-      fi
-      die "Another Lawh install or update is already running (pid ${holder_pid})."
-    fi
-    if [ "$tries" -ge 5 ]; then
-      die "Another Lawh install or update is already running (${LOCK_DIR})."
-    fi
-    node -e 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)'
-  done
-  printf '%s\n' "$$" > "$LOCK_DIR/pid"
-  LOCK_HELD=1
-}
-acquire_install_lock
-
-# Capture rollback state & register cleanup trap
-STAGING="$(mktemp -d "$LAWH_HOME/.staging.XXXXXX")"
+# 4) Serialize concurrent installers via OS kernel fcntl.flock (persistent inode, never unlinked)
+LOCK_HELPER_PID=""
+LOCK_PIPE_DIR=""
+LOCK_DIR_FALLBACK=""
+STAGING=""
 RELEASE_DIR=""
 TMP_LINK=""
 TMP_VERSION=""
@@ -194,6 +192,10 @@ HAD_LIVE_APP=0
 PREV_IS_SYMLINK=0
 PREV_SYMLINK_TARGET=""
 PREV_MIGRATED_DIR=""
+HAD_PREV_VERSION=0
+HAD_PREV_META=0
+HAD_PREV_INSTALLER=0
+HAD_PREV_WRAPPER=0
 PREV_VERSION_BAK=""
 PREV_META_BAK=""
 PREV_INSTALLER_BAK=""
@@ -219,24 +221,24 @@ cleanup() {
       else
         rm -f "$LAWH_HOME/app" 2>/dev/null || true
       fi
-      if [ -n "$PREV_VERSION_BAK" ] && [ -f "$PREV_VERSION_BAK" ]; then
+      if [ "$HAD_PREV_VERSION" = "1" ] && [ -n "$PREV_VERSION_BAK" ] && [ -f "$PREV_VERSION_BAK" ]; then
         mv "$PREV_VERSION_BAK" "$LAWH_HOME/version" 2>/dev/null || true
-      elif [ "$HAD_LIVE_APP" = "0" ]; then
+      elif [ "$HAD_PREV_VERSION" = "0" ]; then
         rm -f "$LAWH_HOME/version" 2>/dev/null || true
       fi
-      if [ -n "$PREV_META_BAK" ] && [ -f "$PREV_META_BAK" ]; then
+      if [ "$HAD_PREV_META" = "1" ] && [ -n "$PREV_META_BAK" ] && [ -f "$PREV_META_BAK" ]; then
         mv "$PREV_META_BAK" "$LAWH_HOME/install.json" 2>/dev/null || true
-      elif [ "$HAD_LIVE_APP" = "0" ]; then
+      elif [ "$HAD_PREV_META" = "0" ]; then
         rm -f "$LAWH_HOME/install.json" 2>/dev/null || true
       fi
-      if [ -n "$PREV_INSTALLER_BAK" ] && [ -f "$PREV_INSTALLER_BAK" ]; then
+      if [ "$HAD_PREV_INSTALLER" = "1" ] && [ -n "$PREV_INSTALLER_BAK" ] && [ -f "$PREV_INSTALLER_BAK" ]; then
         mv "$PREV_INSTALLER_BAK" "$LAWH_HOME/install.sh" 2>/dev/null || true
-      elif [ "$HAD_LIVE_APP" = "0" ]; then
+      elif [ "$HAD_PREV_INSTALLER" = "0" ]; then
         rm -f "$LAWH_HOME/install.sh" 2>/dev/null || true
       fi
-      if [ -n "$PREV_WRAPPER_BAK" ] && [ -f "$PREV_WRAPPER_BAK" ]; then
+      if [ "$HAD_PREV_WRAPPER" = "1" ] && [ -n "$PREV_WRAPPER_BAK" ] && [ -f "$PREV_WRAPPER_BAK" ]; then
         mv "$PREV_WRAPPER_BAK" "$WRAPPER_PATH" 2>/dev/null || true
-      elif [ "$HAD_LIVE_APP" = "0" ]; then
+      elif [ "$HAD_PREV_WRAPPER" = "0" ]; then
         rm -f "$WRAPPER_PATH" 2>/dev/null || true
       fi
     else
@@ -246,9 +248,16 @@ cleanup() {
       rm -rf "$RELEASE_DIR" 2>/dev/null || true
     fi
   else
-    # Committed cleanly: prune old release and temporary backups.
+    # Committed cleanly: prune ONLY old releases strictly inside $LAWH_HOME/releases/.
     if [ "$PREV_IS_SYMLINK" = "1" ] && [ -n "$PREV_SYMLINK_TARGET" ] && [ -d "$PREV_SYMLINK_TARGET" ] && [ "$PREV_SYMLINK_TARGET" != "$RELEASE_DIR" ]; then
-      rm -rf "$PREV_SYMLINK_TARGET" 2>/dev/null || true
+      if node -e '
+        const fs = require("node:fs"), path = require("node:path");
+        const base = fs.realpathSync(process.argv[1]) + path.sep;
+        const target = fs.realpathSync(process.argv[2]);
+        process.exit(target.startsWith(base) ? 0 : 1);
+      ' -- "$LAWH_HOME/releases" "$PREV_SYMLINK_TARGET" 2>/dev/null; then
+        rm -rf "$PREV_SYMLINK_TARGET" 2>/dev/null || true
+      fi
     fi
     if [ -n "$PREV_MIGRATED_DIR" ] && [ -d "$PREV_MIGRATED_DIR" ]; then
       rm -rf "$PREV_MIGRATED_DIR" 2>/dev/null || true
@@ -256,12 +265,64 @@ cleanup() {
     rm -f "$PREV_VERSION_BAK" "$PREV_META_BAK" "$PREV_INSTALLER_BAK" "$PREV_WRAPPER_BAK" 2>/dev/null || true
   fi
   rm -f "$TMP_LINK" "$TMP_VERSION" "$TMP_META" "$TMP_INSTALLER" "$TMP_WRAPPER" 2>/dev/null || true
-  rm -rf "$STAGING" 2>/dev/null || true
-  if [ "$LOCK_HELD" = "1" ]; then
-    rm -rf "$LOCK_DIR" 2>/dev/null || true
+  if [ -n "$STAGING" ]; then
+    rm -rf "$STAGING" 2>/dev/null || true
+  fi
+  # Release install lock cleanly.
+  exec 9>&- 2>/dev/null || true
+  if [ -n "$LOCK_HELPER_PID" ]; then
+    wait "$LOCK_HELPER_PID" 2>/dev/null || true
+  fi
+  if [ -n "$LOCK_PIPE_DIR" ]; then
+    rm -rf "$LOCK_PIPE_DIR" 2>/dev/null || true
+  fi
+  if [ -n "$LOCK_DIR_FALLBACK" ]; then
+    rm -rf "$LOCK_DIR_FALLBACK" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT
+
+acquire_install_lock() {
+  if command -v python3 >/dev/null 2>&1; then
+    LOCK_PIPE_DIR="$(mktemp -d "$LAWH_HOME/.lockpipe.XXXXXX")"
+    local fifo="$LOCK_PIPE_DIR/hold"
+    local status_fifo="$LOCK_PIPE_DIR/status"
+    mkfifo "$fifo" "$status_fifo"
+    python3 - "$LAWH_HOME/.install.lock" "$fifo" "$status_fifo" <<'PY' &
+import fcntl, os, sys
+lock_path, hold_fifo, status_fifo = sys.argv[1:4]
+fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    with open(status_fifo, "w") as s:
+        s.write("BUSY\n")
+    sys.exit(1)
+with open(status_fifo, "w") as s:
+    s.write("OK\n")
+with open(hold_fifo, "r") as h:
+    h.read()
+PY
+    LOCK_HELPER_PID=$!
+    local lock_status=""
+    read -r lock_status < "$status_fifo" || true
+    if [ "$lock_status" != "OK" ]; then
+      wait "$LOCK_HELPER_PID" 2>/dev/null || true
+      LOCK_HELPER_PID=""
+      die "Another Lawh install or update is already running."
+    fi
+    exec 9>"$fifo"
+  else
+    # Fallback when python3 is unavailable: non-reclaiming atomic mkdir lock (no stale-unlink race).
+    if ! mkdir "$LAWH_HOME/.install.lockdir" 2>/dev/null; then
+      die "Another Lawh install or update is already running (${LAWH_HOME}/.install.lockdir)."
+    fi
+    LOCK_DIR_FALLBACK="$LAWH_HOME/.install.lockdir"
+  fi
+}
+acquire_install_lock
+
+STAGING="$(mktemp -d "$LAWH_HOME/.staging.XXXXXX")"
 
 # 5) Download, inspect, extract, and validate archive entirely inside staging
 say "Downloading Lawh (${TAG})..."
@@ -350,8 +411,8 @@ if [ -n "$LIVE_APP_DIR" ]; then
     fi
     if [ -f "$LIVE_APP_DIR/$f" ]; then
       cp -p "$LIVE_APP_DIR/$f" "$STAGING/app/$f"
+      chmod 600 "$STAGING/app/$f"
       if [ "$f" = "lawh.config.json" ]; then
-        chmod 600 "$STAGING/app/$f"
         HAD_CONFIG=1
       fi
     fi
@@ -381,7 +442,6 @@ if [ -f "$RELEASE_DIR/install.sh" ] && [ ! -L "$RELEASE_DIR/install.sh" ]; then
 elif [ -f "${BASH_SOURCE[0]:-}" ]; then
   cp "${BASH_SOURCE[0]}" "$TMP_INSTALLER"
 else
-  # Running via curl | bash on a legacy release without install.sh; fetch from repo main fallback on self-update.
   cat > "$TMP_INSTALLER" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -422,7 +482,7 @@ const script = [
   "fi",
   'if [ "${1:-}" = "version" ] || [ "${1:-}" = "--version" ] || [ "${1:-}" = "-v" ]; then',
   '  if [ "$#" -eq 1 ] && ! grep -Fq "printVersion" "$LAWH_HOME/app/scripts/lawh.mjs" 2>/dev/null; then',
-  '    exec node -e \'const fs=require("node:fs");const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));console.log("lawh v"+p.version);\' "$LAWH_HOME/app/package.json"',
+  '    exec node -e \'const fs=require("node:fs");const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));console.log("lawh v"+p.version);\' -- "$LAWH_HOME/app/package.json"',
   "  fi",
   "fi",
   'if [ "${1:-}" = "login" ] && [ "$#" -eq 1 ] && ! grep -Fq "runWranglerLogin" "$LAWH_HOME/app/scripts/lawh.mjs" 2>/dev/null; then',
@@ -436,20 +496,24 @@ fs.writeFileSync(tmpPath, script, { mode: 0o755 });
 NODE
 chmod 755 "$TMP_WRAPPER"
 
-# Backup existing metadata & wrapper for full rollback if any publication step fails.
+# Backup existing metadata & wrapper individually for exact rollback on post-swap failure.
 if [ -f "$LAWH_HOME/version" ]; then
+  HAD_PREV_VERSION=1
   PREV_VERSION_BAK="$(mktemp "$LAWH_HOME/.version.bak.XXXXXX")"
   cp -p "$LAWH_HOME/version" "$PREV_VERSION_BAK"
 fi
 if [ -f "$LAWH_HOME/install.json" ]; then
+  HAD_PREV_META=1
   PREV_META_BAK="$(mktemp "$LAWH_HOME/.install.json.bak.XXXXXX")"
   cp -p "$LAWH_HOME/install.json" "$PREV_META_BAK"
 fi
 if [ -f "$LAWH_HOME/install.sh" ]; then
+  HAD_PREV_INSTALLER=1
   PREV_INSTALLER_BAK="$(mktemp "$LAWH_HOME/.install.sh.bak.XXXXXX")"
   cp -p "$LAWH_HOME/install.sh" "$PREV_INSTALLER_BAK"
 fi
 if [ -f "$WRAPPER_PATH" ]; then
+  HAD_PREV_WRAPPER=1
   PREV_WRAPPER_BAK="$(mktemp "$LAWH_HOME/.wrapper.bak.XXXXXX")"
   cp -p "$WRAPPER_PATH" "$PREV_WRAPPER_BAK"
 fi
@@ -468,7 +532,7 @@ SWAPPED_APP=1
 node -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' -- "$TMP_LINK" "$LAWH_HOME/app"
 TMP_LINK=""
 
-# Optional test hook to verify post-swap rollback in automated tests.
+# Optional test hook (before metadata publication).
 if [ "${LAWH_TEST_FAIL_AFTER_SWAP:-0}" = "1" ]; then
   die "Simulated failure after app swap."
 fi
@@ -479,6 +543,12 @@ mv "$TMP_META" "$LAWH_HOME/install.json"
 TMP_META=""
 mv "$TMP_VERSION" "$LAWH_HOME/version"
 TMP_VERSION=""
+
+# Optional test hook (after metadata publication, before wrapper publication).
+if [ "${LAWH_TEST_FAIL_BEFORE_COMMIT:-0}" = "1" ]; then
+  die "Simulated failure after metadata publication."
+fi
+
 mv "$TMP_WRAPPER" "$WRAPPER_PATH"
 TMP_WRAPPER=""
 

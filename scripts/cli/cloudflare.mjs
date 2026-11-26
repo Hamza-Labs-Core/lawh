@@ -1,5 +1,5 @@
 // Cloudflare v4 REST API client for Lawh self-hosting commands.
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -30,21 +30,31 @@ export class MissingCloudflareTokenError extends Error {
   }
 }
 
-/** Reads CLOUDFLARE_API_TOKEN or Wrangler's saved OAuth token (matching Wrangler's legacy + XDG config locations). */
+function isDir(p) {
+  try { return statSync(p).isDirectory(); } catch { return false; }
+}
+
+/** Reads CLOUDFLARE_API_TOKEN or Wrangler's saved OAuth token (matching Wrangler 4.164's single config directory & expiry threshold). */
 export function readCloudflareToken(env = process.env, homeDir = homedir(), { now = Date.now(), platform = process.platform } = {}) {
   if (env.CLOUDFLARE_API_TOKEN && env.CLOUDFLARE_API_TOKEN.trim()) {
     return env.CLOUDFLARE_API_TOKEN.trim();
   }
   const legacyDir = join(homeDir, '.wrangler');
-  const macPrefs = join(homeDir, 'Library/Preferences/.wrangler/config/default.toml');
-  const xdgDefault = join(homeDir, '.config/.wrangler/config/default.toml');
-  const candidates = [
-    existsSync(legacyDir) ? join(legacyDir, 'config/default.toml') : null,
-    env.XDG_CONFIG_HOME ? join(env.XDG_CONFIG_HOME, '.wrangler/config/default.toml') : null,
-    ...(platform === 'darwin' ? [macPrefs, xdgDefault] : [xdgDefault, macPrefs]),
-  ].filter(Boolean);
+  let candidates;
+  if (isDir(legacyDir)) {
+    // Matches Wrangler's getGlobalConfigPath(): when legacy ~/.wrangler exists, Wrangler uses it exclusively.
+    candidates = [join(legacyDir, 'config/default.toml')];
+  } else if (env.XDG_CONFIG_HOME) {
+    candidates = [join(env.XDG_CONFIG_HOME, '.wrangler/config/default.toml')];
+  } else if (platform === 'darwin') {
+    const macPrefs = join(homeDir, 'Library/Preferences/.wrangler/config/default.toml');
+    const dotConfig = join(homeDir, '.config/.wrangler/config/default.toml');
+    candidates = isDir(join(homeDir, 'Library/Preferences/.wrangler')) ? [macPrefs] : [macPrefs, dotConfig];
+  } else {
+    candidates = [join(homeDir, '.config/.wrangler/config/default.toml')];
+  }
   let sawExpired = false;
-  for (const file of [...new Set(candidates)]) {
+  for (const file of candidates) {
     if (!existsSync(file)) continue;
     const text = readFileSync(file, 'utf8');
     const match = /^\s*oauth_token\s*=\s*"([^"]+)"/m.exec(text);
@@ -52,7 +62,8 @@ export function readCloudflareToken(env = process.env, homeDir = homedir(), { no
     const expMatch = /^\s*expiration_time\s*=\s*"([^"]+)"/m.exec(text);
     if (expMatch?.[1]) {
       const expMs = Date.parse(expMatch[1]);
-      if (!Number.isFinite(expMs) || expMs <= now + 30_000) {
+      // Matches Wrangler's isRefreshNeeded(): `new Date() >= new Date(accessToken.expiry)`.
+      if (!Number.isFinite(expMs) || expMs <= now) {
         sawExpired = true;
         continue;
       }

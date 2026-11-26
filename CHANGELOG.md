@@ -2,6 +2,12 @@
 
 All notable changes to Lawh are documented in this file.
 
+## [1.0.1] - 2026-11-26
+
+### Added
+- **No-clone setup & update (`install.sh`):** One-command installer (`curl -fsSL https://raw.githubusercontent.com/Hamza-Labs-Core/lawh/main/install.sh | bash`) that unpacks tagged GitHub Releases into `~/.lawh/releases/`, activates `~/.lawh/app` atomically with rollback on failure, preserves `lawh.config.json`, generated Wrangler configs, and `.wrangler/`, and installs the `lawh` admin CLI wrapper into `~/.local/bin/lawh`.
+- **Admin CLI commands (`scripts/lawh.mjs`):** Added `lawh login`, `lawh self-update`, and `lawh version`, automatic interactive `wrangler login` prompting during `lawh init`, Wrangler 4.164 `~/.wrangler` + token expiry alignment, and directly runnable managed recovery commands in `lawh upgrade`.
+
 ## [1.0.0] - 2026-11-26
 
 Initial v1.0.0 release implementing the complete Lawh v1 specification (S1–S20):
