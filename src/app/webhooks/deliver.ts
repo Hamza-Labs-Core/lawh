@@ -1,9 +1,10 @@
 import type { AppEnv, WebhookMessage } from '../../shared/env';
 import { isOn } from '../../shared/switches';
+import { mustChange } from '../api/idempotency';
 import { checkWebhookUrl, decryptWebhookSecret, readAllowedHosts, signWebhook } from './crypto';
 
 const OUTBOX_BATCH = 100;
-const MAX_RETRIES = 5;
+export const STALE_QUEUING_MS = 15_000;
 
 interface OutboxEvent {
   seq: number;
@@ -43,45 +44,107 @@ async function readWebhooksSince(env: AppEnv): Promise<number> {
   return Number.isSafeInteger(n) && n > 0 ? n : 0;
 }
 
+/** Fails the batch unless webhooks are currently on and `eventSeq` is strictly after the `webhooks_since` watermark. */
+const stillAfterWatermark = (env: AppEnv, eventSeq: number): D1PreparedStatement =>
+  env.DB.prepare(`SELECT CASE WHEN EXISTS (SELECT 1 FROM settings WHERE key = 'webhooks' AND value_json = 'true')
+    AND ? > COALESCE((SELECT CAST(value_json AS INTEGER) FROM settings WHERE key = 'webhooks_since'), 0)
+    THEN 1 ELSE json('stale') END`).bind(eventSeq);
+
+async function enqueueClaimed(env: AppEnv, webhookId: string, eventSeq: number): Promise<void> {
+  try {
+    await env.WEBHOOKS.send({ webhookId, eventSeq });
+    await env.DB.prepare("UPDATE webhook_deliveries SET status = 'pending', updated_at = ? WHERE webhook_id = ? AND event_seq = ? AND status = 'queuing'")
+      .bind(Date.now(), webhookId, eventSeq).run();
+  } catch {
+    await env.DB.prepare("UPDATE webhook_deliveries SET status = 'failed', updated_at = ? WHERE webhook_id = ? AND event_seq = ? AND status = 'queuing'")
+      .bind(Date.now(), webhookId, eventSeq).run();
+  }
+}
+
 /**
  * Claims pending events after the `webhooks_since` watermark and enqueues matching enabled webhooks.
- * Events are only marked `enqueued_at` after every target delivery has been sent (or marked `failed`),
- * so an interruption before queue send is recovered automatically on the next dispatch.
+ * Each `(webhookId, eventSeq)` is claimed atomically (`INSERT OR IGNORE` + `mustChange`) guarded by the live
+ * switch and watermark, so concurrent dispatchers never duplicate sends and stale watermarks never replay
+ * pre-switch events. Interrupted `'queuing'` rows older than `STALE_QUEUING_MS` are recovered via the
+ * `webhook_deliveries_status` index regardless of whether the webhook was later paused or unsubscribed.
  */
 export async function dispatchOutbox(env: AppEnv, now = Date.now()): Promise<void> {
   if (!(await isOn(env.DB, 'webhooks'))) return;
   const since = await readWebhooksSince(env);
   const { results: events } = await env.DB.prepare('SELECT seq, project_id, type FROM events WHERE enqueued_at IS NULL AND seq > ? ORDER BY seq LIMIT ?')
     .bind(since, OUTBOX_BATCH).all<OutboxEvent>();
-  if (events.length === 0) return;
 
-  const byProject = new Map<string, { id: string; types: Set<string> }[]>();
-  for (const projectId of new Set(events.map((e) => e.project_id))) {
-    const { results } = await env.DB.prepare('SELECT id, event_types_json FROM webhooks WHERE project_id = ? AND enabled = 1')
-      .bind(projectId).all<WebhookTarget>();
-    byProject.set(projectId, results.map((w) => ({ id: w.id, types: new Set(JSON.parse(w.event_types_json) as string[]) })));
-  }
+  if (events.length > 0) {
+    const byProject = new Map<string, { id: string; types: Set<string> }[]>();
+    for (const projectId of new Set(events.map((e) => e.project_id))) {
+      const { results } = await env.DB.prepare('SELECT id, event_types_json FROM webhooks WHERE project_id = ? AND enabled = 1')
+        .bind(projectId).all<WebhookTarget>();
+      byProject.set(projectId, results.map((w) => ({ id: w.id, types: new Set(JSON.parse(w.event_types_json) as string[]) })));
+    }
 
-  for (const event of events) {
-    const targets = (byProject.get(event.project_id) ?? []).filter((w) => w.types.has(event.type)).map((w) => w.id);
-    if (targets.length > 0) {
-      await env.DB.prepare("INSERT OR IGNORE INTO webhook_deliveries(webhook_id, event_seq, attempts, status, updated_at) SELECT value, ?, 0, 'queuing', ? FROM json_each(?)")
-        .bind(event.seq, now, JSON.stringify(targets)).run();
+    for (const event of events) {
+      const targets = (byProject.get(event.project_id) ?? []).filter((w) => w.types.has(event.type)).map((w) => w.id);
+      let stale = false;
       for (const webhookId of targets) {
-        const state = await env.DB.prepare('SELECT status FROM webhook_deliveries WHERE webhook_id = ? AND event_seq = ?')
-          .bind(webhookId, event.seq).first<{ status: string }>();
-        if (!state || state.status !== 'queuing') continue;
         try {
-          await env.WEBHOOKS.send({ webhookId, eventSeq: event.seq });
-          await env.DB.prepare("UPDATE webhook_deliveries SET status = 'pending', updated_at = ? WHERE webhook_id = ? AND event_seq = ? AND status = 'queuing'")
-            .bind(Date.now(), webhookId, event.seq).run();
-        } catch {
-          await env.DB.prepare("UPDATE webhook_deliveries SET status = 'failed', updated_at = ? WHERE webhook_id = ? AND event_seq = ? AND status = 'queuing'")
-            .bind(Date.now(), webhookId, event.seq).run();
+          await env.DB.batch([
+            stillAfterWatermark(env, event.seq),
+            env.DB.prepare("INSERT OR IGNORE INTO webhook_deliveries(webhook_id, event_seq, attempts, status, updated_at) VALUES(?, ?, 0, 'queuing', ?)")
+              .bind(webhookId, event.seq, now),
+            mustChange(env),
+          ]);
+        } catch (error) {
+          if (String(error).includes('malformed JSON')) {
+            // Either webhooks turned off / watermark moved past this event, or another dispatcher already claimed it.
+            if (!(await isOn(env.DB, 'webhooks')) || event.seq <= (await readWebhooksSince(env))) {
+              stale = true;
+              break;
+            }
+            continue;
+          }
+          throw error;
         }
+        await enqueueClaimed(env, webhookId, event.seq);
+      }
+      if (stale) break;
+      try {
+        await env.DB.batch([
+          stillAfterWatermark(env, event.seq),
+          env.DB.prepare('UPDATE events SET enqueued_at = ? WHERE seq = ? AND enqueued_at IS NULL').bind(now, event.seq),
+        ]);
+      } catch (error) {
+        if (String(error).includes('malformed JSON')) break;
+        throw error;
       }
     }
-    await env.DB.prepare('UPDATE events SET enqueued_at = ? WHERE seq = ? AND enqueued_at IS NULL').bind(now, event.seq).run();
+  }
+
+  // Recover any `'queuing'` deliveries left behind by an interrupted dispatcher (indexed by webhook_deliveries_status).
+  const cutoff = now - STALE_QUEUING_MS;
+  const { results: stranded } = await env.DB.prepare("SELECT webhook_id, event_seq, updated_at FROM webhook_deliveries WHERE status = 'queuing' AND updated_at <= ? ORDER BY updated_at LIMIT ?")
+    .bind(cutoff, OUTBOX_BATCH).all<{ webhook_id: string; event_seq: number; updated_at: number }>();
+  for (const row of stranded) {
+    try {
+      await env.DB.batch([
+        env.DB.prepare("UPDATE webhook_deliveries SET updated_at = ? WHERE webhook_id = ? AND event_seq = ? AND status = 'queuing' AND updated_at = ?")
+          .bind(now, row.webhook_id, row.event_seq, row.updated_at),
+        mustChange(env),
+      ]);
+    } catch (error) {
+      if (String(error).includes('malformed JSON')) continue;
+      throw error;
+    }
+    const [hook, evt] = await Promise.all([
+      env.DB.prepare('SELECT enabled, event_types_json FROM webhooks WHERE id = ?').bind(row.webhook_id).first<{ enabled: number; event_types_json: string }>(),
+      env.DB.prepare('SELECT type FROM events WHERE seq = ?').bind(row.event_seq).first<{ type: string }>(),
+    ]);
+    const stillSubscribed = Boolean(hook && evt && hook.enabled === 1 && (JSON.parse(hook.event_types_json) as string[]).includes(evt.type));
+    if (!stillSubscribed) {
+      await env.DB.prepare("UPDATE webhook_deliveries SET status = 'failed', updated_at = ? WHERE webhook_id = ? AND event_seq = ? AND status = 'queuing'")
+        .bind(Date.now(), row.webhook_id, row.event_seq).run();
+      continue;
+    }
+    await enqueueClaimed(env, row.webhook_id, row.event_seq);
   }
 }
 
@@ -90,7 +153,7 @@ export async function deliverOne(
   env: AppEnv,
   webhookId: string,
   eventSeq: number,
-  attempt: number,
+  _attempt: number,
   now = Date.now(),
 ): Promise<'ack' | 'retry'> {
   const existing = await env.DB.prepare('SELECT status FROM webhook_deliveries WHERE webhook_id = ? AND event_seq = ?')
@@ -166,10 +229,9 @@ export async function deliverOne(
     return 'ack';
   }
 
-  // With Cloudflare Queues max_retries = 5, attempts 1..5 will be retried automatically; attempt 6 is the final attempt before DLQ.
-  const final = attempt > MAX_RETRIES;
-  await env.DB.prepare("UPDATE webhook_deliveries SET attempts = attempts + 1, status = ?, last_code = ?, updated_at = ? WHERE webhook_id = ? AND event_seq = ? AND status <> 'delivered'")
-    .bind(final ? 'failed' : 'retrying', statusCode, now, webhookId, eventSeq).run();
+  // Keep status = 'retrying' while returning 'retry'; only the DLQ consumer exposes 'failed' once automatic retries end.
+  await env.DB.prepare("UPDATE webhook_deliveries SET attempts = attempts + 1, status = 'retrying', last_code = ?, updated_at = ? WHERE webhook_id = ? AND event_seq = ? AND status <> 'delivered'")
+    .bind(statusCode, now, webhookId, eventSeq).run();
   return 'retry';
 }
 
@@ -177,7 +239,8 @@ export async function deliverOne(
 export async function handleWebhookQueue(batch: MessageBatch<WebhookMessage>, env: AppEnv, now = Date.now()): Promise<void> {
   if (batch.queue.endsWith('-dlq')) {
     for (const msg of batch.messages) {
-      await env.DB.prepare("UPDATE webhook_deliveries SET status = 'failed', updated_at = ? WHERE webhook_id = ? AND event_seq = ? AND status <> 'delivered'")
+      // Only transition an exhausted retry (or an unattempted pending row); never clobber a manual resend ('pending' with attempts > 0) or a delivered row.
+      await env.DB.prepare("UPDATE webhook_deliveries SET status = 'failed', updated_at = ? WHERE webhook_id = ? AND event_seq = ? AND (status = 'retrying' OR (status IN ('queuing', 'pending') AND attempts = 0))")
         .bind(now, msg.body.webhookId, msg.body.eventSeq).run();
       msg.ack();
     }

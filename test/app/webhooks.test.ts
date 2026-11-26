@@ -240,22 +240,60 @@ describe('webhooks switch, allowlist, CRUD, and delivery', () => {
     await api('PUT', '/settings/webhook-hosts', { cookie: owner, body: { hosts: ['hooks.example.com'] } });
     const hook = await json(await api('POST', '/webhooks', { cookie: owner, body: { project: 'one', url: 'https://hooks.example.com/rx', eventTypes: ['page.published'] } }));
 
-    // 1) Interrupted dispatch (delivery row inserted as 'queuing', enqueued_at still NULL) recovers on next dispatch.
+    // 1) Interrupted dispatch (delivery row inserted as 'queuing') recovers on next dispatch once stale,
+    //    and if the webhook was unsubscribed meanwhile, transitions cleanly to 'failed' instead of staying stuck.
     await sql(
-      "INSERT INTO events(seq,project_id,page_id,type,subject_id,actor_type,actor_id,created_at) VALUES(10,'p1',NULL,'page.published','pg1','agent','ao',1)",
-      `INSERT INTO webhook_deliveries(webhook_id,event_seq,attempts,status,updated_at) VALUES('${hook.id}',10,0,'queuing',1)`,
+      "INSERT INTO events(seq,project_id,page_id,type,subject_id,actor_type,actor_id,created_at) VALUES(10,'p1',NULL,'page.published','pg1','agent','ao',1),(14,'p1',NULL,'comment.created','cm1','person','o',1)",
+      `INSERT INTO webhook_deliveries(webhook_id,event_seq,attempts,status,updated_at) VALUES('${hook.id}',10,0,'queuing',1),('${hook.id}',14,0,'queuing',1)`,
     );
     const recovered: WebhookMessage[] = [];
     const queue = { send: async (msg: WebhookMessage) => { recovered.push(msg); } } as unknown as Queue<WebhookMessage>;
     await dispatchOutbox({ ...env, WEBHOOKS: queue });
     expect(recovered).toEqual([{ webhookId: hook.id, eventSeq: 10 }]);
     expect((await one<{ status: string }>('SELECT status FROM webhook_deliveries WHERE webhook_id=? AND event_seq=10', hook.id))!.status).toBe('pending');
+    expect((await one<{ status: string }>('SELECT status FROM webhook_deliveries WHERE webhook_id=? AND event_seq=14', hook.id))!.status).toBe('failed');
     expect((await one<{ enqueued_at: number | null }>('SELECT enqueued_at FROM events WHERE seq=10'))!.enqueued_at).not.toBeNull();
 
-    // 2) Attempt 5 stays 'retrying' (max_retries=5 permits attempt 6); late 503 cannot overwrite a completed 204.
+    // 1b) Overlapping dispatchers on the same event claim atomically and never duplicate sends.
+    await sql("INSERT INTO events(seq,project_id,page_id,type,subject_id,actor_type,actor_id,created_at) VALUES(15,'p1',NULL,'page.published','pg15','agent','ao',1)");
+    const overlapSent: WebhookMessage[] = [];
+    const overlapQueue = { send: async (msg: WebhookMessage) => { overlapSent.push(msg); } } as unknown as Queue<WebhookMessage>;
+    await Promise.all([dispatchOutbox({ ...env, WEBHOOKS: overlapQueue }), dispatchOutbox({ ...env, WEBHOOKS: overlapQueue })]);
+    expect(overlapSent).toEqual([{ webhookId: hook.id, eventSeq: 15 }]);
+
+    // 1c) Stale dispatcher whose watermark was superseded by an off/on toggle does not enqueue pre-toggle events.
+    await sql("INSERT INTO events(seq,project_id,page_id,type,subject_id,actor_type,actor_id,created_at) VALUES(16,'p1',NULL,'page.published','pg16','agent','ao',1)");
+    let toggled = false;
+    const staleDb = new Proxy(env.DB, { get(target, key) {
+      if (key === 'batch') return async (statements: D1PreparedStatement[]) => {
+        if (!toggled) {
+          toggled = true;
+          await api('PUT', '/switches/webhooks', { cookie: owner, body: { on: false } });
+          await api('PUT', '/switches/webhooks', { cookie: owner, body: { on: true } });
+        }
+        return target.batch(statements);
+      };
+      const v = Reflect.get(target, key); return typeof v === 'function' ? v.bind(target) : v;
+    } });
+    const staleSent: WebhookMessage[] = [];
+    await dispatchOutbox({ ...env, DB: staleDb, WEBHOOKS: { send: async (m: WebhookMessage) => { staleSent.push(m); } } as unknown as Queue<WebhookMessage> });
+    expect(staleSent).toEqual([]);
+    expect(await one('SELECT status FROM webhook_deliveries WHERE webhook_id=? AND event_seq=16', hook.id)).toBeNull();
+
+    // 2) Attempts 1..6 stay 'retrying' until DLQ marks 'failed', late DLQ never overwrites a manual resend, and late 503 cannot overwrite a 204.
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('err', { status: 503 }));
-    expect(await deliverOne(env, hook.id, 10, 5, 1_700_000_000_000)).toBe('retry');
+    expect(await deliverOne(env, hook.id, 10, 6, 1_700_000_000_000)).toBe('retry');
     expect((await one<{ status: string }>('SELECT status FROM webhook_deliveries WHERE webhook_id=? AND event_seq=10', hook.id))!.status).toBe('retrying');
+    // Duplicate/late DLQ message arriving after manual resend ('pending' with attempts >= 1) does not revert to 'failed'.
+    await sql(`UPDATE webhook_deliveries SET status='failed' WHERE webhook_id='${hook.id}' AND event_seq=10`);
+    await api('POST', `/webhooks/${hook.id}/deliveries/10/resend`, { cookie: owner }, { WEBHOOKS: queue });
+    await handleWebhookQueue({
+      queue: 'lawh-webhooks-dlq',
+      messages: [{ id: 'dlq-late', timestamp: new Date(), attempts: 6, body: { webhookId: hook.id, eventSeq: 10 }, ack: () => {}, retry: () => {} }],
+      ackAll: () => {},
+      retryAll: () => {},
+    } as unknown as MessageBatch<WebhookMessage>, env, 1_700_000_005_000);
+    expect((await one<{ status: string }>('SELECT status FROM webhook_deliveries WHERE webhook_id=? AND event_seq=10', hook.id))!.status).toBe('pending');
 
     let releaseSlow!: (r: Response) => void;
     const slow = new Promise<Response>((r) => { releaseSlow = r; });
