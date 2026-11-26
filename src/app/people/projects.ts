@@ -1,12 +1,13 @@
 import { ApiError, conflict, invalid } from '../../shared/errors';
 import { newId } from '../../shared/ids';
-import { isObject, onlyKeys, readJson, text } from '../api/body';
+import { integer, isObject, onlyKeys, readJson, text } from '../api/body';
+import { answerers } from '../decisions/read';
 import { openProject } from './access';
 import type { SignedIn } from './router';
 import { auditStatement } from './session';
 import { ownerOnly, stillOwner } from './settings';
 
-/** Projects are the owner's to make and name. */
+/** Projects are the owner's to make, name, and configure agreement on. */
 
 function readName(value: unknown): { en: string; ar: string } {
   if (!isObject(value)) throw invalid('name must be an object.');
@@ -32,24 +33,32 @@ export async function addProject(ctx: SignedIn): Promise<Response> {
     if (String(error).includes('UNIQUE constraint failed: projects.slug')) throw conflict('That address is taken.');
     throw error;
   }
-  return Response.json({ slug, name, level: 5 }, { status: 201 });
+  return Response.json({ slug, name, level: 5, answersNeeded: 1, answerers: 1 }, { status: 201 });
 }
 
 export async function renameProject(ctx: SignedIn): Promise<Response> {
   const { env, person } = ctx, { project } = await openProject(env, person, ctx.params[0]!, 1);
   ownerOnly(ctx);
   const { body } = await readJson(ctx.request);
-  onlyKeys(body, ['name']);
-  const name = readName(body.name);
+  onlyKeys(body, ['name', 'answersNeeded']);
+  if (body.name === undefined && body.answersNeeded === undefined) throw invalid('name or answersNeeded is needed.');
+  const name = body.name !== undefined ? readName(body.name) : { en: project.name_en, ar: project.name_ar };
+  const answersNeeded = body.answersNeeded !== undefined ? integer(body.answersNeeded, 'answersNeeded', 1, 5) : project.answers_needed;
+  const audits: D1PreparedStatement[] = [];
+  if (body.name !== undefined) audits.push(auditStatement(env, person.memberId, 'project.rename', project.id));
+  if (body.answersNeeded !== undefined) audits.push(auditStatement(env, person.memberId, 'project.agreement', project.id));
   try {
     await env.DB.batch([
       stillOwner(env, person.memberId),
-      env.DB.prepare('UPDATE projects SET name_en = ?, name_ar = ? WHERE id = ?').bind(name.en, name.ar, project.id),
-      auditStatement(env, person.memberId, 'project.rename', project.id),
+      env.DB.prepare('UPDATE projects SET name_en = ?, name_ar = ?, answers_needed = ? WHERE id = ?')
+        .bind(name.en, name.ar, answersNeeded, project.id),
+      ...audits,
     ]);
   } catch (error) {
-    if (String(error).includes('malformed JSON')) throw new ApiError('forbidden', 'Only the owner can do this.');
+    const msg = String(error);
+    if (msg.includes('agreement needs teams')) throw conflict('Turn teams on before requiring more than one person to agree.');
+    if (msg.includes('malformed JSON')) throw new ApiError('forbidden', 'Only the owner can do this.');
     throw error;
   }
-  return Response.json({ slug: project.slug, name, level: 5 });
+  return Response.json({ slug: project.slug, name, level: 5, answersNeeded, answerers: await answerers(env, project.id) });
 }

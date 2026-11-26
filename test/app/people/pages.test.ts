@@ -31,7 +31,10 @@ describe('what a person sees', () => {
   it('the owner sees every project and page', async () => {
     const { cookie } = await enter('o');
     expect((await json(await api('GET', '/projects', { cookie }))).items).toEqual([
-      { slug: 'one', name: { en: 'One', ar: 'واحد' }, level: 5 }, { slug: 'three', name: { en: 'Three', ar: 'ثلاثة' }, level: 5 }, { slug: 'two', name: { en: 'Two', ar: 'اثنان' }, level: 5 }]);
+      { slug: 'one', name: { en: 'One', ar: 'واحد' }, level: 5, answersNeeded: 1, answerers: 1 },
+      { slug: 'three', name: { en: 'Three', ar: 'ثلاثة' }, level: 5, answersNeeded: 1, answerers: 1 },
+      { slug: 'two', name: { en: 'Two', ar: 'اثنان' }, level: 5, answersNeeded: 1, answerers: 1 },
+    ]);
     expect(await slugs(cookie)).toBe('a,b,c');
   });
 

@@ -42,7 +42,7 @@ export function Settings({ path, search = '', me, onChange }: { path: string; se
       {now[0] === '/settings/people' && <People me={me} />}
       {now[0] === '/settings/teams' && <Teams me={me} />}
       {now[0] === '/settings/agents' && <Agents me={me} afterReset={afterReset} />}
-      {now[0] === '/settings/projects' && <Projects />}
+      {now[0] === '/settings/projects' && <Projects me={me} />}
       {now[0] === '/settings/deleted' && <Deleted />}
       {now[0] === '/settings/webhooks' && <Webhooks />}
       {now[0] === '/settings/data' && <Data onChange={onChange} />}
@@ -572,33 +572,60 @@ function NewKey({ secret, onDone }: { secret: string; onDone: () => void }) {
 
 // ---- Projects
 
-function Projects() {
+function Projects({ me }: { me: Me }) {
   const t = useText(), { data, problem, load, set } = useLoad<Listed<ProjectName>>('/projects');
   if (data === null) return <Loading problem={problem} load={load} />;
   return (
     <>
-      <ProjectForm onSave={async (slug, name) => { const made = await call<ProjectName>('POST', '/projects', { slug, name }); set((now) => now && { ...now, items: [...now.items, made] }); }} />
+      <ProjectForm me={me} onSave={async (slug, name) => { const made = await call<ProjectName>('POST', '/projects', { slug, name }); set((now) => now && { ...now, items: [...now.items, made] }); }} />
       <ul class="grid wide-cards">
-        {data.items.map((p) => <li key={p.slug}><ProjectForm project={p} onSave={async (slug, name) => { const next = await call<ProjectName>('PATCH', `/projects/${slug}`, { name }); set((now) => now && { ...now, items: now.items.map((o) => (o.slug === slug ? { ...o, ...next } : o)) }); }} /></li>)}
+        {data.items.map((p) => (
+          <li key={p.slug}>
+            <ProjectForm
+              me={me}
+              project={p}
+              onSave={async (slug, name, answersNeeded) => {
+                const payload: Record<string, unknown> = { name };
+                if (me.teams && answersNeeded !== undefined) payload.answersNeeded = answersNeeded;
+                const next = await call<ProjectName>('PATCH', `/projects/${slug}`, payload);
+                set((now) => now && { ...now, items: now.items.map((o) => (o.slug === slug ? { ...o, ...next } : o)) });
+              }}
+            />
+          </li>
+        ))}
       </ul>
       {data.items.length === 0 && <p class="muted">{t('noProjectsYet')}</p>}
     </>
   );
 }
 
-function ProjectForm({ project, onSave }: { project?: ProjectName; onSave: (slug: string, name: { en: string; ar: string }) => Promise<void> }) {
+const AGREEMENT_OPTIONS = [1, 2, 3, 4, 5] as const;
+
+function ProjectForm({ me, project, onSave }: { me: Me; project?: ProjectName; onSave: (slug: string, name: { en: string; ar: string }, answersNeeded?: number) => Promise<void> }) {
   const t = useText(), { lang } = useSettings(), id = useId(), [busy, run] = useBusy(), [problem, setProblem] = useState<Problem | null>(null), [done, setDone] = useState(false), [open, setOpen] = useState(false), box = useRef<HTMLDivElement>(null), first = useRef<HTMLInputElement>(null), wasOpen = useRef(false);
   const [slug, setSlug] = useState(project?.slug ?? ''), [en, setEn] = useState(project?.name.en ?? ''), [ar, setAr] = useState(project?.name.ar ?? '');
+  const currentNeeded = project?.answersNeeded ?? 1;
+  const [needed, setNeeded] = useState(currentNeeded);
   useEffect(() => { if (open) first.current?.focus(); else if (wasOpen.current) box.current?.focus(); wasOpen.current = open; }, [open]);
-  const ready = /^[a-z0-9][a-z0-9-]{0,79}$/.test(slug) && en.trim() !== '' && ar.trim() !== '' && (!project || en.trim() !== project.name.en || ar.trim() !== project.name.ar);
+  const changed = !project || en.trim() !== project.name.en || ar.trim() !== project.name.ar || (me.teams && needed !== currentNeeded);
+  const ready = /^[a-z0-9][a-z0-9-]{0,79}$/.test(slug) && en.trim() !== '' && ar.trim() !== '' && changed;
   const save = () => run(async () => {
     setProblem(null); setDone(false);
-    try { await onSave(slug, { en: en.trim(), ar: ar.trim() }); setDone(true); setOpen(false); if (!project) { setSlug(''); setEn(''); setAr(''); } } catch (error) { setProblem(error instanceof CallError && error.status === 409 ? 'taken' : problemIn(error)); }
+    try { await onSave(slug, { en: en.trim(), ar: ar.trim() }, needed); setDone(true); setOpen(false); if (!project) { setSlug(''); setEn(''); setAr(''); } } catch (error) { setProblem(error instanceof CallError && error.status === 409 ? 'taken' : problemIn(error)); }
   });
+  const tooFew = project !== undefined && currentNeeded > 1 && project.answerers !== undefined && project.answerers < currentNeeded;
   if (!open) {
     return (
       <div ref={box} tabIndex={-1} class={project ? 'card' : 'form-closed'}>
-        {project ? <><h2><bdi>{project.name[lang]}</bdi></h2><p class="muted" dir="ltr">{project.slug}</p><button class="plain wide" onClick={() => { setOpen(true); setDone(false); }}>{t('rename')}</button></> : <button class="primary fit" onClick={() => { setOpen(true); setDone(false); }}>{t('newProject')}</button>}
+        {project ? (
+          <>
+            <h2><bdi>{project.name[lang]}</bdi></h2>
+            <p class="muted" dir="ltr">{project.slug}</p>
+            {currentNeeded > 1 && <p class="muted"><Fill text="agreementCount" n={digits(lang, currentNeeded)} /></p>}
+            {tooFew && <p class="failure"><Fill text="needsMoreAnswerers" n={digits(lang, currentNeeded)} can={digits(lang, project.answerers!)} /></p>}
+            <button class="plain wide" onClick={() => { setNeeded(currentNeeded); setOpen(true); setDone(false); }}>{t('rename')}</button>
+          </>
+        ) : <button class="primary fit" onClick={() => { setOpen(true); setDone(false); }}>{t('newProject')}</button>}
         <div aria-live="polite">{done && <p class="done">{t('saved')}</p>}</div>
       </div>
     );
@@ -609,9 +636,22 @@ function ProjectForm({ project, onSave }: { project?: ProjectName; onSave: (slug
       {!project && <><label class="muted" for={`${id}-s`}>{t('slug')}</label><input ref={first} id={`${id}-s`} class="field" dir="ltr" maxLength={80} autocomplete="off" autocapitalize="none" value={slug} onInput={(event) => setSlug(event.currentTarget.value.toLowerCase())} /><p class="muted">{t('slugHelp')}</p></>}
       <label class="muted" for={`${id}-e`}>{t('nameEn')}</label><input {...(project && { ref: first })} id={`${id}-e`} class="field" lang="en" dir="ltr" maxLength={80} autocomplete="off" value={en} onInput={(event) => setEn(event.currentTarget.value)} />
       <label class="muted" for={`${id}-r`}>{t('nameAr')}</label><input id={`${id}-r`} class="field" lang="ar" dir="rtl" maxLength={80} autocomplete="off" value={ar} onInput={(event) => setAr(event.currentTarget.value)} />
+      {project && me.teams && (
+        <>
+          <label class="muted" for={`${id}-a`}>{t('agreementNeeded')}</label>
+          <select id={`${id}-a`} class="field" value={String(needed)} onChange={(event) => setNeeded(Number(event.currentTarget.value))}>
+            {AGREEMENT_OPTIONS.map((n) => <option key={n} value={String(n)} selected={n === needed}>{digits(lang, n)}</option>)}
+          </select>
+          <p class="muted">{t('agreementHelp')}</p>
+          {needed > 1 && project.answerers !== undefined && project.answerers < needed && (
+            <p class="failure"><Fill text="needsMoreAnswerers" n={digits(lang, needed)} can={digits(lang, project.answerers)} /></p>
+          )}
+        </>
+      )}
+      {project && !me.teams && <p class="muted">{t('agreementOff')}</p>}
       {problem && <Failure>{t(problem)}</Failure>}
       <button class="primary" type="submit" disabled={!ready || busy}>{t('save')}</button>
-      <button class="plain wide" type="button" disabled={busy} onClick={() => { setOpen(false); setProblem(null); setSlug(project?.slug ?? ''); setEn(project?.name.en ?? ''); setAr(project?.name.ar ?? ''); }}>{t('cancel')}</button>
+      <button class="plain wide" type="button" disabled={busy} onClick={() => { setOpen(false); setProblem(null); setSlug(project?.slug ?? ''); setEn(project?.name.en ?? ''); setAr(project?.name.ar ?? ''); setNeeded(currentNeeded); }}>{t('cancel')}</button>
     </form>
   );
 }

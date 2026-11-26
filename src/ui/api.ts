@@ -19,7 +19,7 @@ export async function call<T = undefined>(method: string, path: string, body?: u
 export const problemOf = (error: unknown): 'offline' | 'wait' | 'failed' =>
   !(error instanceof CallError) ? 'failed' : error.status === 0 ? 'offline' : error.status === 429 ? 'wait' : 'failed';
 
-export interface ProjectName { slug: string; name: { en: string; ar: string } }
+export interface ProjectName { slug: string; name: { en: string; ar: string }; answersNeeded?: number; answerers?: number }
 export type Status = 'draft' | 'in_review' | 'decided' | 'archived';
 export interface PageItem { id: string; project: ProjectName; slug: string; title: string; summary: string; lang: 'en' | 'ar'; tags: string[]; status: Status; currentVersion: number; updatedAt: number }
 export interface Version { n: number; note: string; publishedBy: string; createdAt: number }

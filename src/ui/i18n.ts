@@ -338,6 +338,11 @@ const TEXT = {
   turnTeamsOffSure: ['Turn teams off now', 'إيقاف الفرق الآن'],
   postResetBanner: ['Your passkey was reset. Agent keys stay active after a reset — review them below and revoke any key from a lost device.', 'تمت إعادة ضبط مفتاح المرور. تبقى مفاتيح الوكلاء فعّالة بعد إعادة الضبط — يمكن مراجعتها أدناه وإلغاء أي مفتاح مرتبط بجهاز مفقود.'],
   postResetDone: ['Your passkey was reset and your previous sessions ended.', 'تمت إعادة ضبط مفتاح المرور وانتهت جلساتك السابقة.'],
+  agreementNeeded: ['People who must agree', 'عدد الموافقات اللازمة'],
+  agreementHelp: ['Applies from the next answer. Does not decide or reopen existing answers.', 'يسري من الإجابة التالية، ولا يحسم أو يعيد فتح الإجابات الحالية.'],
+  needsMoreAnswerers: ['Needs {n} people, only {can} can answer.', 'يحتاج إلى {n}، ومن يمكنهم الإجابة {can} فقط.'],
+  agreementCount: ['{n} must agree', 'يلزم اتفاق {n}'],
+  agreementOff: ['Turn teams on to require more than one person to agree.', 'يلزم تشغيل الفرق لطلب موافقة أكثر من شخص.'],
 } as const;
 
 export type Key = keyof typeof TEXT;
