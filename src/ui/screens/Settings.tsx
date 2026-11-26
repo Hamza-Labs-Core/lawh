@@ -604,6 +604,13 @@ function ProjectForm({ me, project, onSave }: { me: Me; project?: ProjectName; o
   const [slug, setSlug] = useState(project?.slug ?? ''), [en, setEn] = useState(project?.name.en ?? ''), [ar, setAr] = useState(project?.name.ar ?? '');
   const currentNeeded = project?.answersNeeded ?? 1;
   const [needed, setNeeded] = useState(currentNeeded);
+  useEffect(() => {
+    if (!open && project) {
+      setEn(project.name.en);
+      setAr(project.name.ar);
+      setNeeded(project.answersNeeded ?? 1);
+    }
+  }, [open, project?.name.en, project?.name.ar, project?.answersNeeded]);
   useEffect(() => { if (open) first.current?.focus(); else if (wasOpen.current) box.current?.focus(); wasOpen.current = open; }, [open]);
   const nameChanged = !project || en.trim() !== project.name.en || ar.trim() !== project.name.ar;
   const neededChanged = Boolean(project && me.teams && needed !== currentNeeded);
@@ -626,7 +633,7 @@ function ProjectForm({ me, project, onSave }: { me: Me; project?: ProjectName; o
             <p class="muted" dir="ltr">{project.slug}</p>
             {currentNeeded > 1 && <p class="muted"><Fill text="agreementCount" n={digits(lang, currentNeeded)} /></p>}
             {tooFew && <p class="failure"><Fill text="needsMoreAnswerers" n={digits(lang, currentNeeded)} can={digits(lang, project.answerers!)} /></p>}
-            <button class="plain wide" onClick={() => { setNeeded(currentNeeded); setOpen(true); setDone(false); }}>{t('rename')}</button>
+            <button class="plain wide" onClick={() => { setEn(project.name.en); setAr(project.name.ar); setNeeded(currentNeeded); setOpen(true); setDone(false); }}>{t('rename')}</button>
           </>
         ) : <button class="primary fit" onClick={() => { setOpen(true); setDone(false); }}>{t('newProject')}</button>}
         <div aria-live="polite">{done && <p class="done">{t('saved')}</p>}</div>
