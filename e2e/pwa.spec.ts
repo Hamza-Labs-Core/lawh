@@ -1,6 +1,8 @@
 import { expect } from '@playwright/test';
 import { APP, enter, test } from './people';
 
+test.use({ serviceWorkers: 'allow' });
+
 test('manifest, icons, theme-color, and shell-only service worker work across browsers', async ({ page, member, ask }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   const asked = await ask([{ question: 'Which storage?' }], { level: 3 });

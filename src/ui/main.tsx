@@ -67,9 +67,11 @@ function App() {
   }, []);
   const swReady = typeof me === 'object' && me !== null && me.instance;
   useEffect(() => {
-    if (swReady && 'serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => undefined);
-    }
+    if (!swReady || !('serviceWorker' in navigator)) return;
+    const register = () => { navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => undefined); };
+    if (document.readyState === 'complete') { register(); return; }
+    addEventListener('load', register, { once: true });
+    return () => removeEventListener('load', register);
   }, [swReady]);
   // The link or code is used: Back must not return to it.
   const arrive = () => { linkToken = ''; go('/', true); setMe(null); void load(); };
