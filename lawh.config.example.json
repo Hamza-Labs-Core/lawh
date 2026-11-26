@@ -1,0 +1,47 @@
+{
+  "instance": {
+    "name": {
+      "en": "Lawh",
+      "ar": "لوح"
+    },
+    "accent": "#e0b15a",
+    "icon": "default",
+    "defaultLang": "en",
+    "defaultTheme": "dark"
+  },
+  "hosts": {
+    "mode": "workers.dev",
+    "app": "https://lawh-app.<your-subdomain>.workers.dev",
+    "content": "https://lawh-content.<your-subdomain>.workers.dev"
+  },
+  "secrets": {
+    "backend": "secrets_store",
+    "storeName": "lawh-secrets"
+  },
+  "workers": {
+    "app": "lawh-app",
+    "content": "lawh-content"
+  },
+  "resources": {
+    "accountId": "",
+    "database": {
+      "name": "lawh",
+      "id": ""
+    },
+    "bucket": {
+      "name": "lawh-files"
+    },
+    "queue": {
+      "name": "lawh-webhooks",
+      "id": ""
+    },
+    "deadLetterQueue": {
+      "name": "lawh-webhooks-dlq",
+      "id": ""
+    },
+    "secretsStore": {
+      "id": "",
+      "secrets": {}
+    }
+  }
+}
