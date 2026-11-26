@@ -62,10 +62,15 @@ def check_repo(root: pathlib.Path) -> list[str]:
     tracked = list_files(root)
     tracked_set = set(tracked)
 
-    # 1) Generated instance config and local secret files must never be tracked.
+    # 1) Generated instance config, .wrangler state/secrets, and local secret files must never be tracked.
     for rel in tracked:
         name = pathlib.PurePosixPath(rel).name
-        if rel in FORBIDDEN_FILES or name.startswith(".dev.vars.") or name.startswith(".env."):
+        if (
+            rel in FORBIDDEN_FILES
+            or rel.startswith(".wrangler/")
+            or name.startswith(".dev.vars.")
+            or name.startswith(".env.")
+        ):
             bad.append(f"instance or secret file is tracked: {rel}")
 
     # 2) .gitignore must protect generated instance files.
@@ -78,7 +83,7 @@ def check_repo(root: pathlib.Path) -> list[str]:
             if required not in lines:
                 bad.append(f".gitignore is missing required entry: {required}")
 
-    # 3) lawh.config.example.json must exist and contain no real account/resource IDs or real hosts.
+    # 3) lawh.config.example.json must exist and contain only generic Lawh defaults (no real account/resource IDs, custom hosts, or org names).
     example_path = root / "lawh.config.example.json"
     if not example_path.is_file():
         bad.append("lawh.config.example.json is missing")
@@ -88,6 +93,9 @@ def check_repo(root: pathlib.Path) -> list[str]:
         except Exception as err:
             bad.append(f"lawh.config.example.json is invalid JSON: {err}")
         else:
+            inst_name = example.get("instance", {}).get("name", {})
+            if inst_name.get("en") != "Lawh" or inst_name.get("ar") != "لوح":
+                bad.append(f"lawh.config.example.json must keep default Lawh instance names (got {inst_name!r})")
             resources = example.get("resources", {})
             for label, val in [
                 ("resources.accountId", resources.get("accountId", "")),
@@ -100,10 +108,13 @@ def check_repo(root: pathlib.Path) -> list[str]:
                     bad.append(f"lawh.config.example.json must leave {label} empty (got {val!r})")
             if resources.get("secretsStore", {}).get("secrets"):
                 bad.append("lawh.config.example.json must leave resources.secretsStore.secrets empty")
+            hosts = example.get("hosts", {})
+            if hosts.get("mode") != "workers.dev":
+                bad.append(f"lawh.config.example.json must keep hosts.mode='workers.dev' (got {hosts.get('mode')!r})")
             for host_key in ("app", "content"):
-                host_val = str(example.get("hosts", {}).get(host_key, ""))
-                if REAL_WORKERS_DEV.search(host_val):
-                    bad.append(f"lawh.config.example.json hosts.{host_key} contains a real workers.dev host: {host_val}")
+                host_val = str(hosts.get(host_key, ""))
+                if REAL_WORKERS_DEV.search(host_val) or "<your-subdomain>.workers.dev" not in host_val:
+                    bad.append(f"lawh.config.example.json hosts.{host_key} must use a placeholder host (got {host_val!r})")
             raw_example = example_path.read_text(encoding="utf-8")
             if HEX32.search(raw_example) or UUID_RE.search(raw_example):
                 bad.append("lawh.config.example.json contains a hex/UUID resource identifier")
@@ -114,12 +125,10 @@ def check_repo(root: pathlib.Path) -> list[str]:
         if CI_SECRET_RE.search(ci_path.read_text(encoding="utf-8")):
             bad.append(".github/workflows/ci.yml references GitHub secrets (breaks fork CI)")
 
-    # 5) Scan tracked text files for leaked Cloudflare resource IDs, real workers.dev hosts, or private keys.
+    # 5) Scan all tracked text files (including tests) for leaked Cloudflare resource IDs, real workers.dev hosts, or private keys.
     skip_suffixes = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".woff2", ".zip", ".pdf", ".yaml"}
     for rel in tracked:
         if rel in ("pnpm-lock.yaml",) or pathlib.PurePosixPath(rel).suffix.lower() in skip_suffixes:
-            continue
-        if rel.startswith("test/"):
             continue
         p = root / rel
         if not p.is_file():
@@ -128,7 +137,7 @@ def check_repo(root: pathlib.Path) -> list[str]:
             text = p.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
-        if ID_FIELD_RE.search(text):
+        if not rel.startswith("test/") and ID_FIELD_RE.search(text):
             bad.append(f"{rel} contains a real Cloudflare resource ID")
         if REAL_WORKERS_DEV.search(text):
             bad.append(f"{rel} contains a real workers.dev host URL")

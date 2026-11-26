@@ -31,13 +31,17 @@ async function runOwnerSetup(flags) {
   const config = local ? join(state, 'entry.json') : join(root, 'wrangler.app.jsonc');
   if (!existsSync(config)) fail(local ? 'Run `pnpm dev` first.' : 'wrangler.app.jsonc is missing. `pnpm lawh init` makes it.');
   // Read before anything is changed: without the address there is no link to print.
-  const app = new URL(parseJsonc(readFileSync(config, 'utf8')).vars.APP_ORIGIN).origin;
+  const parsedConfig = parseJsonc(readFileSync(config, 'utf8'));
+  const app = new URL(parsedConfig.vars.APP_ORIGIN).origin;
+  const accountEnv = !local && typeof parsedConfig.account_id === 'string' && parsedConfig.account_id
+    ? { CLOUDFLARE_ACCOUNT_ID: parsedConfig.account_id }
+    : {};
 
   const where = local ? ['--local', '--persist-to', state] : ['--remote'];
   const sql = (statements) => JSON.parse(execFileSync(
     process.execPath,
     [wrangler, 'd1', 'execute', 'DB', ...where, '--json', '-c', config, '--command', statements],
-    { cwd: root, env: { ...process.env, WRANGLER_SEND_METRICS: 'false' }, stdio: ['ignore', 'pipe', 'inherit'] },
+    { cwd: root, env: { ...process.env, ...accountEnv, WRANGLER_SEND_METRICS: 'false' }, stdio: ['ignore', 'pipe', 'inherit'] },
   ).toString());
   const text = (value) => `'${value.replaceAll("'", "''")}'`;
 

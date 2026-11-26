@@ -7,6 +7,8 @@ import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 // @ts-expect-error plain ESM script
+import { buildUi } from '../../scripts/build-ui.mjs';
+// @ts-expect-error plain ESM script
 import { createCloudflareClient, readCloudflareToken } from '../../scripts/cli/cloudflare.mjs';
 // @ts-expect-error plain ESM script
 import { runDestroy, runInit, runRollback, runUpgrade } from '../../scripts/cli/commands.mjs';
@@ -41,10 +43,13 @@ interface MockCloudflareState {
   queues: Map<string, { queue_id: string; queue_name: string }>;
   stores: Map<string, { id: string; name: string; secrets: Map<string, { id: string; name: string; value: string }> }>;
   workers: Map<string, MockWorker>;
+  subdomain: string | null;
   calls: { method: string; path: string }[];
   failAtCall: number | null;
-  secretsStoreMode: 'ok' | 'forbidden';
-  hostStatus: { app: number; content: number };
+  dropAfterCommitOn: { method: string; pathEndsWith: string } | null;
+  secretsStoreMode: 'ok' | 'forbidden' | 'conflict';
+  r2PageSize: number;
+  hostStatus: { app: number; content: number; appHeaders?: Record<string, string>; contentHeaders?: Record<string, string>; contentBody?: string };
 }
 
 /**
@@ -61,9 +66,12 @@ async function startMockCloudflare() {
     queues: new Map(),
     stores: new Map(),
     workers: new Map(),
+    subdomain: SUBDOMAIN,
     calls: [],
     failAtCall: null,
+    dropAfterCommitOn: null,
     secretsStoreMode: 'ok',
+    r2PageSize: 2,
     hostStatus: { app: 200, content: 404 },
   };
 
@@ -130,9 +138,17 @@ async function startMockCloudflare() {
       ok(res, [{ id: ACCOUNT_ID, name: 'Test Account' }]);
       return;
     }
-    if (method === 'GET' && url.pathname === `/client/v4/accounts/${ACCOUNT_ID}/workers/subdomain`) {
-      ok(res, { subdomain: SUBDOMAIN });
-      return;
+    if (url.pathname === `/client/v4/accounts/${ACCOUNT_ID}/workers/subdomain`) {
+      if (method === 'GET') {
+        if (!state.subdomain) { fail(res, 404, 10007, 'Subdomain not registered'); return; }
+        ok(res, { subdomain: state.subdomain });
+        return;
+      }
+      if (method === 'PUT') {
+        state.subdomain = String(body.subdomain);
+        ok(res, { subdomain: state.subdomain });
+        return;
+      }
     }
 
     // D1
@@ -150,6 +166,11 @@ async function startMockCloudflare() {
         const db = new DatabaseSync(':memory:');
         db.exec('PRAGMA foreign_keys = ON');
         state.d1.set(uuid, { uuid, name: body.name, db, bookmarkSeq: 0, bookmarks: new Map() });
+        if (state.dropAfterCommitOn && state.dropAfterCommitOn.method === 'POST' && url.pathname.endsWith(state.dropAfterCommitOn.pathEndsWith)) {
+          state.dropAfterCommitOn = null;
+          fail(res, 502, 50002, 'Dropped response after remote commit');
+          return;
+        }
         ok(res, { uuid, name: body.name }, 201);
         return;
       }
@@ -194,7 +215,15 @@ async function startMockCloudflare() {
             const results = isSingleSelect || /\bRETURNING\b/i.test(sql) ? stmt.all(...params) : (stmt.run(...params), []);
             ok(res, [{ results, success: true }]);
           } else {
-            entry.db.exec(sql);
+            // Execute multi-statement SQL atomically (matching Cloudflare D1 batch behavior).
+            entry.db.exec('BEGIN');
+            try {
+              entry.db.exec(sql);
+              entry.db.exec('COMMIT');
+            } catch (txErr) {
+              try { entry.db.exec('ROLLBACK'); } catch { /* ignore */ }
+              throw txErr;
+            }
             ok(res, [{ results: [], success: true }]);
           }
         } catch (err) {
@@ -224,7 +253,23 @@ async function startMockCloudflare() {
       const bucket = state.r2.get(bucketName);
       if (!bucket) { fail(res, 404, 10006, 'Bucket not found'); return; }
       if (url.pathname.endsWith('/objects') && method === 'GET') {
-        ok(res, { objects: [...bucket.keys()].map((key) => ({ key })), truncated: false });
+        // Real Cloudflare R2 List Objects API uses keyset pagination with metadata in result_info.
+        const allKeys = [...bucket.keys()].sort();
+        const cursor = url.searchParams.get('cursor') ?? '';
+        const remaining = cursor ? allKeys.filter((k) => k > cursor) : allKeys;
+        const page = remaining.slice(0, state.r2PageSize);
+        const isTruncated = remaining.length > page.length;
+        json(res, 200, {
+          success: true,
+          errors: [],
+          messages: [],
+          result: page.map((key) => ({ key })),
+          result_info: {
+            count: page.length,
+            is_truncated: isTruncated,
+            ...(isTruncated ? { cursor: page.at(-1) } : {}),
+          },
+        });
         return;
       }
       if (objKey !== null) {
@@ -280,6 +325,10 @@ async function startMockCloudflare() {
         fail(res, 403, 9109, 'Secrets Store quota exceeded or not enabled on this account');
         return;
       }
+      if (state.secretsStoreMode === 'conflict' && method === 'POST') {
+        fail(res, 409, 9110, 'A store already exists');
+        return;
+      }
       if (url.pathname === `/client/v4/accounts/${ACCOUNT_ID}/secrets_store/stores`) {
         if (method === 'GET') { ok(res, [...state.stores.values()].map(({ id, name }) => ({ id, name }))); return; }
         if (method === 'POST') {
@@ -299,6 +348,10 @@ async function startMockCloudflare() {
           if (store.secrets.size > 0) { fail(res, 409, 9409, 'Store still contains secrets'); return; }
           state.stores.delete(storeId);
           ok(res, {});
+          return;
+        }
+        if (url.pathname.endsWith('/secrets') && method === 'GET') {
+          ok(res, [...store.secrets.values()].map(({ id, name }) => ({ id, name })));
           return;
         }
         if (url.pathname.endsWith('/secrets') && method === 'POST') {
@@ -385,8 +438,25 @@ async function startMockCloudflare() {
   function createHealthFetch() {
     return async (url: string | URL) => {
       const u = String(url);
-      if (u.includes('lawh-app')) return new Response('ok', { status: state.hostStatus.app });
-      if (u.includes('lawh-content')) return new Response('{"code":"not_found"}', { status: state.hostStatus.content });
+      if (u.includes('lawh-app')) {
+        return new Response('<!doctype html><title>Lawh</title>', {
+          status: state.hostStatus.app,
+          headers: state.hostStatus.appHeaders ?? {
+            'Content-Type': 'text/html; charset=utf-8',
+            'X-Content-Type-Options': 'nosniff',
+            'Content-Security-Policy': "default-src 'self'",
+          },
+        });
+      }
+      if (u.includes('lawh-content')) {
+        return new Response(state.hostStatus.contentBody ?? JSON.stringify({ code: 'not_found', message: 'Not found.' }), {
+          status: state.hostStatus.content,
+          headers: state.hostStatus.contentHeaders ?? {
+            'Content-Type': 'application/json',
+            'Content-Security-Policy': "sandbox allow-scripts; default-src 'none'",
+          },
+        });
+      }
       return new Response('ok', { status: 200 });
     };
   }
@@ -453,22 +523,26 @@ describe('S15 self-hosting lifecycle (init, upgrade, rollback, destroy)', () => 
     });
 
     expect(initRes.instanceOn).toBe(true);
-    expect(initRes.setupLink).toMatch(/^https:\/\/lawh-app\.acme-test\.workers\.dev\/link#[A-Za-z0-9_-]{43}$/);
+    expect(initRes.setupLink).toMatch(new RegExp(`^https://lawh-app\\.${SUBDOMAIN}\\.workers\\.dev/link#[A-Za-z0-9_-]{43}$`));
 
-    // Generated Wrangler configs include LiveProject DO + v1 migration and Secrets Store bindings.
+    // Generated Wrangler configs pin account_id, include LiveProject DO + v1 migration and Secrets Store bindings.
     const appWrangler = parseJsonc(readFileSync(join(ws, 'wrangler.app.jsonc'), 'utf8'));
     const contentWrangler = parseJsonc(readFileSync(join(ws, 'wrangler.content.jsonc'), 'utf8'));
+    expect(appWrangler.account_id).toBe(ACCOUNT_ID);
+    expect(contentWrangler.account_id).toBe(ACCOUNT_ID);
     expect(appWrangler.durable_objects).toEqual({ bindings: [{ name: 'LIVE', class_name: 'LiveProject' }] });
     expect(appWrangler.migrations).toEqual([{ tag: 'v1', new_sqlite_classes: ['LiveProject'] }]);
     expect(appWrangler.secrets_store_secrets).toHaveLength(4);
     expect(contentWrangler.secrets_store_secrets).toHaveLength(1);
 
-    // Seed a blob row + R2 file to verify export includes rows & page files (and excludes FTS).
+    // Seed 5 R2 objects (so r2PageSize=2 tests multi-page result_info pagination during destroy!) + 1 blob row.
     const dbEntry = mock.state.d1.get(initRes.config.resources.database.id)!;
     const fileBytes = Buffer.from('<h1>Exported Page</h1>');
     const sha = 'a'.repeat(64);
     dbEntry.db.exec(`INSERT INTO blobs(sha256, r2_key, bytes, created_at) VALUES('${sha}', 'blobs/${sha}/01TEST', ${fileBytes.byteLength}, 1000)`);
-    mock.state.r2.get('lawh-files')!.set(`blobs/${sha}/01TEST`, fileBytes);
+    const r2Bucket = mock.state.r2.get('lawh-files')!;
+    r2Bucket.set(`blobs/${sha}/01TEST`, fileBytes);
+    for (let k = 1; k <= 4; k++) r2Bucket.set(`blobs/extra/obj-${k}`, Buffer.from(`extra-${k}`));
 
     // Verify mock Cloudflare API rejects D1 export because pages_fts virtual table exists!
     const exportProbe = await fetch(`${mock.apiBase}/accounts/${ACCOUNT_ID}/d1/database/${initRes.config.resources.database.id}/export`, {
@@ -683,14 +757,16 @@ describe('S15 self-hosting lifecycle (init, upgrade, rollback, destroy)', () => 
     expect(upLogs.join('\n')).toMatch(/wrangler d1 time-travel restore lawh --bookmark=00000000-/);
     expect(mock.state.workers.get('lawh-app')!.deployments[0]!.versions[0]!.version_id).toBe(appBefore);
 
-    // Export path inside working tree (or symlink pointing inside) is refused!
+    // Export path inside working tree (including child dirs like `..exports` and symlinks pointing inside) is refused!
     expect(() => assertOutsideRepo(ws, ws)).toThrow(/outside the repository/);
     expect(() => assertOutsideRepo(join(ws, 'exports'), ws)).toThrow(/outside the repository/);
+    expect(() => assertOutsideRepo(join(ws, '..exports'), ws)).toThrow(/outside the repository/);
     const outsideDir = mkdtempSync(join(tmpdir(), 'lawh-s15-sym-'));
     cleanups.push(() => rmSync(outsideDir, { recursive: true, force: true }));
     const linkIntoRepo = join(outsideDir, 'sneaky-link');
     symlinkSync(ws, linkIntoRepo);
     expect(() => assertOutsideRepo(linkIntoRepo, ws)).toThrow(/outside the repository/);
+    expect(() => assertOutsideRepo(join(linkIntoRepo, '..exports'), ws)).toThrow(/outside the repository/);
 
     // Destroy with wrong instance name deletes nothing.
     await expect(runDestroy({
@@ -700,6 +776,84 @@ describe('S15 self-hosting lifecycle (init, upgrade, rollback, destroy)', () => 
       log: () => {},
     })).rejects.toThrow(/did not match/);
     expect(mock.state.workers.has('lawh-app')).toBe(true);
+  });
+
+  it('guards against overwriting pre-existing Workers, recovers dropped create responses, registers missing workers.dev subdomain, handles Secrets Store 409, validates host responses, and applies instance appearance in build-ui', async () => {
+    const mock = await startMockCloudflare();
+    cleanups.push(() => mock.close());
+    const ws = makeWorkspace();
+    cleanups.push(() => rmSync(ws, { recursive: true, force: true }));
+    const cf = createCloudflareClient({ apiBase: mock.apiBase, token: TOKEN });
+
+    // 1) Pre-existing unrelated Worker with colliding name `lawh-app` must be refused, never overwritten!
+    mock.state.workers.set('lawh-app', {
+      name: 'lawh-app',
+      versions: [{ id: 'ver_existing', metadata: {} }],
+      deployments: [{ id: 'dep_existing', versions: [{ version_id: 'ver_existing', percentage: 100 }], message: 'unrelated' }],
+      secrets: {},
+    });
+    // Also test missing workers.dev subdomain registration + Secrets Store 409 fallback + dropped response after D1 create!
+    mock.state.subdomain = null;
+    mock.state.secretsStoreMode = 'conflict';
+    mock.state.dropAfterCommitOn = { method: 'POST', pathEndsWith: '/d1/database' };
+
+    const prompt = async (q: string) => {
+      if (q.includes('Instance name (English)')) return 'Studio Lawh';
+      if (q.includes('Instance name (Arabic)')) return 'لوح الاستوديو';
+      if (q.includes('Hosts')) return '';
+      if (q.includes('No workers.dev subdomain')) return 'fresh-sub';
+      if (q.includes('Create these resources')) return 'yes';
+      if (q.includes('Your name')) return 'Owner';
+      if (q.includes('First project slug')) return 'alpha';
+      if (q.includes('First project name (English)')) return 'Alpha';
+      if (q.includes('First project name (Arabic)')) return 'ألفا';
+      if (q.includes('Turn the instance switch ON')) return 'yes';
+      return '';
+    };
+
+    // First attempt registers subdomain, creates D1 remotely, then loses the HTTP response.
+    await expect(runInit({ root: ws, cf, prompt, log: () => {}, deployWorker: mock.createDeployWorker() }))
+      .rejects.toThrow('Dropped response after remote commit');
+    expect(mock.state.subdomain).toBe('fresh-sub');
+    expect(mock.state.d1.size).toBe(1);
+
+    // Second attempt recovers the committed D1 database ID, falls back on Secrets Store 409, and REFUSES to overwrite `lawh-app`!
+    await expect(runInit({ root: ws, cf, prompt, log: () => {}, deployWorker: mock.createDeployWorker() }))
+      .rejects.toThrow(/Worker "lawh-app" already exists/);
+    expect(mock.state.workers.get('lawh-app')!.deployments[0]!.versions[0]!.version_id).toBe('ver_existing');
+
+    // Remove the colliding unrelated Worker, resume init -> succeeds!
+    mock.state.workers.delete('lawh-app');
+    const done = await runInit({ root: ws, cf, prompt, log: () => {}, deployWorker: mock.createDeployWorker() });
+    expect(done.config.secrets.backend).toBe('worker_secrets');
+
+    // 2) Upgrade host check rejects generic 404s on both hosts!
+    mock.state.hostStatus = { app: 404, content: 404, appHeaders: {}, contentHeaders: {}, contentBody: 'not found' };
+    await expect(runUpgrade({
+      root: ws,
+      cf,
+      log: () => {},
+      deployWorker: mock.createDeployWorker(),
+      fetchImpl: mock.createHealthFetch(),
+    })).rejects.toThrow(/Health check failed/);
+
+    // 3) buildUi applies instance appearance settings (name, accent, defaultLang, defaultTheme) when lawh.config.json exists.
+    const uiOut = mkdtempSync(join(tmpdir(), 'lawh-s15-ui-'));
+    cleanups.push(() => rmSync(uiOut, { recursive: true, force: true }));
+    const customCfgPath = join(uiOut, 'lawh.config.json');
+    writeFileSync(customCfgPath, JSON.stringify({
+      instance: { name: { en: 'Studio Board', ar: 'لوحة الاستوديو' }, accent: '#22aa88', icon: 'default', defaultLang: 'ar', defaultTheme: 'light' },
+    }));
+    await buildUi({ root: repoRoot, out: join(uiOut, 'dist'), configPath: customCfgPath });
+    const builtHtml = readFileSync(join(uiOut, 'dist/index.html'), 'utf8');
+    const builtManifest = JSON.parse(readFileSync(join(uiOut, 'dist/manifest.webmanifest'), 'utf8'));
+    const builtSvg = readFileSync(join(uiOut, 'dist/icon.svg'), 'utf8');
+    expect(builtHtml).toContain('<title>Studio Board</title>');
+    expect(builtHtml).toContain('data-default-mode="light"');
+    expect(builtHtml).toContain('data-default-lang="ar"');
+    expect(builtManifest.name).toBe('Studio Board · لوحة الاستوديو');
+    expect(builtManifest.theme_color).toBe('#f6f4ef');
+    expect(builtSvg).toContain('#22aa88');
   });
 
   it('reads Wrangler OAuth token from config file and enforces check_no_instance.py', () => {
@@ -714,25 +868,34 @@ describe('S15 self-hosting lifecycle (init, upgrade, rollback, destroy)', () => 
     const realCheck = spawnSync('python3', [join(repoRoot, 'scripts/check_no_instance.py'), '--root', repoRoot], { encoding: 'utf8' });
     expect(realCheck.status, realCheck.stdout + realCheck.stderr).toBe(0);
 
-    // check_no_instance.py fails when a tracked repo has lawh.config.json, real resource IDs, real workers.dev URL, or CI secrets.
+    // check_no_instance.py fails on tracked lawh.config.json, .wrangler secrets, custom example host/org, test workers.dev URL, or CI secrets.
     const dirtyRepo = mkdtempSync(join(tmpdir(), 'lawh-dirty-repo-'));
     cleanups.push(() => rmSync(dirtyRepo, { recursive: true, force: true }));
     execFileSync('git', ['init', '-q', dirtyRepo]);
     writeFileSync(join(dirtyRepo, '.gitignore'), '/lawh.config.json\n/wrangler.app.jsonc\n/wrangler.content.jsonc\n.dev.vars*\n.env\n');
+    const fakeSub = ['real', 'user'].join('-');
+    const fakeHost = `https://lawh-app.${fakeSub}.workers` + '.dev';
     writeFileSync(join(dirtyRepo, 'lawh.config.example.json'), JSON.stringify({
-      hosts: { app: 'https://lawh-app.real-user.workers.dev', content: 'https://lawh-content.real-user.workers.dev' },
+      instance: { name: { en: 'Private Corp', ar: 'شركة خاصة' } },
+      hosts: { mode: 'custom', app: 'https://lawh.private.corp', content: 'https://content.private.corp' },
       resources: { accountId: '0123456789abcdef0123456789abcdef', database: { id: 'abcdef0123456789abcdef0123456789' } },
     }));
     mkdirSync(join(dirtyRepo, '.github/workflows'), { recursive: true });
     writeFileSync(join(dirtyRepo, '.github/workflows/ci.yml'), 'env:\n  TOKEN: ${{ secrets.CF_TOKEN }}\n');
+    mkdirSync(join(dirtyRepo, '.wrangler'), { recursive: true });
+    writeFileSync(join(dirtyRepo, '.wrangler/lawh-init-secrets.json'), '{"PEPPER":"secret"}');
+    mkdirSync(join(dirtyRepo, 'test'), { recursive: true });
+    writeFileSync(join(dirtyRepo, 'test/leak.ts'), `export const u = "${fakeHost}";\n`);
     writeFileSync(join(dirtyRepo, 'lawh.config.json'), '{}');
-    execFileSync('git', ['-C', dirtyRepo, 'add', '-f', '.gitignore', 'lawh.config.example.json', '.github/workflows/ci.yml', 'lawh.config.json']);
+    execFileSync('git', ['-C', dirtyRepo, 'add', '-f', '.gitignore', 'lawh.config.example.json', '.github/workflows/ci.yml', 'lawh.config.json', '.wrangler/lawh-init-secrets.json', 'test/leak.ts']);
 
     const badCheck = spawnSync('python3', [join(repoRoot, 'scripts/check_no_instance.py'), '--root', dirtyRepo], { encoding: 'utf8' });
     expect(badCheck.status).toBe(1);
     expect(badCheck.stdout).toContain('instance or secret file is tracked: lawh.config.json');
-    expect(badCheck.stdout).toContain('resources.accountId');
-    expect(badCheck.stdout).toContain('real workers.dev host');
+    expect(badCheck.stdout).toContain('instance or secret file is tracked: .wrangler/lawh-init-secrets.json');
+    expect(badCheck.stdout).toContain('default Lawh instance names');
+    expect(badCheck.stdout).toContain('placeholder host');
+    expect(badCheck.stdout).toContain('test/leak.ts contains a real workers.dev host URL');
     expect(badCheck.stdout).toContain('references GitHub secrets');
   });
 });

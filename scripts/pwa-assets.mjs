@@ -93,8 +93,13 @@ function fillCircle(buf, size, cx, cy, r, color) {
   }
 }
 
+function parseHexColor(hex, fallback) {
+  if (typeof hex !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(hex)) return fallback;
+  return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16), 0xff];
+}
+
 /** Draws the Lawh writing-tablet mark at `size`x`size`. `maskable` keeps the motif inside the safe zone. */
-function renderIconPng(size, maskable) {
+function renderIconPng(size, maskable, accent = ACCENT) {
   const buf = Buffer.alloc(size * size * 4);
   for (let i = 0; i < buf.length; i += 4) {
     buf[i] = BG[0]; buf[i + 1] = BG[1]; buf[i + 2] = BG[2]; buf[i + 3] = 255;
@@ -110,11 +115,11 @@ function renderIconPng(size, maskable) {
   fillRoundedRect(buf, size, tx, ty, tw, th, radius, LINE);
   fillRoundedRect(buf, size, tx + border, ty + border, tw - border * 2, th - border * 2, Math.max(1, radius - border * 0.6), SURFACE);
 
-  // Gold header bar across the tablet.
+  // Accent header bar across the tablet.
   const inset = tw * 0.14;
   const innerW = tw - inset * 2;
   const barH = Math.max(3, tw * 0.075);
-  fillRoundedRect(buf, size, tx + inset, ty + inset, innerW, barH, barH / 2, ACCENT);
+  fillRoundedRect(buf, size, tx + inset, ty + inset, innerW, barH, barH / 2, accent);
 
   // Three writing lines.
   const lineH = Math.max(2, tw * 0.055);
@@ -123,44 +128,55 @@ function renderIconPng(size, maskable) {
   fillRoundedRect(buf, size, tx + inset, ty + inset + tw * 0.44, innerW * 0.56, lineH, lineH / 2, MUTED);
 
   // Decision mark in the bottom corner.
-  fillCircle(buf, size, tx + tw - inset - tw * 0.075, ty + th - inset - tw * 0.075, tw * 0.085, ACCENT);
+  fillCircle(buf, size, tx + tw - inset - tw * 0.075, ty + th - inset - tw * 0.075, tw * 0.085, accent);
 
   return encodePng(size, size, buf);
 }
 
-const ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Lawh">
+const escapeXml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+function renderIconSvg(label, accentHex) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="${escapeXml(label)}">
   <rect width="512" height="512" rx="112" fill="#12161a"/>
   <rect x="72" y="72" width="368" height="368" rx="56" fill="#1a2026" stroke="#34404b" stroke-width="14"/>
-  <rect x="124" y="124" width="264" height="28" rx="14" fill="#e0b15a"/>
+  <rect x="124" y="124" width="264" height="28" rx="14" fill="${accentHex}"/>
   <rect x="124" y="190" width="264" height="20" rx="10" fill="#eef2f4"/>
   <rect x="124" y="238" width="206" height="20" rx="10" fill="#a3b0ba"/>
   <rect x="124" y="286" width="148" height="20" rx="10" fill="#a3b0ba"/>
-  <circle cx="360" cy="360" r="32" fill="#e0b15a"/>
+  <circle cx="360" cy="360" r="32" fill="${accentHex}"/>
 </svg>
 `;
+}
 
-export function writePwaAssets(out, shellAssetPaths, indexHtml) {
+export function writePwaAssets(out, shellAssetPaths, indexHtml, instance = {}) {
   mkdirSync(join(out, 'icons'), { recursive: true });
-  const icon192 = renderIconPng(192, false);
-  const icon512 = renderIconPng(512, false);
-  const iconMaskable512 = renderIconPng(512, true);
-  const appleTouch = renderIconPng(180, false);
-  writeFileSync(join(out, 'icon.svg'), ICON_SVG);
+  const nameEn = typeof instance?.name?.en === 'string' && instance.name.en.trim() ? instance.name.en.trim() : 'Lawh';
+  const nameAr = typeof instance?.name?.ar === 'string' && instance.name.ar.trim() ? instance.name.ar.trim() : 'لوح';
+  const accentHex = typeof instance?.accent === 'string' && /^#[0-9a-fA-F]{6}$/.test(instance.accent) ? instance.accent.toLowerCase() : '#e0b15a';
+  const accentRgba = parseHexColor(accentHex, ACCENT);
+  const bgHex = instance?.defaultTheme === 'light' ? '#f6f4ef' : '#12161a';
+  const iconSvg = renderIconSvg(nameEn, accentHex);
+
+  const icon192 = renderIconPng(192, false, accentRgba);
+  const icon512 = renderIconPng(512, false, accentRgba);
+  const iconMaskable512 = renderIconPng(512, true, accentRgba);
+  const appleTouch = renderIconPng(180, false, accentRgba);
+  writeFileSync(join(out, 'icon.svg'), iconSvg);
   writeFileSync(join(out, 'icons/icon-192.png'), icon192);
   writeFileSync(join(out, 'icons/icon-512.png'), icon512);
   writeFileSync(join(out, 'icons/icon-maskable-512.png'), iconMaskable512);
   writeFileSync(join(out, 'icons/apple-touch-icon.png'), appleTouch);
 
   const manifest = `${JSON.stringify({
-    name: 'Lawh · لوح',
-    short_name: 'Lawh',
+    name: `${nameEn} · ${nameAr}`,
+    short_name: nameEn,
     description: 'Private self-hosted pages and decisions for agents and teams.',
     id: '/',
     start_url: '/',
     scope: '/',
     display: 'standalone',
-    background_color: '#12161a',
-    theme_color: '#12161a',
+    background_color: bgHex,
+    theme_color: bgHex,
     icons: [
       { src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
       { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
@@ -182,7 +198,7 @@ export function writePwaAssets(out, shellAssetPaths, indexHtml) {
   const hash = createHash('sha256');
   hash.update(JSON.stringify(precache));
   hash.update(manifest);
-  hash.update(ICON_SVG);
+  hash.update(iconSvg);
   hash.update(indexHtml);
   hash.update(icon192);
   hash.update(icon512);

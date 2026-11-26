@@ -2,7 +2,7 @@
 import { randomBytes } from 'node:crypto';
 import { createWriteStream, existsSync, mkdirSync, realpathSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 /** Tables in loadable order (matching src/app/people/exportData.ts). Search index and secrets are excluded. */
 export const EXPORT_TABLES = [
@@ -143,13 +143,14 @@ export function expandUserPath(raw, homeDir = homedir()) {
   return raw;
 }
 
-/** Refuses any export path that equals or falls inside the git working tree. */
+/** Refuses any export path that equals or falls inside the git working tree (including child dirs like `..exports`). */
 export function assertOutsideRepo(exportDir, repoRoot, homeDir = homedir()) {
   const expanded = expandUserPath(exportDir, homeDir);
   const targetReal = resolveWithExistingAncestor(expanded);
   const repoReal = resolveWithExistingAncestor(repoRoot);
   const rel = relative(repoReal, targetReal);
-  if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))) {
+  const outside = rel === '..' || rel.startsWith(`..${sep}`) || rel.startsWith('../') || rel.startsWith('..\\') || isAbsolute(rel);
+  if (!outside) {
     throw new Error(`Export folder must be outside the repository (${repoRoot}). Choose a folder such as ${defaultExportDir(homeDir)}.`);
   }
   return targetReal;
