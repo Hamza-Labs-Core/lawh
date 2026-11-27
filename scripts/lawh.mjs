@@ -8,6 +8,7 @@ import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { createCloudflareClient, isAuthError, MissingCloudflareTokenError, readCloudflareToken } from './cli/cloudflare.mjs';
 import { runDestroy, runInit, runRollback, runUpgrade } from './cli/commands.mjs';
+import { installSkill, refreshInstalledSkills } from './cli/skill.mjs';
 import { runOwnerTransfer } from './cli/transfer.mjs';
 import { parseJsonc } from './local/jsonc.mjs';
 
@@ -22,6 +23,8 @@ const USAGE = `Usage:
   ${bin} destroy
   ${bin} owner setup [--local]
   ${bin} owner transfer <member> [--local]
+  ${bin} skill install [--dir <path>] [--url <url>]
+  ${bin} skill refresh [--url <url>]
   ${bin} self-update
   ${bin} version`;
 
@@ -146,6 +149,48 @@ function runSelfUpdate() {
   execFileSync('bash', [installer], { stdio: 'inherit', env });
 }
 
+function runSkillCli(args) {
+  const [sub, ...rest] = args;
+  if (sub !== 'install' && sub !== 'refresh') {
+    fail(`Usage:\n  ${bin} skill install [--dir <path>] [--url <url>]\n  ${bin} skill refresh [--url <url>]`, 2);
+  }
+  const dirs = [];
+  let url = '';
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === '--dir' && sub === 'install' && i + 1 < rest.length) {
+      dirs.push(rest[++i]);
+    } else if (a.startsWith('--dir=') && sub === 'install') {
+      dirs.push(a.slice('--dir='.length));
+    } else if (a === '--url' && i + 1 < rest.length) {
+      url = rest[++i];
+    } else if (a.startsWith('--url=')) {
+      url = a.slice('--url='.length);
+    } else {
+      fail(`Unknown option for \`${bin} skill ${sub}\`: ${a}`, 2);
+    }
+  }
+  const home = managed ? (process.env.LAWH_HOME || readManagedInstallMeta()?.home || dirname(root)) : '';
+  try {
+    if (sub === 'install') {
+      const res = installSkill({ root, home, dirs, url });
+      for (const item of res.installed) {
+        console.log(`Installed Lawh skill in ${item.dir}`);
+      }
+      if (managed) {
+        console.log('Future `lawh self-update` runs will refresh these skill directories automatically.');
+      }
+    } else {
+      const res = refreshInstalledSkills({ root, home, url });
+      for (const item of res.refreshed) {
+        console.log(`Refreshed Lawh skill in ${item.dir}`);
+      }
+    }
+  } catch (err) {
+    fail(err instanceof Error ? err.message : String(err), 1);
+  }
+}
+
 function printVersion() {
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
   console.log(`lawh v${pkg.version}`);
@@ -180,6 +225,8 @@ if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
   runWranglerLogin();
 } else if (cmd === 'self-update' && rest.length === 0) {
   runSelfUpdate();
+} else if (cmd === 'skill') {
+  runSkillCli(rest);
 } else if (cmd === 'owner' && rest[0] === 'setup') {
   await runOwnerSetup(rest.slice(1));
 } else if (cmd === 'owner' && rest[0] === 'transfer') {

@@ -52,6 +52,7 @@ If Node is unavailable, any HTTPS client can run the two calls directly:
 Pass `--json` to any command for machine-readable JSON output.
 
 - `node lawh.mjs whoami` — show this key's agent, scopes, expiry, and accessible projects.
+- `node lawh.mjs update [--url <url>]` — update this `lawh.mjs` client (and sibling `SKILL.md`, if installed as a skill) directly from the connected Lawh copy.
 - `node lawh.mjs projects` — list accessible projects.
 - `node lawh.mjs project create "<name>" [--slug <slug>] [--no-open]` — ask the owner to approve creating a new project and granting this key access (prints a code for `{{APP_URL}}/connect` and waits for approval).
 - `node lawh.mjs publish <folder> --project <slug> --slug <slug> --title "<title>" [--summary "..."] [--lang en|ar] [--tags a,b] [--status draft|in_review|archived] [--entry index.html] [--note "..."] [--decisions decisions.json]` — upload a folder as a new page or new version.

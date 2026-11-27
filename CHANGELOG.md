@@ -2,6 +2,12 @@
 
 All notable changes to Lawh are documented in this file.
 
+## [1.3.0] - 2026-11-27
+
+### Added
+- **Self-updating agent CLI & skill (`lawh.mjs update`):** Any agent or teammate can run `node lawh.mjs update` to atomically download the latest `lawh.mjs` (and sibling `SKILL.md`, when installed as a skill) directly from their Lawh server.
+- **Managed local skill installation & auto-refresh (`lawh skill install`, `lawh skill refresh`):** Owners can install the Lawh agent skill into local agent skill directories (`~/.agents/skills/lawh` and detected provider dirs, or `--dir <path>`) with `lawh skill install`; subsequent `lawh self-update` (or `install.sh`) runs automatically refresh every registered skill directory.
+
 ## [1.2.0] - 2026-11-26
 
 ### Added
