@@ -2,6 +2,11 @@
 
 All notable changes to Lawh are documented in this file.
 
+## [1.3.1] - 2026-11-27
+
+### Improved
+- **Code input auto-formatting on `/connect` and `/approve`:** Trims whitespace, forces uppercase letters, strips stray characters, caps at 8 letters, and automatically inserts the `-` dash after the 4th letter (without trapping Backspace).
+
 ## [1.3.0] - 2026-11-27
 
 ### Added

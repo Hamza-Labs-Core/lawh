@@ -51,7 +51,15 @@ test('an agent connects end-to-end through /connect and the zero-dep CLI publish
     // Manager opens /connect, types the code, sees client claim + warning, picks name & project, and connects.
     await enter(page.context(), member);
     await page.goto(`${APP}/connect`);
-    await page.getByLabel('Type the code the agent client shows.').fill(connectCode);
+    const codeField = page.getByLabel('Type the code the agent client shows.');
+    // Verify live trimming, uppercasing, auto-dash after 4 letters, and transparent Backspace (removes dash + 4th letter).
+    const raw8 = connectCode.replace('-', '').toLowerCase();
+    await codeField.pressSequentially(`  ${raw8.slice(0, 4)}`);
+    await expect(codeField).toHaveValue(`${raw8.slice(0, 4).toUpperCase()}-`);
+    await codeField.press('Backspace');
+    await expect(codeField).toHaveValue(raw8.slice(0, 3).toUpperCase());
+    await codeField.pressSequentially(raw8.slice(3));
+    await expect(codeField).toHaveValue(connectCode);
     await page.getByRole('button', { name: 'Continue' }).click();
     await expect(page.getByText('The client says it is claude on workstation.')).toBeVisible();
     await expect(page.getByText('Continue only if you started this.')).toBeVisible();

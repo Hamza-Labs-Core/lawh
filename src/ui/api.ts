@@ -26,6 +26,17 @@ export const problemOf = (error: unknown): 'offline' | 'wait' | 'failed' =>
 export const slugifyProject = (name: string): string =>
   name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80).replace(/-+$/, '');
 
+/** Trims, uppercases letters, strips spaces/dashes/non-letters, caps at 8 letters, and auto-inserts `-` after 4 letters. */
+export function formatCodeInput(raw: string, prev = ''): string {
+  // Backspace on the auto-inserted trailing dash (`ABCD-` -> `ABCD`) removes the 4th letter too so the separator feels transparent.
+  if (prev.length === 5 && prev.endsWith('-') && raw === prev.slice(0, 4)) {
+    return prev.slice(0, 3);
+  }
+  const clean = raw.trim().toUpperCase().replace(/[^A-Z]/g, '').slice(0, 8);
+  if (clean.length >= 4) return `${clean.slice(0, 4)}-${clean.slice(4)}`;
+  return clean;
+}
+
 export interface ProjectName { slug: string; name: { en: string; ar: string }; answersNeeded?: number; answerers?: number }
 export type Status = 'draft' | 'in_review' | 'decided' | 'archived';
 export interface PageItem { id: string; project: ProjectName; slug: string; title: string; summary: string; lang: 'en' | 'ar'; tags: string[]; status: Status; currentVersion: number; updatedAt: number }

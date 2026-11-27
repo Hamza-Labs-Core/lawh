@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'preact/hooks';
-import { call, CallError, type Me, problemOf, type ProjectName, slugifyProject } from '../api';
+import { call, CallError, formatCodeInput, type Me, problemOf, type ProjectName, slugifyProject } from '../api';
 import { Failure, Fill, go, Heading, useBusy, useSettings, useText } from '../app';
 
 interface ConnectInfo {
@@ -304,7 +304,22 @@ export function Connect({ me, onSignedOut }: { me: Me; onSignedOut: () => void }
         <form onSubmit={(event) => { event.preventDefault(); lookUp(); }}>
           <Heading key="code">{t('connectTitle')}</Heading>
           <label class="muted" for={`${id}-code`}>{t('connectHelp')}</label>
-          <input id={`${id}-code`} class="field code" dir="ltr" autocomplete="off" autocapitalize="characters" spellcheck={false} maxLength={40} required value={code} onInput={(event) => setCode(event.currentTarget.value)} />
+          <input
+            id={`${id}-code`}
+            class="field code"
+            dir="ltr"
+            autocomplete="off"
+            autocapitalize="characters"
+            spellcheck={false}
+            maxLength={40}
+            required
+            value={code}
+            onInput={(event) => {
+              const next = formatCodeInput(event.currentTarget.value, code);
+              event.currentTarget.value = next;
+              setCode(next);
+            }}
+          />
           <p class="muted">{t('connectWarn')}</p>
           <button class="primary" type="submit" disabled={busy}>{t('next')}</button>
         </form>
