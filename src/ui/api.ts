@@ -19,6 +19,10 @@ export async function call<T = undefined>(method: string, path: string, body?: u
 export const problemOf = (error: unknown): 'offline' | 'wait' | 'failed' =>
   !(error instanceof CallError) ? 'failed' : error.status === 0 ? 'offline' : error.status === 429 ? 'wait' : 'failed';
 
+/** Turns a project name into a URL-safe slug (empty if the name has no ASCII letters or digits). */
+export const slugifyProject = (name: string): string =>
+  name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80).replace(/-+$/, '');
+
 export interface ProjectName { slug: string; name: { en: string; ar: string }; answersNeeded?: number; answerers?: number }
 export type Status = 'draft' | 'in_review' | 'decided' | 'archived';
 export interface PageItem { id: string; project: ProjectName; slug: string; title: string; summary: string; lang: 'en' | 'ar'; tags: string[]; status: Status; currentVersion: number; updatedAt: number }

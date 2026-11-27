@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 // @ts-expect-error plain ESM script
 import { buildUi } from '../../scripts/build-ui.mjs';
 // @ts-expect-error plain ESM script
-import { createCloudflareClient, readCloudflareToken } from '../../scripts/cli/cloudflare.mjs';
+import { createCloudflareClient, MissingCloudflareTokenError, readCloudflareToken } from '../../scripts/cli/cloudflare.mjs';
 // @ts-expect-error plain ESM script
 import { runDestroy, runInit, runRollback, runUpgrade } from '../../scripts/cli/commands.mjs';
 // @ts-expect-error plain ESM script
@@ -508,14 +508,10 @@ describe('S15 self-hosting lifecycle (init, upgrade, rollback, destroy)', () => 
       root: ws,
       cf,
       prompt: scriptedPrompt([
-        'Acme Lawh',    // English instance name
-        'لوح أكمي',     // Arabic instance name
+        'Acme Lawh',    // instance name
         '',             // workers.dev
         'yes',          // confirm cost/plan
         'Sara',         // owner name
-        'design',       // first project slug
-        'Design',       // first project name en
-        'التصميم',      // first project name ar
         'yes',          // turn instance switch on
       ]),
       log: (m: string) => logs.push(m),
@@ -632,16 +628,12 @@ describe('S15 self-hosting lifecycle (init, upgrade, rollback, destroy)', () => 
     cleanups.push(() => rmSync(ws, { recursive: true, force: true }));
     const cf = createCloudflareClient({ apiBase: mock.apiBase, token: TOKEN });
 
-    // Interrupt init repeatedly across every stage (account/subdomain, D1, R2, queues, secrets, migrations, deploy, owner/project) and resume until completion!
+    // Interrupt init repeatedly across every stage (account/subdomain, D1, R2, queues, secrets, migrations, deploy, owner) and resume until completion!
     const prompt = async (q: string) => {
-      if (q.includes('Instance name (English)')) return 'Lawh';
-      if (q.includes('Instance name (Arabic)')) return 'لوح';
+      if (q.includes('Instance name')) return 'Lawh';
       if (q.includes('Hosts')) return '';
       if (q.includes('Create these resources')) return 'yes';
       if (q.includes('Your name')) return 'Owner';
-      if (q.includes('First project slug')) return 'alpha';
-      if (q.includes('First project name (English)')) return 'Alpha';
-      if (q.includes('First project name (Arabic)')) return 'ألفا';
       if (q.includes('Turn the instance switch ON')) return 'yes';
       return '';
     };
@@ -731,7 +723,7 @@ describe('S15 self-hosting lifecycle (init, upgrade, rollback, destroy)', () => 
     const initRes = await runInit({
       root: ws,
       cf,
-      prompt: scriptedPrompt(['Lawh', 'لوح', '', 'yes', 'Owner', 'main', 'Main', 'الرئيسي', 'yes']),
+      prompt: scriptedPrompt(['Lawh', '', 'yes', 'Owner', 'yes']),
       log: () => {},
       deployWorker: mock.createDeployWorker(),
     });
@@ -799,15 +791,11 @@ describe('S15 self-hosting lifecycle (init, upgrade, rollback, destroy)', () => 
     mock.state.dropAfterCommitOn = { method: 'POST', pathEndsWith: '/d1/database' };
 
     const prompt = async (q: string) => {
-      if (q.includes('Instance name (English)')) return 'Studio Lawh';
-      if (q.includes('Instance name (Arabic)')) return 'لوح الاستوديو';
+      if (q.includes('Instance name')) return 'Studio Lawh';
       if (q.includes('Hosts')) return '';
       if (q.includes('No workers.dev subdomain')) return 'fresh-sub';
       if (q.includes('Create these resources')) return 'yes';
       if (q.includes('Your name')) return 'Owner';
-      if (q.includes('First project slug')) return 'alpha';
-      if (q.includes('First project name (English)')) return 'Alpha';
-      if (q.includes('First project name (Arabic)')) return 'ألفا';
       if (q.includes('Turn the instance switch ON')) return 'yes';
       return '';
     };
@@ -898,6 +886,53 @@ describe('S15 self-hosting lifecycle (init, upgrade, rollback, destroy)', () => 
     const goldCss = /href="\/assets\/(style-[a-f0-9]+\.css)"/.exec(goldHtml);
     expect(goldCss).not.toBeNull();
     expect(readFileSync(join(uiOut, 'dist-gold/assets', goldCss![1]!), 'utf8')).toContain(':root,:root[data-mode=light]{--ac:#e0b15a;}');
+
+    // Single-name instance avoids duplicating `Name · Name` in manifest.webmanifest.
+    const singleNameCfg = join(uiOut, 'lawh-single-name.json');
+    writeFileSync(singleNameCfg, JSON.stringify({
+      instance: { name: { en: 'Acme', ar: 'Acme' }, accent: '#e0b15a', defaultTheme: 'dark' },
+    }));
+    await buildUi({ root: repoRoot, out: join(uiOut, 'dist-single'), configPath: singleNameCfg });
+    const singleManifest = JSON.parse(readFileSync(join(uiOut, 'dist-single/manifest.webmanifest'), 'utf8'));
+    expect(singleManifest.name).toBe('Acme');
+  });
+
+  it('refreshes expired or rotated Wrangler OAuth tokens automatically mid-run', async () => {
+    let activeToken = 'stale-token';
+    let expired = true;
+    let refreshes = 0;
+    const seenAuthHeaders: string[] = [];
+    const cf = createCloudflareClient({
+      apiBase: 'https://api.example.test/client/v4',
+      getToken: () => {
+        if (expired) throw new MissingCloudflareTokenError('expired', { expired: true });
+        return activeToken;
+      },
+      refreshToken: async () => {
+        refreshes++;
+        expired = false;
+        activeToken = `fresh-token-${refreshes}`;
+        return true;
+      },
+      fetchImpl: async (_url: string, init?: RequestInit) => {
+        const auth = String((init?.headers as Record<string, string>)?.Authorization ?? '');
+        seenAuthHeaders.push(auth);
+        if (auth === 'Bearer fresh-token-1') {
+          return new Response(JSON.stringify({ success: false, errors: [{ code: 10000, message: 'Authentication error' }] }), {
+            status: 403,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({ success: true, result: [{ id: ACCOUNT_ID, name: 'Test' }] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      },
+    });
+    const accounts = await cf.listAccounts();
+    expect(accounts).toEqual([{ id: ACCOUNT_ID, name: 'Test' }]);
+    expect(refreshes).toBe(2);
+    expect(seenAuthHeaders).toEqual(['Bearer fresh-token-1', 'Bearer fresh-token-2']);
   });
 
   it('reads Wrangler OAuth token from config file and enforces check_no_instance.py', () => {

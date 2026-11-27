@@ -168,7 +168,7 @@ export function writePwaAssets(out, shellAssetPaths, indexHtml, instance = {}) {
   writeFileSync(join(out, 'icons/apple-touch-icon.png'), appleTouch);
 
   const manifest = `${JSON.stringify({
-    name: `${nameEn} · ${nameAr}`,
+    name: nameEn === nameAr ? nameEn : `${nameEn} · ${nameAr}`,
     short_name: nameEn,
     description: 'Private self-hosted pages and decisions for agents and teams.',
     id: '/',

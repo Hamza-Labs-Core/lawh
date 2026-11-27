@@ -1,11 +1,12 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect } from '@playwright/test';
 import { execFile, spawn } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { APP, db, enter, removeAgents, test } from './people';
+import { APP, db, enter, enterOwner, removeAgents, test } from './people';
 
 const execFileAsync = promisify(execFile);
 
@@ -54,6 +55,7 @@ test('an agent connects end-to-end through /connect and the zero-dep CLI publish
     await page.getByRole('button', { name: 'Continue' }).click();
     await expect(page.getByText('The client says it is claude on workstation.')).toBeVisible();
     await expect(page.getByText('Continue only if you started this.')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'New project' })).toHaveCount(0);
     await page.getByLabel('New agent name').fill('cli-bot');
     await page.getByRole('button', { name: 'Connect agent' }).click();
     await expect(page.getByText('Connected cli-bot. You can return to the agent.')).toBeVisible();
@@ -122,6 +124,77 @@ test('an agent connects end-to-end through /connect and the zero-dep CLI publish
       `DELETE FROM idempotency WHERE key_id IN (SELECT id FROM agent_keys WHERE agent_id IN (SELECT id FROM agents WHERE member_id='${member}'))`,
     );
     await removeAgents(member);
+  }
+});
+
+test('owner creates a new project inline on /connect and connects an agent to it', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const suffix = randomBytes(4).toString('hex');
+  const projectTitle = `Launch Board ${suffix}`;
+  const slug = `inline-${suffix}`;
+  const agentName = `inline-agent-${suffix}`;
+  const secret = randomBytes(32).toString('base64url');
+  const secretSha256 = createHash('sha256').update(secret).digest('hex');
+  let connectId = '';
+  try {
+    const startRes = await page.request.post(`${APP}/v1/connect`, {
+      data: { secretSha256, client: agentName, machine: 'laptop' },
+    });
+    expect(startRes.status()).toBe(201);
+    const started = await startRes.json() as { id: string; code: string };
+    connectId = started.id;
+    const token = `lawh_${started.id}_${secret}`;
+
+    await enterOwner(page.context());
+    await page.goto(`${APP}/connect`);
+    await page.getByLabel('Type the code the agent client shows.').fill(started.code);
+    await page.getByRole('button', { name: 'Continue' }).click();
+    await expect(page.getByRole('button', { name: 'New project' })).toBeVisible();
+
+    await page.getByRole('button', { name: 'New project' }).click();
+    await expect(page.getByLabel('Name', { exact: true })).toBeFocused();
+    await page.getByLabel('Name', { exact: true }).fill(projectTitle);
+    await expect(page.getByLabel('Address')).toHaveValue(`launch-board-${suffix}`);
+    // Duplicate slug stays inside the inline creator without losing the connect screen.
+    await page.getByLabel('Address').fill('one');
+    await page.getByRole('button', { name: 'Add project' }).click();
+    await expect(page.getByRole('alert')).toHaveText('That address is taken.');
+
+    // Pressing Enter inside the inline creator creates the project without submitting the outer connect form.
+    await page.getByLabel('Address').fill(slug);
+    await page.getByLabel('Address').press('Enter');
+    await expect(page.getByRole('button', { name: 'Add project' })).toHaveCount(0);
+    await expect(page.getByLabel('All projects')).not.toBeChecked();
+    await expect(page.getByLabel(projectTitle)).toBeChecked();
+
+    await page.getByRole('button', { name: 'Connect agent' }).click();
+    await expect(page.getByText(`Connected ${agentName}. You can return to the agent.`)).toBeVisible();
+
+    const pollRes = await page.request.get(`${APP}/v1/connect/${started.id}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(pollRes.status()).toBe(200);
+    const polled = await pollRes.json() as { agentId: string; name: string; projects: { slug: string }[] };
+    expect(polled.name).toBe(agentName);
+    expect(polled.projects.map((p) => p.slug)).toEqual([slug]);
+
+    const projRes = await page.request.get(`${APP}/v1/projects`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(projRes.status()).toBe(200);
+    const projList = await projRes.json() as { items: { slug: string; name: { en: string; ar: string } }[] };
+    expect(projList.items).toEqual([{ slug, name: { en: projectTitle, ar: projectTitle } }]);
+  } finally {
+    const stmts: string[] = [];
+    if (connectId) stmts.push(`DELETE FROM agent_connects WHERE id='${connectId}'`);
+    stmts.push(
+      `DELETE FROM agent_key_projects WHERE project_id IN (SELECT id FROM projects WHERE slug='${slug}')`,
+      `DELETE FROM agent_key_projects WHERE key_id IN (SELECT id FROM agent_keys WHERE agent_id IN (SELECT id FROM agents WHERE member_id='o' AND name='${agentName}'))`,
+      `DELETE FROM agent_keys WHERE agent_id IN (SELECT id FROM agents WHERE member_id='o' AND name='${agentName}')`,
+      `DELETE FROM agents WHERE member_id='o' AND name='${agentName}'`,
+      `DELETE FROM projects WHERE slug='${slug}'`,
+    );
+    await db(...stmts);
   }
 });
 

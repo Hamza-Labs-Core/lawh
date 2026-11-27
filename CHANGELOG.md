@@ -2,6 +2,19 @@
 
 All notable changes to Lawh are documented in this file.
 
+## [1.1.0] - 2026-11-26
+
+### Added
+- **Inline project creation on `/connect`:** Owners can create a new project directly inside the agent connection approval screen (with automatic URL address generation) and have it immediately selected for the agent, without leaving `/connect`.
+- **Direct New project link on empty Library:** Owners signing in to a fresh instance with no projects yet see a direct link to create their first project.
+
+### Changed
+- **Single `Name` field everywhere:** Replaced separate English/Arabic name prompts and inputs with a single `Name` field in `lawh init` (instance name) and in the UI (`Settings → Projects` and `/connect`), auto-deriving the URL address from the name while keeping it editable. The UI itself remains bilingual (English / Arabic RTL).
+- **Removed project creation from `lawh init`:** `lawh init` focuses solely on Cloudflare infrastructure, owner setup, and instance switch activation; projects are created in the web UI.
+
+### Fixed
+- **Mid-run Cloudflare OAuth token refresh:** `lawh` CLI commands now read the latest Wrangler OAuth token on each API request and automatically refresh and retry once on expired tokens or Cloudflare `Authentication error` (HTTP 401 / code 10000), preventing failures after `wrangler deploy` or pauses at interactive prompts.
+
 ## [1.0.2] - 2026-11-26
 
 ### Fixed

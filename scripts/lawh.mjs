@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
-import { createCloudflareClient, MissingCloudflareTokenError, readCloudflareToken } from './cli/cloudflare.mjs';
+import { createCloudflareClient, isAuthError, MissingCloudflareTokenError, readCloudflareToken } from './cli/cloudflare.mjs';
 import { runDestroy, runInit, runRollback, runUpgrade } from './cli/commands.mjs';
 import { runOwnerTransfer } from './cli/transfer.mjs';
 import { parseJsonc } from './local/jsonc.mjs';
@@ -188,7 +188,12 @@ if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
   let rl = null;
   try {
     const token = await resolveTokenForCommand(cmd);
-    const cf = createCloudflareClient({ token });
+    const hasStaticEnvToken = Boolean(process.env.CLOUDFLARE_API_TOKEN?.trim());
+    const cf = createCloudflareClient({
+      token,
+      getToken: hasStaticEnvToken ? undefined : () => readCloudflareToken(),
+      refreshToken: hasStaticEnvToken ? undefined : () => tryRefreshWranglerToken(),
+    });
     if (cmd === 'init' || cmd === 'destroy') {
       rl = createInterface({ input: process.stdin, output: process.stdout });
     }
@@ -198,7 +203,8 @@ if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
     else if (cmd === 'rollback') await runRollback({ root, cf });
     else if (cmd === 'destroy') await runDestroy({ root, cf, prompt });
   } catch (err) {
-    fail(err instanceof Error ? err.message : String(err));
+    const msg = err instanceof Error ? err.message : String(err);
+    fail(isAuthError(err) ? `${msg}\nRun \`${bin} login\` to refresh your Cloudflare session.` : msg);
   } finally {
     rl?.close();
   }

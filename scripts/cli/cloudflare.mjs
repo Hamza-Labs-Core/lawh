@@ -79,44 +79,84 @@ export function readCloudflareToken(env = process.env, homeDir = homedir(), { no
   throw new MissingCloudflareTokenError('Not signed in to Cloudflare. Run `lawh login` (or `pnpm lawh login`) or set CLOUDFLARE_API_TOKEN.');
 }
 
-export function createCloudflareClient({ apiBase = process.env.CLOUDFLARE_API_BASE_URL || DEFAULT_API_BASE, token, fetchImpl = fetch } = {}) {
+export const isAuthError = (err) => {
+  if (!(err instanceof CloudflareApiError)) return false;
+  if (err.status === 401 || err.code === 10000) return true;
+  return Array.isArray(err.errors) && err.errors.some((e) => e?.code === 10000);
+};
+
+export function createCloudflareClient({
+  apiBase = process.env.CLOUDFLARE_API_BASE_URL || DEFAULT_API_BASE,
+  token,
+  getToken,
+  refreshToken,
+  fetchImpl = fetch,
+} = {}) {
   const base = apiBase.replace(/\/+$/, '');
 
+  async function resolveBearer() {
+    if (typeof getToken !== 'function') return token;
+    try {
+      return getToken();
+    } catch (err) {
+      if (err instanceof MissingCloudflareTokenError && err.expired && typeof refreshToken === 'function') {
+        const refreshed = await refreshToken();
+        if (refreshed) return getToken();
+      }
+      throw err;
+    }
+  }
+
   async function req(method, path, { body, raw = false, withEnvelope = false } = {}) {
-    const headers = { Authorization: `Bearer ${token}` };
     let payload;
     if (body !== undefined) {
-      headers['Content-Type'] = 'application/json';
       payload = JSON.stringify(body);
     }
-    const res = await fetchImpl(`${base}${path}`, { method, headers, body: payload });
-    if (raw) {
-      if (!res.ok) {
-        let msg = `Cloudflare API ${method} ${path} failed (${res.status})`;
-        let errors = [];
-        try {
-          const parsed = await res.json();
-          if (Array.isArray(parsed?.errors) && parsed.errors.length > 0) {
-            errors = parsed.errors;
-            msg = parsed.errors.map((e) => e.message).join('; ');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const bearer = await resolveBearer();
+      const headers = { Authorization: `Bearer ${bearer}` };
+      if (payload !== undefined) headers['Content-Type'] = 'application/json';
+      try {
+        const res = await fetchImpl(`${base}${path}`, { method, headers, body: payload });
+        if (raw) {
+          if (!res.ok) {
+            let msg = `Cloudflare API ${method} ${path} failed (${res.status})`;
+            let errors = [];
+            try {
+              const parsed = await res.json();
+              if (Array.isArray(parsed?.errors) && parsed.errors.length > 0) {
+                errors = parsed.errors;
+                msg = parsed.errors.map((e) => e.message).join('; ');
+              }
+            } catch { /* ignore */ }
+            throw new CloudflareApiError(msg, { status: res.status, code: errors[0]?.code ?? 0, errors });
           }
-        } catch { /* ignore */ }
-        throw new CloudflareApiError(msg, { status: res.status, code: errors[0]?.code ?? 0, errors });
+          return Buffer.from(await res.arrayBuffer());
+        }
+        const text = await res.text();
+        let parsed = null;
+        try { parsed = text ? JSON.parse(text) : null; } catch { /* ignore */ }
+        if (!res.ok || (parsed && parsed.success === false)) {
+          const errors = Array.isArray(parsed?.errors) ? parsed.errors : [];
+          const msg = errors.length > 0
+            ? errors.map((e) => e.message).join('; ')
+            : `Cloudflare API ${method} ${path} failed (${res.status})`;
+          throw new CloudflareApiError(msg, { status: res.status, code: errors[0]?.code ?? 0, errors });
+        }
+        if (withEnvelope) return { result: parsed?.result ?? null, result_info: parsed?.result_info ?? null };
+        return parsed?.result ?? null;
+      } catch (err) {
+        if (attempt === 0 && isAuthError(err) && typeof refreshToken === 'function') {
+          const refreshed = await refreshToken();
+          let nextBearer = null;
+          if (typeof getToken === 'function') {
+            try { nextBearer = getToken(); } catch { /* ignore */ }
+          }
+          if (refreshed || (nextBearer && nextBearer !== bearer)) continue;
+        }
+        throw err;
       }
-      return Buffer.from(await res.arrayBuffer());
     }
-    const text = await res.text();
-    let parsed = null;
-    try { parsed = text ? JSON.parse(text) : null; } catch { /* ignore */ }
-    if (!res.ok || (parsed && parsed.success === false)) {
-      const errors = Array.isArray(parsed?.errors) ? parsed.errors : [];
-      const msg = errors.length > 0
-        ? errors.map((e) => e.message).join('; ')
-        : `Cloudflare API ${method} ${path} failed (${res.status})`;
-      throw new CloudflareApiError(msg, { status: res.status, code: errors[0]?.code ?? 0, errors });
-    }
-    if (withEnvelope) return { result: parsed?.result ?? null, result_info: parsed?.result_info ?? null };
-    return parsed?.result ?? null;
   }
 
   return {

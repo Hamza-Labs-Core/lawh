@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'preact/hooks';
-import { type Agent, call, CallError, type DeletedPage, type FailedDelivery, type Listed, type Me, type MyActiveKey, type PeopleResponse, problemOf, type ProjectName, type TeamItem, type TeamsResponse, type WebhookItem } from '../api';
+import { type Agent, call, CallError, type DeletedPage, type FailedDelivery, type Listed, type Me, type MyActiveKey, type PeopleResponse, problemOf, type ProjectName, slugifyProject, type TeamItem, type TeamsResponse, type WebhookItem } from '../api';
 import { Failure, Fill, Heading, Link, useBusy, useSettings, useText } from '../app';
 import { day, digits, type Key } from '../i18n';
 import { Account } from './Account';
@@ -612,16 +612,15 @@ const AGREEMENT_OPTIONS = [1, 2, 3, 4, 5] as const;
 function ProjectForm({ me, project, nextSeq, onSynced, onSave }: { me: Me; project?: ProjectName; nextSeq?: () => number; onSynced?: (slug: string, startedSeq: number, fresh: ProjectName | undefined) => void; onSave: (slug: string, payload: { name?: { en: string; ar: string }; answersNeeded?: number }) => Promise<void> }) {
   const t = useText(), { lang } = useSettings(), id = useId(), [busy, run] = useBusy(), [problem, setProblem] = useState<Problem | null>(null), [done, setDone] = useState(false), [open, setOpen] = useState(false), box = useRef<HTMLDivElement>(null), first = useRef<HTMLInputElement>(null), wasOpen = useRef(false);
   const [refreshState, setRefreshState] = useState<'ready' | 'loading' | 'error'>('ready'), [refreshTry, setRefreshTry] = useState(0);
-  const [slug, setSlug] = useState(project?.slug ?? ''), [en, setEn] = useState(project?.name.en ?? ''), [ar, setAr] = useState(project?.name.ar ?? '');
+  const [slug, setSlug] = useState(project?.slug ?? ''), [name, setName] = useState(project ? project.name[lang] : '');
   const currentNeeded = project?.answersNeeded ?? 1;
   const [needed, setNeeded] = useState(currentNeeded);
-  const touched = useRef({ en: false, ar: false, needed: false });
+  const touched = useRef({ name: false, slug: false, needed: false });
   useEffect(() => {
     if (!project) return;
-    if (!open || !touched.current.en) setEn(project.name.en);
-    if (!open || !touched.current.ar) setAr(project.name.ar);
+    if (!open || !touched.current.name) setName(project.name[lang]);
     if (!open || !touched.current.needed) setNeeded(project.answersNeeded ?? 1);
-  }, [open, project?.name.en, project?.name.ar, project?.answersNeeded]);
+  }, [open, lang, project?.name.en, project?.name.ar, project?.answersNeeded]);
   // Each open project editor runs its own abortable GET /projects so canceling/reopening or opening another card never clears this form's loading guard, and a failed GET keeps Save locked with a visible error.
   useEffect(() => {
     if (!open || !project || !onSynced || !nextSeq) { setRefreshState('ready'); return; }
@@ -644,17 +643,18 @@ function ProjectForm({ me, project, nextSeq, onSynced, onSave }: { me: Me; proje
     return () => stop.abort();
   }, [open, project?.slug, refreshTry]);
   useEffect(() => { if (open) first.current?.focus(); else if (wasOpen.current) box.current?.focus(); wasOpen.current = open; }, [open]);
-  const nameChanged = !project || en.trim() !== project.name.en || ar.trim() !== project.name.ar;
+  const trimmedName = name.trim();
+  const nameChanged = !project || (touched.current.name && trimmedName !== project.name[lang]);
   const neededChanged = Boolean(project && me.teams && needed !== currentNeeded);
   const changed = nameChanged || neededChanged;
-  const ready = /^[a-z0-9][a-z0-9-]{0,79}$/.test(slug) && en.trim() !== '' && ar.trim() !== '' && changed && refreshState === 'ready';
+  const ready = /^[a-z0-9][a-z0-9-]{0,79}$/.test(slug) && trimmedName !== '' && changed && refreshState === 'ready';
   const save = () => run(async () => {
     if (refreshState !== 'ready') return;
     setProblem(null); setDone(false);
     const payload: { name?: { en: string; ar: string }; answersNeeded?: number } = {};
-    if (nameChanged) payload.name = { en: en.trim(), ar: ar.trim() };
+    if (nameChanged) payload.name = { en: trimmedName, ar: trimmedName };
     if (neededChanged) payload.answersNeeded = needed;
-    try { await onSave(slug, payload); setDone(true); setOpen(false); if (!project) { setSlug(''); setEn(''); setAr(''); } } catch (error) { setProblem(error instanceof CallError && error.status === 409 ? (project ? 'agreementOff' : 'taken') : problemIn(error)); }
+    try { await onSave(slug, payload); setDone(true); setOpen(false); if (!project) { setSlug(''); setName(''); touched.current = { name: false, slug: false, needed: false }; } } catch (error) { setProblem(error instanceof CallError && error.status === 409 ? (project ? 'agreementOff' : 'taken') : problemIn(error)); }
   });
   const tooFew = project !== undefined && currentNeeded > 1 && project.answerers !== undefined && project.answerers < currentNeeded;
   if (!open) {
@@ -667,13 +667,13 @@ function ProjectForm({ me, project, nextSeq, onSynced, onSave }: { me: Me; proje
             {currentNeeded > 1 && <p class="muted"><Fill text="agreementCount" n={digits(lang, currentNeeded)} /></p>}
             {tooFew && <p class="failure"><Fill text="needsMoreAnswerers" n={digits(lang, currentNeeded)} can={digits(lang, project.answerers!)} /></p>}
             <button class="plain wide" onClick={() => {
-              touched.current = { en: false, ar: false, needed: false };
-              setEn(project.name.en); setAr(project.name.ar); setNeeded(currentNeeded);
+              touched.current = { name: false, slug: false, needed: false };
+              setName(project.name[lang]); setNeeded(currentNeeded);
               setRefreshState('loading');
               setOpen(true); setDone(false);
             }}>{t('rename')}</button>
           </>
-        ) : <button class="primary fit" onClick={() => { setOpen(true); setDone(false); }}>{t('newProject')}</button>}
+        ) : <button class="primary fit" onClick={() => { touched.current = { name: false, slug: false, needed: false }; setOpen(true); setDone(false); }}>{t('newProject')}</button>}
         <div aria-live="polite">{done && <p class="done">{t('saved')}</p>}</div>
       </div>
     );
@@ -681,9 +681,29 @@ function ProjectForm({ me, project, nextSeq, onSynced, onSave }: { me: Me; proje
   return (
     <form class="card form" onSubmit={(event) => { event.preventDefault(); if (ready) save(); }}>
       <h2>{project ? <bdi>{project.name[lang]}</bdi> : t('newProject')}</h2>
-      {!project && <><label class="muted" for={`${id}-s`}>{t('slug')}</label><input ref={first} id={`${id}-s`} class="field" dir="ltr" maxLength={80} autocomplete="off" autocapitalize="none" value={slug} onInput={(event) => setSlug(event.currentTarget.value.toLowerCase())} /><p class="muted">{t('slugHelp')}</p></>}
-      <label class="muted" for={`${id}-e`}>{t('nameEn')}</label><input {...(project && { ref: first })} id={`${id}-e`} class="field" lang="en" dir="ltr" maxLength={80} autocomplete="off" value={en} onInput={(event) => { touched.current.en = true; setEn(event.currentTarget.value); }} />
-      <label class="muted" for={`${id}-r`}>{t('nameAr')}</label><input id={`${id}-r`} class="field" lang="ar" dir="rtl" maxLength={80} autocomplete="off" value={ar} onInput={(event) => { touched.current.ar = true; setAr(event.currentTarget.value); }} />
+      <label class="muted" for={`${id}-n`}>{t('projectName')}</label>
+      <input
+        ref={first}
+        id={`${id}-n`}
+        class="field"
+        dir="auto"
+        maxLength={80}
+        autocomplete="off"
+        value={name}
+        onInput={(event) => {
+          const next = event.currentTarget.value;
+          touched.current.name = true;
+          setName(next);
+          if (!project && !touched.current.slug) setSlug(slugifyProject(next));
+        }}
+      />
+      {!project && (
+        <>
+          <label class="muted" for={`${id}-s`}>{t('slug')}</label>
+          <input id={`${id}-s`} class="field" dir="ltr" maxLength={80} autocomplete="off" autocapitalize="none" value={slug} onInput={(event) => { touched.current.slug = true; setSlug(event.currentTarget.value.toLowerCase()); }} />
+          <p class="muted">{t('slugHelp')}</p>
+        </>
+      )}
       {project && me.teams && (
         <>
           <label class="muted" for={`${id}-a`}>{t('agreementNeeded')}</label>
@@ -700,7 +720,7 @@ function ProjectForm({ me, project, nextSeq, onSynced, onSave }: { me: Me; proje
       {problem && <Failure>{t(problem)}</Failure>}
       {refreshState === 'error' && <button class="plain" type="button" onClick={() => setRefreshTry((n) => n + 1)}>{t('retry')}</button>}
       <button class="primary" type="submit" disabled={!ready || busy}>{t('save')}</button>
-      <button class="plain wide" type="button" disabled={busy} onClick={() => { setOpen(false); setProblem(null); setSlug(project?.slug ?? ''); setEn(project?.name.en ?? ''); setAr(project?.name.ar ?? ''); setNeeded(currentNeeded); }}>{t('cancel')}</button>
+      <button class="plain wide" type="button" disabled={busy} onClick={() => { setOpen(false); setProblem(null); setSlug(project?.slug ?? ''); setName(project ? project.name[lang] : ''); setNeeded(currentNeeded); touched.current = { name: false, slug: false, needed: false }; }}>{t('cancel')}</button>
     </form>
   );
 }
