@@ -94,11 +94,19 @@ export function writeUpgradeState(root, state) {
 }
 
 export function validateOrigin(raw, label, { allowLocalHttp = false } = {}) {
+  let trimmed = String(raw ?? '').trim().toLowerCase();
+  if (!trimmed) throw new Error(`${label} must be a valid domain or https:// origin.`);
+  if (!trimmed.includes('://')) {
+    trimmed = `https://${trimmed}`;
+  }
+  if (trimmed.endsWith('/') && !trimmed.slice(0, -1).endsWith('/')) {
+    trimmed = trimmed.slice(0, -1);
+  }
   let url;
-  try { url = new URL(raw); } catch { throw new Error(`${label} must be a valid https:// origin.`); }
+  try { url = new URL(trimmed); } catch { throw new Error(`${label} must be a valid domain or https:// origin.`); }
   const local = allowLocalHttp && url.protocol === 'http:' && (url.hostname === '127.0.0.1' || url.hostname === 'localhost');
-  if (url.origin !== raw || !/^[a-z0-9.-]+$/.test(url.hostname) || (url.protocol !== 'https:' && !local)) {
-    throw new Error(`${label} must be an exact https:// origin with no path, query, or fragment.`);
+  if (url.origin !== trimmed || !/^[a-z0-9.-]+$/.test(url.hostname) || (!local && !url.hostname.includes('.')) || (url.protocol !== 'https:' && !local)) {
+    throw new Error(`${label} must be a domain or exact https:// origin with no path, query, or fragment.`);
   }
   return url.origin;
 }

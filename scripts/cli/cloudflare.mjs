@@ -17,10 +17,15 @@ export class CloudflareApiError extends Error {
 
 export const isNotFoundError = (err) => err instanceof CloudflareApiError && err.status === 404;
 
-export const isSecretsStoreUnavailable = (err) =>
-  err instanceof CloudflareApiError &&
-  (err.status === 403 || err.status === 404 || err.status === 409 || err.status === 429 ||
-    /limit|quota|access|entitlement|not enabled|not available|permission|already exists/i.test(err.message));
+export const isSecretsStoreUnavailable = (err) => {
+  if (!(err instanceof CloudflareApiError)) return false;
+  if (err.status === 403 || err.status === 404 || err.status === 409 || err.status === 429) return true;
+  const text = [
+    err.message,
+    ...(Array.isArray(err.errors) ? err.errors.map((e) => `${e?.code ?? ''} ${e?.message ?? ''}`) : []),
+  ].join(' ');
+  return /limit|quota|maximum|exceeded|too many|access|entitlement|not enabled|not available|permission|already exists/i.test(text);
+};
 
 export class MissingCloudflareTokenError extends Error {
   constructor(message, { expired = false } = {}) {

@@ -6,9 +6,11 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 // @ts-expect-error plain ESM script
-import { MissingCloudflareTokenError, readCloudflareToken } from '../../scripts/cli/cloudflare.mjs';
+import { CloudflareApiError, isSecretsStoreUnavailable, MissingCloudflareTokenError, readCloudflareToken } from '../../scripts/cli/cloudflare.mjs';
 // @ts-expect-error plain ESM script
 import { runUpgrade } from '../../scripts/cli/commands.mjs';
+// @ts-expect-error plain ESM script
+import { validateHostPair, validateOrigin } from '../../scripts/cli/config.mjs';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const installerPath = join(repoRoot, 'install.sh');
@@ -652,9 +654,10 @@ describe('no-clone installer (install.sh) and lawh CLI', { timeout: 30_000 }, ()
     );
 
     // 5) Repo-mode `version` and `self-update` guidance.
+    const expectedVersion = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')).version;
     const ver = spawnSync(process.execPath, [join(repoRoot, 'scripts/lawh.mjs'), 'version'], { encoding: 'utf8' });
     expect(ver.status, ver.stderr).toBe(0);
-    expect(ver.stdout.trim()).toBe('lawh v1.0.1');
+    expect(ver.stdout.trim()).toBe(`lawh v${expectedVersion}`);
 
     const selfUp = spawnSync(process.execPath, [join(repoRoot, 'scripts/lawh.mjs'), 'self-update'], {
       encoding: 'utf8',
@@ -662,5 +665,23 @@ describe('no-clone installer (install.sh) and lawh CLI', { timeout: 30_000 }, ()
     });
     expect(selfUp.status, selfUp.stderr).toBe(0);
     expect(selfUp.stdout).toContain('git pull && pnpm install && pnpm lawh upgrade');
+
+    // 6) Bare custom hostnames normalize to https:// while invalid schemes/paths remain rejected.
+    expect(validateOrigin('lawh.example.com', 'App domain')).toBe('https://lawh.example.com');
+    expect(validateOrigin('LAWH.Example.com/', 'App domain')).toBe('https://lawh.example.com');
+    expect(validateOrigin('https://lawh.example.com/', 'App domain')).toBe('https://lawh.example.com');
+    expect(validateHostPair('lawh.example.com', 'pages.example.com')).toEqual({
+      app: 'https://lawh.example.com',
+      content: 'https://pages.example.com',
+    });
+    expect(() => validateOrigin('http://lawh.example.com', 'App domain')).toThrow();
+    expect(() => validateOrigin('lawh.example.com/sub', 'App domain')).toThrow();
+    expect(() => validateOrigin('localhost-only', 'App domain')).toThrow();
+    expect(() => validateHostPair('lawh.example.com', 'https://lawh.example.com')).toThrow('different hostnames');
+
+    // 7) Cloudflare HTTP 400 `maximum_stores_exceeded` triggers automatic Worker secrets fallback.
+    expect(isSecretsStoreUnavailable(new CloudflareApiError('maximum_stores_exceeded', { status: 400 }))).toBe(true);
+    expect(isSecretsStoreUnavailable(new CloudflareApiError('Bad request', { status: 400, errors: [{ code: 10000, message: 'maximum_stores_exceeded' }] }))).toBe(true);
+    expect(isSecretsStoreUnavailable(new CloudflareApiError('internal server error', { status: 500 }))).toBe(false);
   });
 });

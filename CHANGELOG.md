@@ -2,6 +2,12 @@
 
 All notable changes to Lawh are documented in this file.
 
+## [1.0.2] - 2026-11-26
+
+### Fixed
+- **Bare custom domains in `lawh init`:** Accept bare hostnames (e.g. `lawh.example.com`) and optional trailing slashes in custom-domain prompts, automatically normalizing to `https://` while still rejecting `http://`, paths, queries, and fragments.
+- **Secrets Store quota fallback (`maximum_stores_exceeded`):** Recognize Cloudflare's HTTP 400 `maximum_stores_exceeded` error in `isSecretsStoreUnavailable` so `lawh init` automatically falls back to Worker secrets when the account has already reached its Secrets Store limit.
+
 ## [1.0.1] - 2026-11-26
 
 ### Added
