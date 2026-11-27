@@ -1,5 +1,5 @@
-import { useId, useState } from 'preact/hooks';
-import { call, CallError, type Me, problemOf } from '../api';
+import { useEffect, useId, useRef, useState } from 'preact/hooks';
+import { call, CallError, type Me, problemOf, type ProjectName, slugifyProject } from '../api';
 import { Failure, Fill, go, Heading, useBusy, useSettings, useText } from '../app';
 
 interface ConnectInfo {
@@ -21,9 +21,23 @@ export function Connect({ me, onSignedOut }: { me: Me; onSignedOut: () => void }
   const [newName, setNewName] = useState('');
   const [allProjects, setAllProjects] = useState(false);
   const [projects, setProjects] = useState<string[]>([]);
+  const [addingProject, setAddingProject] = useState(false);
+  const [newProjectName, setNewProjectName] = useState('');
+  const [newProjectSlug, setNewProjectSlug] = useState('');
+  const [projectProblem, setProjectProblem] = useState<string | null>(null);
+  const slugTouched = useRef(false);
+  const newProjectBtn = useRef<HTMLButtonElement>(null);
+  const projectNameInput = useRef<HTMLInputElement>(null);
+  const wasAddingProject = useRef(false);
   const [result, setResult] = useState<'connected' | 'refused' | null>(null);
   const [connectedName, setConnectedName] = useState('');
   const [problem, setProblem] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (addingProject) projectNameInput.current?.focus();
+    else if (wasAddingProject.current) newProjectBtn.current?.focus();
+    wasAddingProject.current = addingProject;
+  }, [addingProject]);
 
   if (!me.isOwner && !me.manages) {
     return (
@@ -49,6 +63,11 @@ export function Connect({ me, onSignedOut }: { me: Me; onSignedOut: () => void }
   const lookUp = () => step(async () => {
     const found = await call<ConnectInfo>('POST', '/connect/look', { code });
     setInfo(found);
+    setAddingProject(false);
+    setNewProjectName('');
+    setNewProjectSlug('');
+    setProjectProblem(null);
+    slugTouched.current = false;
     const matching = found.agents.find((a) => a.name.toLowerCase() === found.client.toLowerCase());
     if (matching) {
       setPickedAgent(matching.id);
@@ -64,6 +83,55 @@ export function Connect({ me, onSignedOut }: { me: Me; onSignedOut: () => void }
   const toggleProject = (slug: string) => setProjects((list) => (list.includes(slug) ? list.filter((s) => s !== slug) : [...list, slug]));
   const usingNew = pickedAgent === '__new__' || (info?.agents.length ?? 0) === 0;
   const ready = info !== null && (usingNew ? newName.trim().length > 0 : pickedAgent !== '') && (allProjects || projects.length > 0);
+  const newProjectReady = /^[a-z0-9][a-z0-9-]{0,79}$/.test(newProjectSlug) && newProjectName.trim().length > 0;
+
+  const openNewProject = () => {
+    setProjectProblem(null);
+    setNewProjectName('');
+    setNewProjectSlug('');
+    slugTouched.current = false;
+    setAddingProject(true);
+  };
+
+  const closeNewProject = () => {
+    setAddingProject(false);
+    setProjectProblem(null);
+    setNewProjectName('');
+    setNewProjectSlug('');
+    slugTouched.current = false;
+  };
+
+  const createProject = () => run(async () => {
+    if (!newProjectReady) return;
+    setProjectProblem(null);
+    const trimmed = newProjectName.trim();
+    try {
+      const made = await call<ProjectName>('POST', '/projects', {
+        slug: newProjectSlug,
+        name: { en: trimmed, ar: trimmed },
+      });
+      setInfo((cur) => (cur ? {
+        ...cur,
+        projects: cur.projects.some((p) => p.slug === made.slug)
+          ? cur.projects
+          : [...cur.projects, { slug: made.slug, name: made.name }],
+      } : cur));
+      setAllProjects(false);
+      setProjects((list) => (list.includes(made.slug) ? list : [...list, made.slug]));
+      closeNewProject();
+    } catch (error) {
+      if (error instanceof CallError && error.status === 401) { onSignedOut(); return; }
+      if (error instanceof CallError && error.status === 409) { setProjectProblem(t('taken')); return; }
+      if (error instanceof CallError && error.status === 422) { setProjectProblem(t('badInput')); return; }
+      setProjectProblem(t(problemOf(error)));
+    }
+  });
+
+  const onNewProjectKeyDown = (event: KeyboardEvent) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    if (newProjectReady && !busy) createProject();
+  };
 
   const approve = () => step(async () => {
     if (!info) return;
@@ -126,7 +194,7 @@ export function Connect({ me, onSignedOut }: { me: Me; onSignedOut: () => void }
           )}
           <fieldset class="checks">
             <legend class="muted">{t('projects')}</legend>
-            {me.isOwner && (
+            {me.isOwner && info.projects.length > 0 && (
               <label class="check">
                 <input type="checkbox" checked={allProjects} onChange={(event) => setAllProjects(event.currentTarget.checked)} />
                 <span>{t('allProjects')}</span>
@@ -138,7 +206,51 @@ export function Connect({ me, onSignedOut }: { me: Me; onSignedOut: () => void }
                 <span><bdi>{p.name[lang]}</bdi></span>
               </label>
             ))}
+            {me.isOwner && info.projects.length === 0 && !addingProject && <p class="muted">{t('noProjectsYet')}</p>}
           </fieldset>
+          {me.isOwner && !addingProject && (
+            <button ref={newProjectBtn} class="plain wide" type="button" disabled={busy} onClick={openNewProject}>{t('newProject')}</button>
+          )}
+          {me.isOwner && addingProject && (
+            <div class="card form">
+              <h2>{t('newProject')}</h2>
+              <label class="muted" for={`${id}-pname`}>{t('projectName')}</label>
+              <input
+                ref={projectNameInput}
+                id={`${id}-pname`}
+                class="field"
+                dir="auto"
+                maxLength={80}
+                autocomplete="off"
+                value={newProjectName}
+                onInput={(event) => {
+                  const next = event.currentTarget.value;
+                  setNewProjectName(next);
+                  if (!slugTouched.current) setNewProjectSlug(slugifyProject(next));
+                }}
+                onKeyDown={onNewProjectKeyDown}
+              />
+              <label class="muted" for={`${id}-pslug`}>{t('slug')}</label>
+              <input
+                id={`${id}-pslug`}
+                class="field"
+                dir="ltr"
+                maxLength={80}
+                autocomplete="off"
+                autocapitalize="none"
+                value={newProjectSlug}
+                onInput={(event) => {
+                  slugTouched.current = true;
+                  setNewProjectSlug(event.currentTarget.value.toLowerCase());
+                }}
+                onKeyDown={onNewProjectKeyDown}
+              />
+              <p class="muted">{t('slugHelp')}</p>
+              {projectProblem && <Failure>{projectProblem}</Failure>}
+              <button class="primary" type="button" disabled={!newProjectReady || busy} onClick={createProject}>{t('addProjectToTeam')}</button>
+              <button class="plain wide" type="button" disabled={busy} onClick={closeNewProject}>{t('cancel')}</button>
+            </div>
+          )}
           <p class="muted">{t('connectGrantNote')}</p>
           <button class="primary" type="submit" disabled={!ready || busy}>{t('connectApprove')}</button>
           <button class="plain wide" type="button" disabled={busy} onClick={refuse}>{t('notMine')}</button>

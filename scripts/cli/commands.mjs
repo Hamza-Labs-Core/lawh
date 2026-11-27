@@ -19,7 +19,6 @@ import {
   UPGRADE_STATE_FILE,
   validateDisplayName,
   validateHostPair,
-  validateProjectSlug,
   writeConfig,
   writeUpgradeState,
   writeWranglerConfigs,
@@ -144,15 +143,17 @@ export async function runInit({
   const existing = readConfig(root);
   const cfg = existing ?? defaultConfig();
 
-  // Step 1: Account, instance name (en & ar), hosts.
+  // Step 1: Account, instance name, hosts.
   const accountId = await resolveAccount(cf, cfg, { env, prompt });
   cfg.resources.accountId = accountId;
 
   if (!existing?.hosts?.app || !existing?.hosts?.content) {
-    const enRaw = (await prompt(`Instance name (English) [${cfg.instance.name.en}]: `)).trim();
-    const arRaw = (await prompt(`Instance name (Arabic) [${cfg.instance.name.ar}]: `)).trim();
-    cfg.instance.name.en = validateDisplayName(enRaw || cfg.instance.name.en, 'English instance name', 60);
-    cfg.instance.name.ar = validateDisplayName(arRaw || cfg.instance.name.ar, 'Arabic instance name', 60);
+    const nameRaw = (await prompt(`Instance name [${cfg.instance.name.en}]: `)).trim();
+    if (nameRaw) {
+      const instanceName = validateDisplayName(nameRaw, 'Instance name', 60);
+      cfg.instance.name.en = instanceName;
+      cfg.instance.name.ar = instanceName;
+    }
 
     const hostModeRaw = (await prompt('Hosts — press Enter for workers.dev, or type "custom" to use your own domain [workers.dev]: ')).trim().toLowerCase();
     if (hostModeRaw === 'custom') {
@@ -436,7 +437,7 @@ export async function runInit({
   }
   removeIfExists(join(root, INIT_SECRETS_FILE));
 
-  // Step 5: Owner display name, first project, confirm turning `instance` on, and create owner setup link.
+  // Step 5: Owner display name, confirm turning `instance` on, and create owner setup link.
   const ownerRes = await cf.queryD1(accountId, cfg.resources.database.id, "SELECT id, name, joined_at FROM members WHERE role = 'owner'");
   let owner = ownerRes?.[0]?.results?.[0] ?? null;
   if (!owner) {
@@ -449,26 +450,6 @@ export async function runInit({
       [ownerId, ownerName, now()],
     );
     owner = { id: ownerId, name: ownerName, joined_at: null };
-  }
-
-  const projRes = await cf.queryD1(accountId, cfg.resources.database.id, 'SELECT id, slug FROM projects LIMIT 1');
-  let project = projRes?.[0]?.results?.[0] ?? null;
-  if (!project) {
-    const slugRaw = (await prompt('First project slug [general]: ')).trim();
-    const slug = validateProjectSlug(slugRaw || 'general');
-    const enDefault = slug.charAt(0).toUpperCase() + slug.slice(1);
-    const nameEnRaw = (await prompt(`First project name (English) [${enDefault}]: `)).trim();
-    const nameEn = validateDisplayName(nameEnRaw || enDefault, 'Project name (English)', 80);
-    const nameArRaw = (await prompt(`First project name (Arabic) [${nameEn}]: `)).trim();
-    const nameAr = validateDisplayName(nameArRaw || nameEn, 'Project name (Arabic)', 80);
-    const projectId = ulidLikeId('prj');
-    await cf.queryD1(
-      accountId,
-      cfg.resources.database.id,
-      'INSERT INTO projects(id, slug, name_en, name_ar, created_at) VALUES(?, ?, ?, ?, ?)',
-      [projectId, slug, nameEn, nameAr, now()],
-    );
-    project = { id: projectId, slug };
   }
 
   const switchRes = await cf.queryD1(accountId, cfg.resources.database.id, "SELECT value_json FROM settings WHERE key = 'instance'");
@@ -522,7 +503,7 @@ export async function runInit({
   cfg.initCompletedAt = ts;
   writeConfig(root, cfg);
 
-  return { config: cfg, owner, project, instanceOn, setupLink };
+  return { config: cfg, owner, instanceOn, setupLink };
 }
 
 export async function runUpgrade({

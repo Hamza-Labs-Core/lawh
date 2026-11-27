@@ -137,10 +137,10 @@ test('the owner adds and renames a project', async ({ page }) => {
     await page.goto(`${APP}/settings/projects`);
     await page.getByRole('button', { name: 'New project' }).focus();
     await page.keyboard.press('Enter');
-    await expect(page.getByLabel('Address')).toBeFocused();
+    await expect(page.getByLabel('Name')).toBeFocused();
+    await page.getByLabel('Name').fill('Garden app');
+    await expect(page.getByLabel('Address')).toHaveValue('garden-app');
     await page.getByLabel('Address').fill('One');
-    await page.getByLabel('Name in English').fill('Garden app');
-    await page.getByLabel('Name in Arabic').fill('تطبيق الحديقة');
     await page.getByRole('button', { name: 'Save' }).click();
     await expect(page.getByRole('alert')).toHaveText('That address is taken.');
     await page.getByLabel('Address').fill(slug);
@@ -148,7 +148,7 @@ test('the owner adds and renames a project', async ({ page }) => {
     await expect(page.getByText('Saved.')).toBeVisible();
     const card = page.locator('.card').filter({ hasText: slug });
     await card.getByRole('button', { name: 'Rename' }).click();
-    const name = page.locator('form').getByLabel('Name in English');
+    const name = page.locator('form').getByLabel('Name');
     await name.fill('Yard');
     await page.getByRole('button', { name: 'Save' }).click();
     await expect(page.locator('.card').filter({ hasText: slug })).toContainText('Yard');

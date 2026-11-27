@@ -89,7 +89,7 @@ function App() {
   else if (reading) screen = <PageView project={reading[1]!} slug={reading[2]!} search={search} me={me} />;
   else if (path === '/comments') screen = <Comments me={me} />;
   else if (path === '/decisions') screen = <Decisions search={search} me={me} />;
-  else screen = <Library search={search} />;
+  else screen = <Library search={search} me={me} />;
   return <><TopBar>{typeof me === 'object' && me !== null && me.instance && <Nav path={path} />}</TopBar>{/* A new screen starts over; the link page doesn't depend on who is signed in. */}<main key={path === '/link' ? path : path.startsWith('/settings') && typeof me === 'object' && me ? `/settings ${me.id}` : `${path} ${typeof me === 'object' && me ? me.id : me}`}>{screen}</main></>;
 }
 

@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'preact/hooks';
-import { call, CallError, type Listed, type PageItem, problemOf, type ProjectName, type Status } from '../api';
+import { call, CallError, type Listed, type Me, type PageItem, problemOf, type ProjectName, type Status } from '../api';
 import { Failure, Fill, go, Heading, Link, useSettings, useText } from '../app';
 import { day, digits } from '../i18n';
 
@@ -13,7 +13,7 @@ const queryOf = (filters: Filters): string => { const query = new URLSearchParam
 export const StatusMark = ({ status }: { status: Status }) => <span class={`status ${status}`}>{useText()(status)}</span>;
 
 /** Pages, newest first, by project, status and tag. The filters are in the address, so Back and a shared link keep them. */
-export function Library({ search }: { search: string }) {
+export function Library({ search, me }: { search: string; me: Me }) {
   const t = useText(), { lang } = useSettings(), filters = readFilters(search), query = queryOf(filters);
   const [projects, setProjects] = useState<ProjectName[] | null>(null), [projectsProblem, setProjectsProblem] = useState<'offline' | 'wait' | 'failed' | null>(null), [list, setList] = useState<Listed<PageItem> | null>(null), [tries, setTries] = useState(0), [projectTries, setProjectTries] = useState(0);
   const [problem, setProblem] = useState<'offline' | 'wait' | 'failed' | 'filter' | null>(null);
@@ -65,8 +65,10 @@ export function Library({ search }: { search: string }) {
         {problem === 'filter' && <div class="card empty"><p>{t('badFilter')}</p><button class="plain" onClick={() => go('/')}>{t('clear')}</button></div>}
         {list?.items.length === 0 && (query || projects !== null) && (
           <div class="card empty">
-            <p>{t(query ? 'noMatches' : projects?.length === 0 ? 'noProjects' : 'noPages')}</p>
-            {query && <button class="plain" onClick={() => go('/')}>{t('clear')}</button>}
+            <p>{t(query ? 'noMatches' : projects?.length === 0 ? (me.isOwner ? 'noProjectsYet' : 'noProjects') : 'noPages')}</p>
+            {query
+              ? <button class="plain" onClick={() => go('/')}>{t('clear')}</button>
+              : projects?.length === 0 && me.isOwner && <Link class="plain as-button" to="/settings/projects">{t('newProject')}</Link>}
           </div>
         )}
       </div>
