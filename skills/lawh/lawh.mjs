@@ -2,9 +2,10 @@
 // Lawh agent CLI — single file, zero dependencies, Node >= 22.
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { hostname, homedir } from 'node:os';
-import { dirname, join, relative, sep } from 'node:path';
+import { basename, dirname, join, relative, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const SERVICE = 'lawh-agent';
 const ACCOUNT = 'agents';
@@ -358,6 +359,83 @@ async function cmdProject(positional, flags) {
   die('Project request timed out.');
 }
 
+function atomicReplaceFile(targetPath, content, mode) {
+  let sym = false;
+  try { sym = lstatSync(targetPath).isSymbolicLink(); } catch { sym = false; }
+  if (sym) {
+    die(`Refusing to overwrite symlink: ${targetPath}`);
+  }
+  const tmp = `${targetPath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+  writeFileSync(tmp, content, { mode });
+  try { chmodSync(tmp, mode); } catch { /* Windows */ }
+  renameSync(tmp, targetPath);
+  try { chmodSync(targetPath, mode); } catch { /* Windows */ }
+}
+
+function renderLocalSkillFromConnectMd(connectMd, cliPath) {
+  const cliCmd = /\s/.test(cliPath) ? `node "${cliPath}"` : `node ${cliPath}`;
+  let out = connectMd.replace(
+    /Download the zero-dependency Node \(>= 22\) client directly from this Lawh copy so it matches the server version:\s*\n\n```bash\ncurl -fsSL [^\n]+\nchmod \+x lawh\.mjs\n/,
+    `This skill bundles the zero-dependency Node (>= 22) client at \`${cliPath}\`. Run \`${cliCmd} update\` anytime to refresh it from your Lawh server.\n\n\`\`\`bash\n`,
+  );
+  out = out.replaceAll('node lawh.mjs', cliCmd);
+  return out;
+}
+
+async function cmdUpdate(flags) {
+  let baseUrl = '';
+  if (typeof flags.url === 'string' && flags.url.trim()) {
+    baseUrl = flags.url.trim().replace(/\/+$/, '');
+  } else if (process.env.LAWH_URL && process.env.LAWH_URL.trim()) {
+    baseUrl = process.env.LAWH_URL.trim().replace(/\/+$/, '');
+  } else {
+    baseUrl = pickCredentials(flags).url.replace(/\/+$/, '');
+  }
+  let parsedUrl;
+  try { parsedUrl = new URL(baseUrl); } catch { die(`Invalid Lawh URL: ${baseUrl}`); }
+  if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') {
+    die(`Invalid Lawh URL protocol: ${baseUrl}`);
+  }
+
+  const selfPath = fileURLToPath(import.meta.url);
+  const cliRes = await fetch(`${baseUrl}/lawh.mjs`, { cache: 'no-store' });
+  if (!cliRes.ok) die(`Could not download ${baseUrl}/lawh.mjs (HTTP ${cliRes.status}).`);
+  const cliCode = await cliRes.text();
+  if (!cliCode.startsWith('#!/usr/bin/env node')) {
+    die(`Unexpected response from ${baseUrl}/lawh.mjs (expected Lawh CLI script).`);
+  }
+  atomicReplaceFile(selfPath, cliCode, 0o755);
+
+  // If this CLI lives inside a skill folder (either `scripts/lawh.mjs` next to `../SKILL.md`, or alongside `SKILL.md`), refresh SKILL.md too.
+  const dir = dirname(selfPath);
+  let skillPath = null;
+  if (basename(dir) === 'scripts' && existsSync(join(dirname(dir), 'SKILL.md'))) {
+    skillPath = join(dirname(dir), 'SKILL.md');
+  } else if (existsSync(join(dir, 'SKILL.md'))) {
+    skillPath = join(dir, 'SKILL.md');
+  }
+
+  let updatedSkill = false;
+  if (skillPath) {
+    const mdRes = await fetch(`${baseUrl}/connect.md`, { cache: 'no-store' });
+    if (mdRes.ok) {
+      const mdText = await mdRes.text();
+      if (/^---\r?\nname:\s*lawh\r?\n/.test(mdText)) {
+        atomicReplaceFile(skillPath, renderLocalSkillFromConnectMd(mdText, selfPath), 0o644);
+        updatedSkill = true;
+      }
+    }
+  }
+
+  printOut(
+    { url: baseUrl, cliPath: selfPath, skillPath: updatedSkill ? skillPath : null, updatedSkill },
+    Boolean(flags.json),
+    updatedSkill
+      ? `Updated ${selfPath} and ${skillPath} from ${baseUrl}.`
+      : `Updated ${selfPath} from ${baseUrl}.`,
+  );
+}
+
 async function cmdPublish(positional, flags) {
   const folder = positional[0];
   const project = typeof flags.project === 'string' ? flags.project : '';
@@ -422,6 +500,7 @@ async function main() {
 
 Commands:
   connect <url> [--client <name>] [--machine <name>] [--project <name>] [--slug <slug>] [--no-open]
+  update [--url <url>] [--json]
   agents [--json]
   whoami [--json]
   projects [--json]
@@ -443,6 +522,8 @@ Commands:
   const asJson = Boolean(flags.json);
 
   if (cmd === 'connect') return cmdConnect(positional, flags);
+
+  if (cmd === 'update') return cmdUpdate(flags);
 
   if (cmd === 'project') return cmdProject(positional, flags);
 

@@ -579,6 +579,13 @@ TMP_WRAPPER=""
 
 COMMITTED=1
 
+# Refresh any local agent skill directories previously installed via `lawh skill install`.
+if [ -f "$LAWH_HOME/skills.json" ] && [ ! -L "$LAWH_HOME/skills.json" ]; then
+  if ! LAWH_MANAGED_INSTALL=1 LAWH_HOME="$LAWH_HOME" node "$LAWH_HOME/app/scripts/lawh.mjs" skill refresh; then
+    say "Warning: could not refresh local agent skill directories. Run 'lawh skill refresh' to retry."
+  fi
+fi
+
 say ""
 say "Installed Lawh ${INSTALLED_VERSION} in ${LAWH_HOME}/app"
 say "Command installed at ${WRAPPER_PATH}"

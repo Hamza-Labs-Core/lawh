@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -77,6 +77,21 @@ describe('lawh.mjs CLI connect & read behavior', () => {
           res.end(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
           return;
         }
+      }
+      if (req.method === 'GET' && url.pathname === '/lawh.mjs') {
+        res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
+        res.end('#!/usr/bin/env node\n// updated-lawh-cli-v999\nconsole.log("v999");\n');
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/connect.md') {
+        res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8' });
+        res.end('---\nname: lawh\ndescription: Updated skill.\n---\n\n# Lawh v999\n\nDownload the zero-dependency Node (>= 22) client directly from this Lawh copy so it matches the server version:\n\n```bash\ncurl -fsSL "https://lawh.example.com/lawh.mjs" -o lawh.mjs\nchmod +x lawh.mjs\nnode lawh.mjs connect "https://lawh.example.com" --client claude\n```\n');
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/bad/lawh.mjs') {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<html>not a script</html>');
+        return;
       }
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ code: 'not_found', message: 'Not found.' }));
@@ -201,6 +216,50 @@ process.exit(1);
     } finally {
       rmSync(xdg, { recursive: true, force: true });
       rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it('updates lawh.mjs and sibling SKILL.md atomically from the server and refuses non-CLI responses', async () => {
+    const skillDir = mkdtempSync(join(tmpdir(), 'lawh-cli-update-'));
+    try {
+      const scriptsDir = join(skillDir, 'scripts');
+      mkdirSync(scriptsDir, { recursive: true });
+      const localCli = join(scriptsDir, 'lawh.mjs');
+      const localSkill = join(skillDir, 'SKILL.md');
+      copyFileSync(cli, localCli);
+      chmodSync(localCli, 0o755);
+      writeFileSync(localSkill, '---\nname: lawh\ndescription: Old.\n---\nOld skill\n');
+
+      // Non-CLI HTML response must fail cleanly without clobbering localCli.
+      const badRes = await new Promise<{ status: number; stdout: string; stderr: string }>((resolve) => {
+        execFile(process.execPath, [localCli, 'update', '--url', `${baseUrl}/bad`], { encoding: 'utf8' }, (err, stdout, stderr) => {
+          resolve({ status: err ? 1 : 0, stdout, stderr });
+        });
+      });
+      expect(badRes.status).not.toBe(0);
+      expect(badRes.stderr).toContain('Unexpected response');
+      expect(readFileSync(localCli, 'utf8')).toContain('cmdUpdate');
+
+      // Valid server response updates both scripts/lawh.mjs and ../SKILL.md with local bundled CLI path.
+      const okRes = await new Promise<{ status: number; stdout: string; stderr: string }>((resolve) => {
+        execFile(process.execPath, [localCli, 'update', '--url', baseUrl, '--json'], { encoding: 'utf8' }, (err, stdout, stderr) => {
+          resolve({ status: err ? 1 : 0, stdout, stderr });
+        });
+      });
+      expect(okRes.status, okRes.stderr).toBe(0);
+      expect(JSON.parse(okRes.stdout)).toMatchObject({
+        url: baseUrl,
+        cliPath: localCli,
+        skillPath: localSkill,
+        updatedSkill: true,
+      });
+      expect(readFileSync(localCli, 'utf8')).toContain('updated-lawh-cli-v999');
+      const updatedSkill = readFileSync(localSkill, 'utf8');
+      expect(updatedSkill).toContain('# Lawh v999');
+      expect(updatedSkill).not.toContain('curl -fsSL');
+      expect(updatedSkill).toContain(`node ${localCli} connect`);
+    } finally {
+      rmSync(skillDir, { recursive: true, force: true });
     }
   });
 });

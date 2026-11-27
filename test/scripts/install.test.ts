@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -55,6 +55,7 @@ function makeReleaseTarball(
       'scripts/cli/config.mjs',
       'scripts/cli/export.mjs',
       'scripts/cli/migrations.mjs',
+      'scripts/cli/skill.mjs',
       'scripts/cli/transfer.mjs',
       'scripts/local/jsonc.mjs',
     ]) {
@@ -683,5 +684,94 @@ describe('no-clone installer (install.sh) and lawh CLI', { timeout: 30_000 }, ()
     expect(isSecretsStoreUnavailable(new CloudflareApiError('maximum_stores_exceeded', { status: 400 }))).toBe(true);
     expect(isSecretsStoreUnavailable(new CloudflareApiError('Bad request', { status: 400, errors: [{ code: 10000, message: 'maximum_stores_exceeded' }] }))).toBe(true);
     expect(isSecretsStoreUnavailable(new CloudflareApiError('internal server error', { status: 500 }))).toBe(false);
+  });
+
+  it('installs local agent skills via `lawh skill install` and auto-refreshes them on `lawh self-update`', async () => {
+    const work = mkdtempSync(join(tmpdir(), 'lawh-skill-install-'));
+    cleanups.push(() => rmSync(work, { recursive: true, force: true }));
+
+    // Build two fake releases (v1.2.0 and v1.3.0) with real scripts/lawh.mjs, scripts/cli/*, and distinct skills/lawh/* contents.
+    const makeSkillReleaseTar = (version: string, skillMarker: string, cliMarker: string) => {
+      const stage = join(work, `stage-${version}`);
+      const rootDir = join(stage, `lawh-${version}`);
+      mkdirSync(join(rootDir, 'scripts/cli'), { recursive: true });
+      mkdirSync(join(rootDir, 'scripts/local'), { recursive: true });
+      mkdirSync(join(rootDir, 'skills/lawh'), { recursive: true });
+      writeFileSync(join(rootDir, 'package.json'), JSON.stringify({ name: 'lawh', version, type: 'module' }));
+      writeFileSync(join(rootDir, 'install.sh'), readFileSync(installerPath, 'utf8'));
+      writeFileSync(join(rootDir, 'scripts/lawh.mjs'), readFileSync(join(repoRoot, 'scripts/lawh.mjs'), 'utf8'));
+      for (const f of ['cloudflare.mjs', 'commands.mjs', 'config.mjs', 'export.mjs', 'migrations.mjs', 'skill.mjs', 'transfer.mjs']) {
+        writeFileSync(join(rootDir, 'scripts/cli', f), readFileSync(join(repoRoot, 'scripts/cli', f), 'utf8'));
+      }
+      writeFileSync(join(rootDir, 'scripts/local/jsonc.mjs'), readFileSync(join(repoRoot, 'scripts/local/jsonc.mjs'), 'utf8'));
+      writeFileSync(
+        join(rootDir, 'skills/lawh/SKILL.md'),
+        `---\nname: lawh\ndescription: Skill ${skillMarker}.\n---\n\n# Lawh ${skillMarker} ({{APP_URL}})\n\nDownload the zero-dependency Node (>= 22) client directly from this Lawh copy so it matches the server version:\n\n\`\`\`bash\ncurl -fsSL "{{APP_URL}}/lawh.mjs" -o lawh.mjs\nchmod +x lawh.mjs\nnode lawh.mjs connect "{{APP_URL}}" --client claude\n\`\`\`\n`,
+      );
+      writeFileSync(join(rootDir, 'skills/lawh/lawh.mjs'), `#!/usr/bin/env node\n// ${cliMarker}\n`);
+      const tarPath = join(work, `lawh-${version}.tar.gz`);
+      execFileSync('tar', ['-czf', tarPath, '-C', stage, `lawh-${version}`]);
+      return tarPath;
+    };
+
+    const tar1 = makeSkillReleaseTar('1.2.0', 'V120', 'cli-v120');
+    const tar2 = makeSkillReleaseTar('1.3.0', 'V130', 'cli-v130');
+
+    const lawhHome = join(work, 'lawh-home');
+    const binDir = join(work, 'bin');
+    const fakeUserHome = join(work, 'user-home');
+    mkdirSync(join(fakeUserHome, '.claude/skills'), { recursive: true });
+    mkdirSync(join(fakeUserHome, '.agents/skills/lawh'), { recursive: true });
+    // Symlink ~/.claude/skills/lawh -> ~/.agents/skills/lawh so default detection deduplicates and never clobbers symlinks!
+    symlinkSync(join(fakeUserHome, '.agents/skills/lawh'), join(fakeUserHome, '.claude/skills/lawh'));
+    mkdirSync(join(fakeUserHome, '.codex'), { recursive: true });
+    const extraSkillDir = join(work, 'custom-skill');
+
+    // 1) Install v1.2.0
+    const inst1 = spawnSync('bash', [installerPath], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: fakeUserHome, LAWH_HOME: lawhHome, LAWH_BIN_DIR: binDir, LAWH_VERSION: 'v1.2.0', LAWH_TARBALL_URL: `file://${tar1}`, LAWH_SKIP_INSTALL_DEPS: '1' },
+    });
+    expect(inst1.status, inst1.stdout + inst1.stderr).toBe(0);
+
+    // Seed lawh.config.json so `lawh skill install` auto-fills the deployed app URL.
+    writeFileSync(join(lawhHome, 'app/lawh.config.json'), JSON.stringify({
+      hosts: { mode: 'custom', app: 'https://lawh.customer.dev', content: 'https://content.customer.dev' },
+    }), { mode: 0o600 });
+
+    // 2) Run `lawh skill install` (default dirs) and `lawh skill install --dir <custom>`.
+    const wrapper = join(binDir, 'lawh');
+    const skillInstDefault = spawnSync(wrapper, ['skill', 'install'], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: fakeUserHome },
+    });
+    expect(skillInstDefault.status, skillInstDefault.stdout + skillInstDefault.stderr).toBe(0);
+    expect(readFileSync(join(fakeUserHome, '.agents/skills/lawh/SKILL.md'), 'utf8')).toContain('Lawh V120 (https://lawh.customer.dev)');
+    expect(readFileSync(join(fakeUserHome, '.agents/skills/lawh/scripts/lawh.mjs'), 'utf8')).toContain('cli-v120');
+    expect(readFileSync(join(fakeUserHome, '.codex/skills/lawh/SKILL.md'), 'utf8')).toContain('Lawh V120');
+    // Symlink at ~/.claude/skills/lawh stays a symlink!
+    expect(readlinkSync(join(fakeUserHome, '.claude/skills/lawh'))).toBe(join(fakeUserHome, '.agents/skills/lawh'));
+
+    const skillInstExtra = spawnSync(wrapper, ['skill', 'install', '--dir', extraSkillDir], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: fakeUserHome },
+    });
+    expect(skillInstExtra.status, skillInstExtra.stdout + skillInstExtra.stderr).toBe(0);
+    expect(readFileSync(join(extraSkillDir, 'scripts/lawh.mjs'), 'utf8')).toContain('cli-v120');
+
+    // Delete ~/.codex/skills/lawh before self-update -> refresh must prune it instead of recreating it!
+    rmSync(join(fakeUserHome, '.codex/skills/lawh'), { recursive: true, force: true });
+
+    // 3) Run `lawh self-update` to v1.3.0 -> remaining registered skill dirs refresh automatically!
+    const selfUp = spawnSync(wrapper, ['self-update'], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: fakeUserHome, LAWH_VERSION: 'v1.3.0', LAWH_TARBALL_URL: `file://${tar2}`, LAWH_SKIP_INSTALL_DEPS: '1' },
+    });
+    expect(selfUp.status, selfUp.stdout + selfUp.stderr).toBe(0);
+    expect(selfUp.stdout).toContain('Refreshed Lawh skill');
+    expect(readFileSync(join(fakeUserHome, '.agents/skills/lawh/SKILL.md'), 'utf8')).toContain('Lawh V130 (https://lawh.customer.dev)');
+    expect(readFileSync(join(fakeUserHome, '.agents/skills/lawh/scripts/lawh.mjs'), 'utf8')).toContain('cli-v130');
+    expect(readFileSync(join(extraSkillDir, 'scripts/lawh.mjs'), 'utf8')).toContain('cli-v130');
+    expect(existsSync(join(fakeUserHome, '.codex/skills/lawh'))).toBe(false);
   });
 });
