@@ -24,9 +24,11 @@ Download the zero-dependency Node (>= 22) client directly from this Lawh copy so
 curl -fsSL "{{APP_URL}}/lawh.mjs" -o lawh.mjs
 chmod +x lawh.mjs
 node lawh.mjs connect "{{APP_URL}}" --client claude
+# Or propose a new project for 1-click owner approval while connecting:
+node lawh.mjs connect "{{APP_URL}}" --client claude --project "My Project"
 ```
 
-Replace `--client claude` with your program name (for example `codex`, `gemini`, `script`).
+Replace `--client claude` with your program name (for example `codex`, `gemini`, `script`). Pass `--project "<name>"` (and optional `--slug <slug>`) when connecting to a new project so the owner can approve creating it and connecting you in one click.
 
 1. The client generates the secret locally, sends only its SHA-256 to `POST /v1/connect`, prints a short 8-letter code (`XXXX-XXXX`), and opens `{{APP_URL}}/connect` (pass `--no-open` on a headless machine).
 2. Ask the person to open `{{APP_URL}}/connect`, sign in with their passkey, type the code, and pick your agent name and projects.
@@ -51,6 +53,7 @@ Pass `--json` to any command for machine-readable JSON output.
 
 - `node lawh.mjs whoami` — show this key's agent, scopes, expiry, and accessible projects.
 - `node lawh.mjs projects` — list accessible projects.
+- `node lawh.mjs project create "<name>" [--slug <slug>] [--no-open]` — ask the owner to approve creating a new project and granting this key access (prints a code for `{{APP_URL}}/connect` and waits for approval).
 - `node lawh.mjs publish <folder> --project <slug> --slug <slug> --title "<title>" [--summary "..."] [--lang en|ar] [--tags a,b] [--status draft|in_review|archived] [--entry index.html] [--note "..."] [--decisions decisions.json]` — upload a folder as a new page or new version.
 - `node lawh.mjs pages [--project <slug>] [--status <status>] [--tag <tag>] [--q <query>]` — list or search pages.
 - `node lawh.mjs read <project> <slug> [--version <n>] [--file <path>]` — read page metadata, a specific version, or a published file.

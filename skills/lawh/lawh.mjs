@@ -259,17 +259,24 @@ function printOut(data, asJson, human) {
 
 async function cmdConnect(positional, flags) {
   const rawUrl = positional[0];
-  if (!rawUrl) die('Usage: lawh.mjs connect <url> [--client <name>] [--machine <name>] [--no-open]');
+  if (!rawUrl) die('Usage: lawh.mjs connect <url> [--client <name>] [--machine <name>] [--project <name>] [--slug <slug>] [--no-open]');
   const baseUrl = rawUrl.replace(/\/+$/, '');
   const client = String(flags.client || 'cli').slice(0, 40);
   const machine = String(flags.machine || hostname() || 'local').slice(0, 60);
   const secret = randomBytes(32).toString('base64url');
   const secretSha256 = sha256Hex(secret);
 
+  const body = { secretSha256, client, machine };
+  if (typeof flags.project === 'string' && flags.project.trim()) {
+    const project = { name: flags.project.trim() };
+    if (typeof flags.slug === 'string' && flags.slug.trim()) project.slug = flags.slug.trim();
+    body.project = project;
+  }
+
   const startRes = await fetch(`${baseUrl}/v1/connect`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ secretSha256, client, machine }),
+    body: JSON.stringify(body),
   });
   if (!startRes.ok) {
     let msg = `HTTP ${startRes.status}`;
@@ -312,6 +319,43 @@ async function cmdConnect(positional, flags) {
     return;
   }
   die('Connection request timed out.');
+}
+
+async function cmdProject(positional, flags) {
+  const sub = positional[0];
+  const name = positional[1];
+  if (sub !== 'create' || !name) {
+    die('Usage: lawh.mjs project create <name> [--slug <slug>] [--no-open] [--json]');
+  }
+  const cred = pickCredentials(flags);
+  const body = { name: name.trim() };
+  if (typeof flags.slug === 'string' && flags.slug.trim()) body.slug = flags.slug.trim();
+
+  const started = await apiRequest(cred, 'POST', '/v1/projects/requests', { body });
+  const baseOrigin = new URL(cred.url).origin;
+  const connectUrl = safeConnectUrl(started.url, cred.url) ?? `${baseOrigin}/connect`;
+  process.stderr.write(`Open: ${connectUrl}\nCode: ${started.code}\nWaiting for owner approval...\n`);
+  if (!flags['no-open']) openBrowser(connectUrl);
+
+  const intervalMs = Math.max(200, Number(flags['poll-ms'] || (started.interval || 3) * 1000));
+  while (Date.now() < started.expiresAt + 10_000) {
+    await new Promise((r) => setTimeout(r, intervalMs));
+    const poll = await fetch(`${cred.url}/v1/projects/requests/${encodeURIComponent(started.id)}`, {
+      headers: { Authorization: `Bearer ${cred.key}` },
+    });
+    if (poll.status === 202) continue;
+    if (poll.status === 403) die('Project request was refused.');
+    if (poll.status === 404) die('Project request expired or was cancelled.');
+    if (!poll.ok) continue;
+    const res = await poll.json();
+    printOut(
+      res,
+      Boolean(flags.json),
+      `Created project ${res.project.slug} (${res.project.name.en}).`,
+    );
+    return;
+  }
+  die('Project request timed out.');
 }
 
 async function cmdPublish(positional, flags) {
@@ -377,10 +421,11 @@ async function main() {
     process.stdout.write(`Usage: lawh.mjs <command> [options]
 
 Commands:
-  connect <url> [--client <name>] [--machine <name>] [--no-open]
+  connect <url> [--client <name>] [--machine <name>] [--project <name>] [--slug <slug>] [--no-open]
   agents [--json]
   whoami [--json]
   projects [--json]
+  project create <name> [--slug <slug>] [--no-open] [--json]
   publish <folder> --project <slug> --slug <slug> [--title ...] [--decisions file.json] [--json]
   pages [--project <slug>] [--status <status>] [--tag <tag>] [--q <query>] [--limit <n>] [--cursor <c>] [--json]
   read <project> <slug> [--version <n>] [--file <path>] [--json]
@@ -398,6 +443,8 @@ Commands:
   const asJson = Boolean(flags.json);
 
   if (cmd === 'connect') return cmdConnect(positional, flags);
+
+  if (cmd === 'project') return cmdProject(positional, flags);
 
   if (cmd === 'agents') {
     const list = readStore().agents.map(({ url, client, machine, agentId, name, expiresAt }) => ({ url, client, machine, agentId, name, expiresAt }));

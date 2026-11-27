@@ -552,7 +552,7 @@ describe('S15 self-hosting lifecycle (init, upgrade, rollback, destroy)', () => 
     const contentV1 = mock.state.workers.get('lawh-content')!.deployments[0]!.versions[0]!.version_id;
 
     // 2) UPGRADE (with a new additive migration ending in a `--` comment without a semicolon)
-    writeFileSync(join(ws, 'migrations/0004_upgrade_note.sql'), 'CREATE INDEX IF NOT EXISTS audit_at ON audit(at)\n-- trailing comment without semicolon');
+    writeFileSync(join(ws, 'migrations/0099_upgrade_note.sql'), 'CREATE INDEX IF NOT EXISTS audit_at ON audit(at)\n-- trailing comment without semicolon');
     const upRes = await runUpgrade({
       root: ws,
       cf,
@@ -561,7 +561,7 @@ describe('S15 self-hosting lifecycle (init, upgrade, rollback, destroy)', () => 
       fetchImpl: mock.createHealthFetch(),
     });
     expect(upRes.state.previousVersions).toEqual({ app: appV1, content: contentV1 });
-    expect(upRes.state.appliedMigrations).toEqual(['0004_upgrade_note.sql']);
+    expect(upRes.state.appliedMigrations).toEqual(['0099_upgrade_note.sql']);
     expect(mock.state.workers.get('lawh-app')!.deployments[0]!.versions[0]!.version_id).not.toBe(appV1);
     expect(mock.state.workers.get('lawh-content')!.deployments[0]!.versions[0]!.version_id).not.toBe(contentV1);
     // Upgrade MUST NEVER call D1 /export!
@@ -736,7 +736,7 @@ describe('S15 self-hosting lifecycle (init, upgrade, rollback, destroy)', () => 
     expect(existsSync(join(ws, '.wrangler/lawh-init-secrets.json'))).toBe(false);
 
     // Failing migration during upgrade prints exact one-line Time Travel restore command and does NOT deploy.
-    writeFileSync(join(ws, 'migrations/0004_broken.sql'), 'ALTER TABLE does_not_exist ADD COLUMN x TEXT;');
+    writeFileSync(join(ws, 'migrations/0099_broken.sql'), 'ALTER TABLE does_not_exist ADD COLUMN x TEXT;');
     const appBefore = mock.state.workers.get('lawh-app')!.deployments[0]!.versions[0]!.version_id;
     const upLogs: string[] = [];
     await expect(runUpgrade({
@@ -745,7 +745,7 @@ describe('S15 self-hosting lifecycle (init, upgrade, rollback, destroy)', () => 
       log: (m: string) => upLogs.push(m),
       deployWorker: mock.createDeployWorker(),
       fetchImpl: mock.createHealthFetch(),
-    })).rejects.toThrow(/Migration 0004_broken\.sql failed/);
+    })).rejects.toThrow(/Migration 0099_broken\.sql failed/);
     expect(upLogs.join('\n')).toMatch(/wrangler d1 time-travel restore lawh --bookmark=00000000-/);
     expect(mock.state.workers.get('lawh-app')!.deployments[0]!.versions[0]!.version_id).toBe(appBefore);
 

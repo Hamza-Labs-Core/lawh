@@ -2,6 +2,13 @@
 
 All notable changes to Lawh are documented in this file.
 
+## [1.2.0] - 2026-11-26
+
+### Added
+- **Agent-proposed projects during `connect`:** Agents can pass `--project "<name>"` (and optional `--slug <slug>`) to `lawh.mjs connect` (`POST /v1/connect` optional `project` field). On `/connect`, the owner sees the proposed project pre-checked (editable or uncheckable) and approves creating the project and connecting the agent atomically in one click.
+- **Owner-approved project creation for connected agents:** Connected owner agents can run `lawh.mjs project create "<name>" [--slug <slug>]` (`POST /v1/projects/requests` + `GET /v1/projects/requests/{id}`), printing an 8-letter code for `/connect`. Approving in the UI atomically creates the project and grants that agent's key access; refusing returns `403`.
+- **Migration `0004_project_requests.sql`:** Added `project_requests` table with expiry/key indexes and owner-session DB triggers.
+
 ## [1.1.0] - 2026-11-26
 
 ### Added

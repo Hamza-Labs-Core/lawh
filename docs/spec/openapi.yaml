@@ -21,8 +21,8 @@ paths:
         hex SHA-256 of those 43 characters. It shows `code` and opens `url`, where a person
         signs in, types the code and picks the agent's name and projects. The key will be `lawh_<id>_<secret>`.
       security: []
-      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [secretSha256, client, machine], properties: { secretSha256: { type: string, pattern: '^[0-9a-f]{64}$' }, client: { type: string, minLength: 1, maxLength: 40, description: 'The program, such as claude or codex' }, machine: { type: string, minLength: 1, maxLength: 60 } } } } } }
-      responses: { '201': { description: Waiting for a person, content: { application/json: { schema: { type: object, required: [id, code, url, expiresAt, interval], properties: { id: { type: string }, code: { type: string }, url: { type: string, format: uri }, expiresAt: { type: integer }, interval: { type: integer, description: Seconds between checks } } } } } }, default: { $ref: '#/components/responses/Error' } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [secretSha256, client, machine], properties: { secretSha256: { type: string, pattern: '^[0-9a-f]{64}$' }, client: { type: string, minLength: 1, maxLength: 40, description: 'The program, such as claude or codex' }, machine: { type: string, minLength: 1, maxLength: 60 }, project: { type: object, required: [name], properties: { name: { type: string, minLength: 1, maxLength: 80 }, slug: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,79}$' } }, description: Optional project to propose for owner approval alongside connecting } } } } } }
+      responses: { '201': { description: Waiting for a person, content: { application/json: { schema: { type: object, required: [id, code, url, expiresAt, interval], properties: { id: { type: string }, code: { type: string }, url: { type: string, format: uri }, expiresAt: { type: integer }, interval: { type: integer, description: Seconds between checks }, project: { type: object, required: [slug, name], properties: { slug: { type: string }, name: { type: string } } } } } } } }, default: { $ref: '#/components/responses/Error' } }
   /connect/{id}:
     parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
     get:
@@ -35,6 +35,21 @@ paths:
     get: { operationId: getMe, x-scope: any, summary: 'This key''s agent, scopes, expiry, and the projects it can use now (as in /projects)', responses: { '200': { description: Agent, content: { application/json: { schema: { $ref: '#/components/schemas/Me' } } } }, default: { $ref: '#/components/responses/Error' } } }
   /projects:
     get: { operationId: listProjects, summary: Projects this key can use, x-scope: 'pages:read', responses: { '200': { description: Projects, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Project' } } } } } } }, default: { $ref: '#/components/responses/Error' } } }
+  /projects/requests:
+    post:
+      operationId: startProjectRequest
+      x-scope: 'pages:write'
+      summary: Request a new project for owner approval
+      description: Starts an owner-approved project creation request for an owner's connected agent. Shows `code` and opens `url`, where the owner approves or refuses.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [name], properties: { name: { type: string, minLength: 1, maxLength: 80 }, slug: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,79}$' } } } } } }
+      responses: { '201': { description: Waiting for owner approval, content: { application/json: { schema: { type: object, required: [id, code, url, slug, name, expiresAt, interval], properties: { id: { type: string }, code: { type: string }, url: { type: string, format: uri }, slug: { type: string }, name: { type: string }, expiresAt: { type: integer }, interval: { type: integer } } } } } }, default: { $ref: '#/components/responses/Error' } }
+  /projects/requests/{id}:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+    get:
+      operationId: getProjectRequest
+      x-scope: 'pages:write'
+      summary: Poll a pending project creation request
+      responses: { '200': { description: Approved and created, content: { application/json: { schema: { type: object, required: [id, status, project], properties: { id: { type: string }, status: { type: string, enum: [approved] }, project: { $ref: '#/components/schemas/Project' } } } } } }, '202': { description: Still waiting }, '403': { $ref: '#/components/responses/Error' }, default: { $ref: '#/components/responses/Error' } }
   /pages:
     get:
       operationId: listPages

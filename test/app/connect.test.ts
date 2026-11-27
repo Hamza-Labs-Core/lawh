@@ -258,4 +258,117 @@ describe('connect an agent (/v1/connect, /app-api/connect/*, /connect.md, /lawh.
     expect(burst.filter((r) => r.status === 404)).toHaveLength(5);
     expect(burst.filter((r) => r.status === 429)).toHaveLength(3);
   });
+
+  it('lets an agent propose a project during connect and lets a connected owner agent request new projects for UI approval', async () => {
+    const { cookie: owner } = await enter('o');
+    const mgr = await member(4);
+    const unlimited = { limit: async () => ({ success: true }) };
+
+    // 1) Agent proposes a project during POST /v1/connect (slug auto-derived from name).
+    const secret = randomToken();
+    const startRes = await agent('/v1/connect', {
+      method: 'POST',
+      json: { secretSha256: await sha256Hex(secret), client: 'claude', machine: 'macbook', project: { name: 'Agent Vault' } },
+    });
+    expect(startRes.status).toBe(201);
+    const started = await json(startRes);
+    expect(started.project).toEqual({ slug: 'agent-vault', name: 'Agent Vault' });
+    const fullKey = `lawh_${started.id}_${secret}`;
+
+    // Non-owner manager does NOT receive requestedProject and cannot create projects on answer.
+    const mgrLook = await json(await api('POST', '/connect/look', { cookie: mgr, body: { code: started.code } }, { CODE_LIMIT: unlimited }));
+    expect(mgrLook.requestedProject).toBeNull();
+    expect(await code(await api('POST', '/connect/answer', {
+      cookie: mgr,
+      body: { id: started.id, code: started.code, agentName: 'mgr-bot', projects: [], createProject: { slug: 'agent-vault', name: 'Agent Vault' } },
+    }, { CODE_LIMIT: unlimited }))).toEqual([403, 'forbidden']);
+
+    // Owner sees requestedProject, gets 409 slug_taken on collision with existing slug 'one', then approves creating 'agent-vault' atomically.
+    const ownerLook = await json(await api('POST', '/connect/look', { cookie: owner, body: { code: started.code } }, { CODE_LIMIT: unlimited }));
+    expect(ownerLook).toMatchObject({ kind: 'connect', requestedProject: { slug: 'agent-vault', name: 'Agent Vault' } });
+    const dupRes = await api('POST', '/connect/answer', {
+      cookie: owner,
+      body: { id: started.id, code: started.code, agentName: 'vault-bot', projects: [], createProject: { slug: 'one', name: 'Agent Vault' } },
+    }, { CODE_LIMIT: unlimited });
+    expect(dupRes.status).toBe(409);
+    expect(await json(dupRes)).toMatchObject({ code: 'conflict', details: { reason: 'slug_taken' } });
+
+    const approveRes = await api('POST', '/connect/answer', {
+      cookie: owner,
+      body: { id: started.id, code: started.code, agentName: 'vault-bot', projects: [], createProject: { slug: 'agent-vault', name: 'Agent Vault' } },
+    }, { CODE_LIMIT: unlimited });
+    expect(approveRes.status).toBe(200);
+    expect(await json(approveRes)).toMatchObject({
+      agentName: 'vault-bot',
+      createdProject: { slug: 'agent-vault', name: { en: 'Agent Vault', ar: 'Agent Vault' } },
+    });
+    const polled = await json(await agent(`/v1/connect/${started.id}`, { token: fullKey }));
+    expect(polled.projects).toEqual([{ slug: 'agent-vault', name: { en: 'Agent Vault', ar: 'Agent Vault' } }]);
+
+    // 2) Connected owner agent requests another project via POST /v1/projects/requests (standalone approval).
+    const reqRes = await agent('/v1/projects/requests', {
+      method: 'POST',
+      token: fullKey,
+      json: { name: 'Follow Up Board' },
+    });
+    expect(reqRes.status).toBe(201);
+    const req = await json(reqRes);
+    expect(req.id).toMatch(/^prq_[0-9A-HJKMNP-TV-Z]{26}$/);
+    expect(req.slug).toBe('follow-up-board');
+    expect(req.code).toMatch(/^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$/);
+    expect((await agent(`/v1/projects/requests/${req.id}`, { token: fullKey })).status).toBe(202);
+
+    // Non-owner manager cannot look up or approve a project creation request.
+    expect(await code(await api('POST', '/connect/look', { cookie: mgr, body: { code: req.code } }, { CODE_LIMIT: unlimited }))).toEqual([403, 'forbidden']);
+    expect(await code(await api('POST', '/connect/answer', { cookie: mgr, body: { kind: 'project', id: req.id, code: req.code } }, { CODE_LIMIT: unlimited }))).toEqual([403, 'forbidden']);
+
+    // Owner looks up code, edits the name/slug, and approves -> project created and key granted access!
+    const projLook = await json(await api('POST', '/connect/look', { cookie: owner, body: { code: req.code } }, { CODE_LIMIT: unlimited }));
+    expect(projLook).toMatchObject({ kind: 'project', id: req.id, agentName: 'vault-bot', slug: 'follow-up-board', name: 'Follow Up Board' });
+    const projApprove = await api('POST', '/connect/answer', {
+      cookie: owner,
+      body: { kind: 'project', id: req.id, code: req.code, name: 'Follow Up', slug: 'follow-up' },
+    }, { CODE_LIMIT: unlimited });
+    expect(projApprove.status).toBe(200);
+    expect(await json(projApprove)).toEqual({
+      id: req.id,
+      project: { slug: 'follow-up', name: { en: 'Follow Up', ar: 'Follow Up' } },
+    });
+
+    // Polling returns 200 approved and GET /v1/projects immediately includes the new project.
+    const projPoll = await agent(`/v1/projects/requests/${req.id}`, { token: fullKey });
+    expect(projPoll.status).toBe(200);
+    expect(await json(projPoll)).toEqual({
+      id: req.id,
+      status: 'approved',
+      project: { slug: 'follow-up', name: { en: 'Follow Up', ar: 'Follow Up' } },
+    });
+    const listAfter = await json(await agent('/v1/projects', { token: fullKey }));
+    expect(listAfter.items.map((p: { slug: string }) => p.slug).sort()).toEqual(['agent-vault', 'follow-up']);
+
+    // 3) Refusing a standalone project request returns 403 to the polling agent and creates no project.
+    const req2 = await json(await agent('/v1/projects/requests', { method: 'POST', token: fullKey, json: { name: 'Nope Project' } }));
+    expect((await api('POST', '/connect/answer', { cookie: owner, body: { kind: 'project', id: req2.id, code: req2.code, refuse: true } }, { CODE_LIMIT: unlimited })).status).toBe(204);
+    expect(await apiCode(await agent(`/v1/projects/requests/${req2.id}`, { token: fullKey }))).toEqual([403, 'forbidden']);
+    expect(await one("SELECT id FROM projects WHERE slug='nope-project'")).toBeNull();
+
+    // 4) A non-owner manager's agent cannot request new projects (403).
+    const mgrSecret = randomToken();
+    const mgrStart = await json(await agent('/v1/connect', {
+      method: 'POST',
+      json: { secretSha256: await sha256Hex(mgrSecret), client: 'codex', machine: 'box' },
+    }));
+    expect((await api('POST', '/connect/answer', {
+      cookie: mgr,
+      body: { id: mgrStart.id, code: mgrStart.code, agentId: 'am', projects: ['one'] },
+    }, { CODE_LIMIT: unlimited })).status).toBe(200);
+    const mgrKey = `lawh_${mgrStart.id}_${mgrSecret}`;
+    expect(await apiCode(await agent('/v1/projects/requests', { method: 'POST', token: mgrKey, json: { name: 'Blocked' } }))).toEqual([403, 'forbidden']);
+    // Cross-key isolation: another key cannot poll owner's project request.
+    expect(await apiCode(await agent(`/v1/projects/requests/${req.id}`, { token: mgrKey }))).toEqual([404, 'not_found']);
+
+    // 5) Cleanup removes expired project_requests rows.
+    await cleanUpPeople(env, Date.now() + 3_600_000);
+    expect(await count('project_requests')).toBe(0);
+  });
 });
