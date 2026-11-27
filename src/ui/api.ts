@@ -1,5 +1,5 @@
 export class CallError extends Error {
-  constructor(readonly status: number, readonly code: string) { super(code); }
+  constructor(readonly status: number, readonly code: string, readonly details?: Record<string, unknown>) { super(code); }
 }
 
 /** Calls the app's own API. A network failure is a CallError with status 0. */
@@ -10,7 +10,10 @@ export async function call<T = undefined>(method: string, path: string, body?: u
   } catch { throw new CallError(0, 'offline'); }
   // Signed out, or the session is over: the app shows its sign-in, at the same address.
   if (response.status === 401) dispatchEvent(new Event('lawh:signed-out'));
-  if (!response.ok) throw new CallError(response.status, await response.json().then((b: { code?: string }) => b.code ?? 'internal', () => 'internal'));
+  if (!response.ok) {
+    const err = await response.json().then((b: { code?: string; details?: Record<string, unknown> }) => b, (): { code?: string; details?: Record<string, unknown> } => ({ code: 'internal' }));
+    throw new CallError(response.status, err.code ?? 'internal', err.details);
+  }
   if (response.status === 202) return 'waiting' as T;
   return response.status === 204 ? undefined as T : response.json() as Promise<T>;
 }

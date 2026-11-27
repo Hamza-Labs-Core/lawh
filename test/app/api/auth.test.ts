@@ -99,6 +99,8 @@ describe('every route and every kind of key', () => {
   const PATHS: Record<string, (ids: { upload: string; hash: string }) => string> = {
     'GET ^/v1/me$': () => '/v1/me',
     'GET ^/v1/projects$': () => '/v1/projects',
+    'POST ^/v1/projects/requests$': () => '/v1/projects/requests',
+    'GET project request': () => `/v1/projects/requests/prq_${'0'.repeat(26)}`,
     'GET ^/v1/pages$': () => '/v1/pages?project=one',
     'GET page': () => '/v1/projects/one/pages/page',
     'PATCH page': () => '/v1/projects/one/pages/page',

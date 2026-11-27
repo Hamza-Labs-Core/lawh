@@ -457,7 +457,7 @@ describe('the export', () => {
     for (const name of ['sessions', 'passkeys', 'access_links', 'device_approvals', 'agent_connects', 'idempotency', 'uploads', 'auth_challenges']) expect(files.has(`rows/${name}.ndjson`), name).toBe(false);
     // Every table is either exported or left out on purpose.
     const { results } = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'pages_fts%' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%cf_%' AND name <> 'd1_migrations'").all<{ name: string }>();
-    const left = ['access_links', 'agent_connects', 'auth_challenges', 'device_approvals', 'idempotency', 'passkeys', 'sessions', 'upload_blobs', 'uploads', 'webhook_deliveries'];
+    const left = ['access_links', 'agent_connects', 'auth_challenges', 'device_approvals', 'idempotency', 'passkeys', 'project_requests', 'sessions', 'upload_blobs', 'uploads', 'webhook_deliveries'];
     expect(results.map((t) => t.name).sort()).toEqual([...left, ...[...files.keys()].flatMap((f) => /^rows\/(.+)\.ndjson$/.exec(f)?.[1] ?? [])].sort());
     expect(await count('audit', "action='export'")).toBe(1);
   });

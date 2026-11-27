@@ -2,7 +2,7 @@ import type { AppEnv } from '../../shared/env';
 import { ApiError, notFound } from '../../shared/errors';
 import { authenticate, type Caller, needScope, type Scope } from './auth';
 import { listComments, listProjectThreads, replyAsAgent } from './comments';
-import { getConnect, startConnect } from './connect';
+import { getConnect, getProjectRequest, startConnect, startProjectRequest } from './connect';
 import { getDecision, listDecisions } from './decisions';
 import { listEvents } from './events';
 import { connectLive, getLiveTicket } from './live';
@@ -31,6 +31,8 @@ const route = (method: string, path: string, scope: Route['scope'], handler: Rou
 export const routes: Route[] = [
   route('GET', '/me', 'any', me),
   route('GET', '/projects', 'pages:read', listProjects),
+  route('POST', '/projects/requests', 'pages:write', startProjectRequest),
+  route('GET', `/projects/requests/${ID}`, 'pages:write', getProjectRequest),
   route('GET', '/pages', 'pages:read', listPages),
   route('GET', `/projects/${P}/pages/${S}`, 'pages:read', getPage),
   route('PATCH', `/projects/${P}/pages/${S}`, 'pages:write', updatePage),

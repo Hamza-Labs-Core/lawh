@@ -198,6 +198,111 @@ test('owner creates a new project inline on /connect and connects an agent to it
   }
 });
 
+test('agent proposes a project on connect and later requests a second project via lawh.mjs with 1-click owner UI approval', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const suffix = randomBytes(4).toString('hex');
+  const firstTitle = `Agent Repo ${suffix}`;
+  const firstSlug = `agent-repo-${suffix}`;
+  const secondTitle = `Second Repo ${suffix}`;
+  const secondSlug = `second-repo-${suffix}`;
+  const agentName = `propose-cli-${suffix}`;
+  const tmp = mkdtempSync(join(tmpdir(), 'lawh-proj-req-e2e-'));
+  const storePath = join(tmp, 'agents.json');
+  const cliEnv = { ...process.env, LAWH_STORE: storePath, LAWH_NO_KEYCHAIN: '1' };
+  const children: ReturnType<typeof spawn>[] = [];
+
+  const runCliCode = (args: string[]) => {
+    const child = spawn(process.execPath, args, { env: cliEnv });
+    children.push(child);
+    let stdout = '';
+    let stderr = '';
+    const codePromise = new Promise<string>((resolve, reject) => {
+      child.stdout?.on('data', (chunk) => { stdout += String(chunk); });
+      child.stderr?.on('data', (chunk) => {
+        stderr += String(chunk);
+        const match = /Code:\s*([A-Z]{4}-[A-Z]{4})/.exec(stderr);
+        if (match) resolve(match[1]!);
+      });
+      child.once('error', reject);
+      child.once('exit', (c) => { if (c !== 0) reject(new Error(`cli exited ${c}: ${stderr}`)); });
+    });
+    const donePromise = new Promise<{ exitCode: number | null; stdout: string; stderr: string }>((resolve) => {
+      child.once('exit', (exitCode) => resolve({ exitCode, stdout, stderr }));
+    });
+    return { codePromise, donePromise };
+  };
+
+  try {
+    const cliRes = await page.request.get(`${APP}/lawh.mjs`);
+    expect(cliRes.status()).toBe(200);
+    const cliPath = join(tmp, 'lawh.mjs');
+    writeFileSync(cliPath, await cliRes.text());
+
+    await enterOwner(page.context());
+
+    // 1) Agent connects while proposing a brand-new project.
+    const connectRun = runCliCode([
+      cliPath, 'connect', APP, '--client', agentName, '--machine', 'devbox',
+      '--project', firstTitle, '--no-open', '--poll-ms', '200', '--json',
+    ]);
+    const connectCode = await connectRun.codePromise;
+
+    await page.goto(`${APP}/connect`);
+    await page.getByLabel('Type the code the agent client shows.').fill(connectCode);
+    await page.getByRole('button', { name: 'Continue' }).click();
+    await expect(page.getByLabel(`Create new project: ${firstTitle}`)).toBeChecked();
+    await expect(page.getByLabel('Name', { exact: true })).toHaveValue(firstTitle);
+    await expect(page.getByLabel('Address')).toHaveValue(firstSlug);
+    await page.getByRole('button', { name: 'Connect agent' }).click();
+    await expect(page.getByText(`Connected ${agentName}. You can return to the agent.`)).toBeVisible();
+
+    const connectDone = await connectRun.donePromise;
+    expect(connectDone.exitCode).toBe(0);
+    const connected = JSON.parse(connectDone.stdout) as { projects: { slug: string }[] };
+    expect(connected.projects.map((p) => p.slug)).toEqual([firstSlug]);
+
+    // 2) Connected agent requests a second project via `lawh.mjs project create`.
+    const projRun = runCliCode([
+      cliPath, 'project', 'create', secondTitle, '--no-open', '--poll-ms', '200', '--json',
+    ]);
+    const projCode = await projRun.codePromise;
+
+    await page.goto(`${APP}/connect`);
+    await page.getByLabel('Type the code the agent client shows.').fill(projCode);
+    await page.getByRole('button', { name: 'Continue' }).click();
+    await expect(page.getByRole('heading', { name: 'Approve new project' })).toBeVisible();
+    await expect(page.getByText(`${agentName} wants to create a new project.`)).toBeVisible();
+    await expect(page.getByLabel('Name', { exact: true })).toHaveValue(secondTitle);
+    await expect(page.getByLabel('Address')).toHaveValue(secondSlug);
+    await page.getByRole('button', { name: 'Create project' }).click();
+    await expect(page.getByText(`Created ${secondTitle}. You can return to the agent.`)).toBeVisible();
+
+    const projDone = await projRun.donePromise;
+    expect(projDone.exitCode).toBe(0);
+    expect(JSON.parse(projDone.stdout)).toMatchObject({
+      status: 'approved',
+      project: { slug: secondSlug, name: { en: secondTitle, ar: secondTitle } },
+    });
+
+    // Agent immediately sees BOTH projects via `lawh.mjs projects`.
+    const { stdout: listOut } = await execFileAsync(process.execPath, [cliPath, 'projects', '--json'], { env: cliEnv });
+    const listed = JSON.parse(listOut) as { items: { slug: string }[] };
+    expect(listed.items.map((p) => p.slug).sort()).toEqual([firstSlug, secondSlug].sort());
+  } finally {
+    for (const c of children) if (c.exitCode === null) c.kill('SIGTERM');
+    rmSync(tmp, { recursive: true, force: true });
+    await db(
+      `DELETE FROM project_requests WHERE slug IN ('${firstSlug}','${secondSlug}')`,
+      `DELETE FROM agent_connects WHERE client='${agentName}'`,
+      `DELETE FROM agent_key_projects WHERE project_id IN (SELECT id FROM projects WHERE slug IN ('${firstSlug}','${secondSlug}'))`,
+      `DELETE FROM agent_key_projects WHERE key_id IN (SELECT id FROM agent_keys WHERE agent_id IN (SELECT id FROM agents WHERE member_id='o' AND name='${agentName}'))`,
+      `DELETE FROM agent_keys WHERE agent_id IN (SELECT id FROM agents WHERE member_id='o' AND name='${agentName}')`,
+      `DELETE FROM agents WHERE member_id='o' AND name='${agentName}'`,
+      `DELETE FROM projects WHERE slug IN ('${firstSlug}','${secondSlug}')`,
+    );
+  }
+});
+
 for (const lang of ['en', 'ar'] as const) for (const mode of ['dark', 'light'] as const) for (const width of [320, 390, 1280]) {
   test(`the connect screens fit and are accessible (${lang}, ${mode}, ${width})`, async ({ page, member, ask }) => {
     await page.setViewportSize({ width, height: width < 500 ? 844 : 800 });

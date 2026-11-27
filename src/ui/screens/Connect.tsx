@@ -3,6 +3,7 @@ import { call, CallError, type Me, problemOf, type ProjectName, slugifyProject }
 import { Failure, Fill, go, Heading, useBusy, useSettings, useText } from '../app';
 
 interface ConnectInfo {
+  kind?: 'connect';
   id: string;
   client: string;
   machine: string;
@@ -10,17 +11,39 @@ interface ConnectInfo {
   expiresAt: number;
   agents: { id: string; name: string }[];
   projects: { slug: string; name: { en: string; ar: string } }[];
+  requestedProject?: { slug: string; name: string } | null;
 }
 
-/** A signed-in owner or manager connects an agent using the code shown by the client. */
+interface ProjectRequestInfo {
+  kind: 'project';
+  id: string;
+  agentName: string;
+  machine: string;
+  slug: string;
+  name: string;
+  allProjects: boolean;
+  createdAt: number;
+  expiresAt: number;
+}
+
+type LookResult = ConnectInfo | ProjectRequestInfo;
+
+const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,79}$/;
+
+/** A signed-in owner or manager connects an agent or approves an agent's new-project request using the code shown by the client. */
 export function Connect({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
   const t = useText(), { lang } = useSettings(), id = useId(), [busy, run] = useBusy();
   const [code, setCode] = useState('');
   const [info, setInfo] = useState<ConnectInfo | null>(null);
+  const [projectReq, setProjectReq] = useState<ProjectRequestInfo | null>(null);
   const [pickedAgent, setPickedAgent] = useState('');
   const [newName, setNewName] = useState('');
   const [allProjects, setAllProjects] = useState(false);
   const [projects, setProjects] = useState<string[]>([]);
+  const [createRequested, setCreateRequested] = useState(false);
+  const [reqName, setReqName] = useState('');
+  const [reqSlug, setReqSlug] = useState('');
+  const reqSlugTouched = useRef(false);
   const [addingProject, setAddingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const [newProjectSlug, setNewProjectSlug] = useState('');
@@ -29,8 +52,8 @@ export function Connect({ me, onSignedOut }: { me: Me; onSignedOut: () => void }
   const newProjectBtn = useRef<HTMLButtonElement>(null);
   const projectNameInput = useRef<HTMLInputElement>(null);
   const wasAddingProject = useRef(false);
-  const [result, setResult] = useState<'connected' | 'refused' | null>(null);
-  const [connectedName, setConnectedName] = useState('');
+  const [result, setResult] = useState<'connected' | 'refused' | 'project_created' | 'project_refused' | null>(null);
+  const [doneName, setDoneName] = useState('');
   const [problem, setProblem] = useState<string | null>(null);
 
   useEffect(() => {
@@ -54,20 +77,36 @@ export function Connect({ me, onSignedOut }: { me: Me; onSignedOut: () => void }
     try { await work(); } catch (error) {
       if (error instanceof CallError && error.status === 401) { onSignedOut(); return; }
       const bad = error instanceof CallError && error.status === 404;
-      if (bad) setInfo(null);
-      if (error instanceof CallError && error.code === 'conflict') { setProblem(t('connectConflict')); return; }
+      if (bad) { setInfo(null); setProjectReq(null); }
+      if (error instanceof CallError && error.status === 403) { setProblem(t('projectReqOwnerOnly')); return; }
+      if (error instanceof CallError && error.code === 'conflict') {
+        setProblem(t(error.details?.reason === 'slug_taken' ? 'taken' : 'connectConflict'));
+        return;
+      }
+      if (error instanceof CallError && error.status === 422) { setProblem(t('badInput')); return; }
       setProblem(t(bad ? 'badCode' : problemOf(error)));
     }
   });
 
   const lookUp = () => step(async () => {
-    const found = await call<ConnectInfo>('POST', '/connect/look', { code });
-    setInfo(found);
+    const found = await call<LookResult>('POST', '/connect/look', { code });
     setAddingProject(false);
     setNewProjectName('');
     setNewProjectSlug('');
     setProjectProblem(null);
     slugTouched.current = false;
+
+    if (found.kind === 'project') {
+      setInfo(null);
+      setProjectReq(found);
+      setReqName(found.name);
+      setReqSlug(found.slug);
+      reqSlugTouched.current = true;
+      return;
+    }
+
+    setProjectReq(null);
+    setInfo(found);
     const matching = found.agents.find((a) => a.name.toLowerCase() === found.client.toLowerCase());
     if (matching) {
       setPickedAgent(matching.id);
@@ -76,14 +115,41 @@ export function Connect({ me, onSignedOut }: { me: Me; onSignedOut: () => void }
       setPickedAgent('__new__');
       setNewName(found.client);
     }
-    setAllProjects(me.isOwner && found.projects.length > 0);
-    setProjects(found.projects.length === 1 ? [found.projects[0]!.slug] : []);
+
+    const req = found.requestedProject ?? null;
+    if (req && me.isOwner) {
+      const existing = found.projects.find((p) => p.slug === req.slug);
+      if (existing) {
+        setCreateRequested(false);
+        setReqName('');
+        setReqSlug('');
+        setAllProjects(false);
+        setProjects([existing.slug]);
+      } else {
+        setCreateRequested(true);
+        setReqName(req.name);
+        setReqSlug(req.slug);
+        reqSlugTouched.current = true;
+        setAllProjects(false);
+        setProjects([]);
+      }
+    } else {
+      setCreateRequested(false);
+      setReqName('');
+      setReqSlug('');
+      setAllProjects(me.isOwner && found.projects.length > 0);
+      setProjects(found.projects.length === 1 ? [found.projects[0]!.slug] : []);
+    }
   });
 
   const toggleProject = (slug: string) => setProjects((list) => (list.includes(slug) ? list.filter((s) => s !== slug) : [...list, slug]));
   const usingNew = pickedAgent === '__new__' || (info?.agents.length ?? 0) === 0;
-  const ready = info !== null && (usingNew ? newName.trim().length > 0 : pickedAgent !== '') && (allProjects || projects.length > 0);
-  const newProjectReady = /^[a-z0-9][a-z0-9-]{0,79}$/.test(newProjectSlug) && newProjectName.trim().length > 0;
+  const reqProjectValid = SLUG_RE.test(reqSlug) && reqName.trim().length > 0;
+  const ready = info !== null
+    && (usingNew ? newName.trim().length > 0 : pickedAgent !== '')
+    && (!createRequested || reqProjectValid)
+    && (allProjects || projects.length > 0 || createRequested);
+  const newProjectReady = SLUG_RE.test(newProjectSlug) && newProjectName.trim().length > 0;
 
   const openNewProject = () => {
     setProjectProblem(null);
@@ -140,9 +206,10 @@ export function Connect({ me, onSignedOut }: { me: Me; onSignedOut: () => void }
       code,
       ...(usingNew ? { agentName: newName.trim() } : { agentId: pickedAgent }),
       projects: allProjects ? 'all' : projects,
+      ...(createRequested ? { createProject: { slug: reqSlug, name: reqName.trim() } } : {}),
     };
     const res = await call<{ agentName: string }>('POST', '/connect/answer', payload);
-    setConnectedName(res.agentName);
+    setDoneName(res.agentName);
     setResult('connected');
   });
 
@@ -152,18 +219,87 @@ export function Connect({ me, onSignedOut }: { me: Me; onSignedOut: () => void }
     setResult('refused');
   });
 
+  const approveProjectReq = () => step(async () => {
+    if (!projectReq || !reqProjectValid) return;
+    const res = await call<{ project: ProjectName }>('POST', '/connect/answer', {
+      kind: 'project',
+      id: projectReq.id,
+      code,
+      name: reqName.trim(),
+      slug: reqSlug,
+    });
+    setDoneName(res.project.name[lang]);
+    setResult('project_created');
+  });
+
+  const refuseProjectReq = () => step(async () => {
+    if (!projectReq) return;
+    await call('POST', '/connect/answer', { kind: 'project', id: projectReq.id, code, refuse: true });
+    setResult('project_refused');
+  });
+
   return (
     <section class="card narrow">
       {result === 'connected' ? (
         <>
           <Heading key="connected">{t('connectTitle')}</Heading>
-          <p role="status"><Fill text="connectDone" name={connectedName} /></p>
+          <p role="status"><Fill text="connectDone" name={doneName} /></p>
         </>
       ) : result === 'refused' ? (
         <>
           <Heading key="refused">{t('connectTitle')}</Heading>
           <p role="status">{t('connectRefused')}</p>
         </>
+      ) : result === 'project_created' ? (
+        <>
+          <Heading key="project-created">{t('projectReqTitle')}</Heading>
+          <p role="status"><Fill text="projectReqDone" name={doneName} /></p>
+        </>
+      ) : result === 'project_refused' ? (
+        <>
+          <Heading key="project-refused">{t('projectReqTitle')}</Heading>
+          <p role="status">{t('projectReqRefused')}</p>
+        </>
+      ) : projectReq !== null ? (
+        <form onSubmit={(event) => { event.preventDefault(); if (reqProjectValid) approveProjectReq(); }}>
+          <Heading key="project-req">{t('projectReqTitle')}</Heading>
+          <p class="muted"><Fill text="projectReqClaim" agent={projectReq.agentName} /></p>
+          <p class="muted">{t('connectWarn')}</p>
+          <label class="muted" for={`${id}-rname`}>{t('projectName')}</label>
+          <input
+            id={`${id}-rname`}
+            class="field"
+            dir="auto"
+            maxLength={80}
+            autocomplete="off"
+            required
+            value={reqName}
+            onInput={(event) => {
+              const next = event.currentTarget.value;
+              setReqName(next);
+              if (!reqSlugTouched.current) setReqSlug(slugifyProject(next));
+            }}
+          />
+          <label class="muted" for={`${id}-rslug`}>{t('slug')}</label>
+          <input
+            id={`${id}-rslug`}
+            class="field"
+            dir="ltr"
+            maxLength={80}
+            autocomplete="off"
+            autocapitalize="none"
+            required
+            value={reqSlug}
+            onInput={(event) => {
+              reqSlugTouched.current = true;
+              setReqSlug(event.currentTarget.value.toLowerCase());
+            }}
+          />
+          <p class="muted">{t('slugHelp')}</p>
+          <p class="muted"><Fill text="projectReqGrantNote" agent={projectReq.agentName} /></p>
+          <button class="primary" type="submit" disabled={!reqProjectValid || busy}>{t('projectReqApprove')}</button>
+          <button class="plain wide" type="button" disabled={busy} onClick={refuseProjectReq}>{t('notMine')}</button>
+        </form>
       ) : info === null ? (
         <form onSubmit={(event) => { event.preventDefault(); lookUp(); }}>
           <Heading key="code">{t('connectTitle')}</Heading>
@@ -194,6 +330,47 @@ export function Connect({ me, onSignedOut }: { me: Me; onSignedOut: () => void }
           )}
           <fieldset class="checks">
             <legend class="muted">{t('projects')}</legend>
+            {me.isOwner && info.requestedProject && !info.projects.some((p) => p.slug === info.requestedProject!.slug) && (
+              <>
+                <label class="check">
+                  <input type="checkbox" checked={createRequested} onChange={(event) => setCreateRequested(event.currentTarget.checked)} />
+                  <span><Fill text="createRequestedProject" name={reqName.trim() || info.requestedProject.name} /></span>
+                </label>
+                {createRequested && (
+                  <div class="card form">
+                    <label class="muted" for={`${id}-crname`}>{t('projectName')}</label>
+                    <input
+                      id={`${id}-crname`}
+                      class="field"
+                      dir="auto"
+                      maxLength={80}
+                      autocomplete="off"
+                      value={reqName}
+                      onInput={(event) => {
+                        const next = event.currentTarget.value;
+                        setReqName(next);
+                        if (!reqSlugTouched.current) setReqSlug(slugifyProject(next));
+                      }}
+                    />
+                    <label class="muted" for={`${id}-crslug`}>{t('slug')}</label>
+                    <input
+                      id={`${id}-crslug`}
+                      class="field"
+                      dir="ltr"
+                      maxLength={80}
+                      autocomplete="off"
+                      autocapitalize="none"
+                      value={reqSlug}
+                      onInput={(event) => {
+                        reqSlugTouched.current = true;
+                        setReqSlug(event.currentTarget.value.toLowerCase());
+                      }}
+                    />
+                    <p class="muted">{t('slugHelp')}</p>
+                  </div>
+                )}
+              </>
+            )}
             {me.isOwner && info.projects.length > 0 && (
               <label class="check">
                 <input type="checkbox" checked={allProjects} onChange={(event) => setAllProjects(event.currentTarget.checked)} />
@@ -206,7 +383,7 @@ export function Connect({ me, onSignedOut }: { me: Me; onSignedOut: () => void }
                 <span><bdi>{p.name[lang]}</bdi></span>
               </label>
             ))}
-            {me.isOwner && info.projects.length === 0 && !addingProject && <p class="muted">{t('noProjectsYet')}</p>}
+            {me.isOwner && info.projects.length === 0 && !createRequested && !addingProject && <p class="muted">{t('noProjectsYet')}</p>}
           </fieldset>
           {me.isOwner && !addingProject && (
             <button ref={newProjectBtn} class="plain wide" type="button" disabled={busy} onClick={openNewProject}>{t('newProject')}</button>
