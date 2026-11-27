@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
-import { call, CallError, problemOf } from '../api';
+import { call, CallError, formatCodeInput, problemOf } from '../api';
 import { Failure, Fill, go, Heading, useBusy, useText } from '../app';
 
 interface Request { id: string; secret: string; code: string; expiresAt: number }
@@ -73,7 +73,22 @@ export function ApproveDevice({ onSignedOut }: { onSignedOut: () => void }) {
         <form onSubmit={(event) => { event.preventDefault(); step(async () => setDevice(await call('POST', '/device/look', { code }))); }}>
           <Heading key="code">{t('approveTitle')}</Heading>
           <label class="muted" for="code">{t('approveHelp')}</label>
-          <input id="code" class="field code" dir="ltr" autocomplete="off" autocapitalize="characters" spellcheck={false} maxLength={40} required value={code} onInput={(event) => setCode(event.currentTarget.value)} />
+          <input
+            id="code"
+            class="field code"
+            dir="ltr"
+            autocomplete="off"
+            autocapitalize="characters"
+            spellcheck={false}
+            maxLength={40}
+            required
+            value={code}
+            onInput={(event) => {
+              const next = formatCodeInput(event.currentTarget.value, code);
+              event.currentTarget.value = next;
+              setCode(next);
+            }}
+          />
           <p class="muted">{t('approveWarn')}</p>
           <button class="primary" disabled={busy}>{t('next')}</button>
         </form>
