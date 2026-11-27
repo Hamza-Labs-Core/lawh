@@ -156,8 +156,8 @@ export async function runInit({
 
     const hostModeRaw = (await prompt('Hosts — press Enter for workers.dev, or type "custom" to use your own domain [workers.dev]: ')).trim().toLowerCase();
     if (hostModeRaw === 'custom') {
-      const appRaw = (await prompt('App origin (e.g. https://lawh.example.com): ')).trim();
-      const contentRaw = (await prompt('Content origin (must be a different host, e.g. https://lawh-content.example.com): ')).trim();
+      const appRaw = (await prompt('App domain (e.g. lawh.example.com): ')).trim();
+      const contentRaw = (await prompt('Content domain (must be a different host, e.g. lawh-content.example.com): ')).trim();
       const pair = validateHostPair(appRaw, contentRaw, { allowLocalHttp });
       cfg.hosts = { mode: 'custom', app: pair.app, content: pair.content };
     } else if (!hostModeRaw || hostModeRaw === 'workers.dev') {
